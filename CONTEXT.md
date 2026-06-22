@@ -193,6 +193,42 @@ The publishing target (Bluesky) doesn't change. The identity primitive underneat
 The Agent Identity Registry is being built in a separate repo — see that project for
 the registry design and implementation.
 
+### Watershed agent changes when the registry is ready
+
+The agents need a small Python client module for the registry — three operations:
+
+**`provision(charter) → DID`**
+Generates a local keypair, registers the public key + charter with the registry,
+returns the DID. Private key stored locally (`~/.agent/keys/{did}.pem`).
+Called once at agent setup, not on every run.
+
+**`sign(record) → signed_record`**
+Signs an ATProto record with the agent's local private key before publishing.
+Replaces the implicit signing via Bluesky App Password.
+
+**`verify(did) → charter`**
+Resolves a DID against the registry, returns its charter. Cached with TTL.
+Used by `subscriber.py` to replace the static `TRUSTED_PUBLISHERS` dict.
+
+The transition in `subscriber.py`:
+
+```python
+# Today — identity check only, static list
+if publisher_did not in TRUSTED_PUBLISHERS:
+    return
+
+# After registry — identity + capability check, live lookup
+charter = registry.verify(publisher_did)
+if not charter or "observe" not in charter.capabilities:
+    return
+```
+
+Trust becomes **capability-aware**, not just identity-aware. A DID that's known
+to the registry but whose charter doesn't declare the `observe` capability is
+rejected even if its identity is valid. This is the charter model in practice —
+the registry doesn't just answer "who is this?" but "is this agent authorised
+to do what it's claiming to do?"
+
 **`did:web` is the near-term clean answer.** A DID document is just a JSON file served
 at a well-known URL:
 
