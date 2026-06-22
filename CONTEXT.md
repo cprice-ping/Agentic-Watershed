@@ -178,6 +178,21 @@ The current agent DIDs (`napanode1.bsky.social`, `napasynth01.bsky.social`) were
 bootstrapped through Bluesky's human signup flow. That's wrong — an agent's birthright
 identity shouldn't require a person to click through an onboarding UI.
 
+**These DIDs are placeholders.** The system continues to publish to Bluesky using
+them — the ATProto publishing pipeline stays intact. When the Agent Identity Registry
+is ready, the reconciliation path is:
+
+1. Registry mints new `did:web` DIDs for `napanode01` and `napasynth01`
+2. Agents register their public keys and charters with the registry
+3. `TRUSTED_PUBLISHERS` in `subscriber.py` updated to the new DIDs
+4. ATProto records going forward are signed by the registry-provisioned keys
+5. Bluesky handles (`napanode1.bsky.social`, `napasynth01.bsky.social`) can remain
+   as the human-readable publishing accounts — decoupled from the identity layer
+
+The publishing target (Bluesky) doesn't change. The identity primitive underneath does.
+The Agent Identity Registry is being built in a separate repo — see that project for
+the registry design and implementation.
+
 **`did:web` is the near-term clean answer.** A DID document is just a JSON file served
 at a well-known URL:
 
