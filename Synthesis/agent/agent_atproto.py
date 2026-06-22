@@ -35,11 +35,11 @@ import anthropic
 # Config
 # ---------------------------------------------------------------------------
 
-# Subscriber DB — populated by the firehose subscriber
-SUBSCRIBER_DB = Path(__file__).parent.parent / "ATProto" / "data" / "subscriber.db"
-
-# Synthesis output DB — same as before
-SYNTHESIS_DB = Path(__file__).parent / "data" / "synthesis.db"
+# Default paths — overridable via CLI args for laptop / remote use.
+# Pi layout:   /Agentic/ATProto/data/subscriber.db  (subscriber.py deployed separately)
+# Laptop/repo: Synthesis/data/subscriber.db          (subscriber.py runs in-tree)
+_DEFAULT_SUBSCRIBER_DB = Path(__file__).parent.parent.parent / "ATProto" / "data" / "subscriber.db"
+_DEFAULT_SYNTHESIS_DB  = Path(__file__).parent / "data" / "synthesis.db"
 
 MODELS = {
     "haiku":  "claude-haiku-4-5-20251001",
@@ -100,20 +100,21 @@ log = logging.getLogger("synthesis.agent_atproto")
 # Read from subscriber DB
 # ---------------------------------------------------------------------------
 
-def read_recent_observations(lookback_hours: float = 24.0) -> dict[str, list[dict]]:
+def read_recent_observations(lookback_hours: float = 24.0,
+                             subscriber_db: Path = _DEFAULT_SUBSCRIBER_DB) -> dict[str, list[dict]]:
     """
     Read recent observations from the subscriber DB, grouped by type.
     Returns dict of {observation_type: [records]} sorted newest first.
     """
-    if not SUBSCRIBER_DB.exists():
-        log.warning("Subscriber DB not found at %s", SUBSCRIBER_DB)
+    if not subscriber_db.exists():
+        log.warning("Subscriber DB not found at %s", subscriber_db)
         log.warning("Is the firehose subscriber running?")
         return {}
 
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
 
     try:
-        conn = sqlite3.connect(SUBSCRIBER_DB)
+        conn = sqlite3.connect(subscriber_db)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -141,12 +142,13 @@ def read_recent_observations(lookback_hours: float = 24.0) -> dict[str, list[dic
     return grouped
 
 
-def read_recent_synthesis(n: int = 3) -> list[dict]:
+def read_recent_synthesis(n: int = 3,
+                          synthesis_db: Path = _DEFAULT_SYNTHESIS_DB) -> list[dict]:
     """Read recent synthesis observations for memory/continuity."""
-    if not SYNTHESIS_DB.exists():
+    if not synthesis_db.exists():
         return []
     try:
-        conn = sqlite3.connect(SYNTHESIS_DB)
+        conn = sqlite3.connect(synthesis_db)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -168,13 +170,15 @@ def read_recent_synthesis(n: int = 3) -> list[dict]:
 # Context assembly
 # ---------------------------------------------------------------------------
 
-def gather_context(lookback_hours: float = 24.0) -> str:
+def gather_context(lookback_hours: float = 24.0,
+                   subscriber_db: Path = _DEFAULT_SUBSCRIBER_DB,
+                   synthesis_db: Path = _DEFAULT_SYNTHESIS_DB) -> str:
     log.info("Reading observations from subscriber DB (last %.0fh)...", lookback_hours)
 
     sections = []
 
     # Memory
-    prior = read_recent_synthesis(3)
+    prior = read_recent_synthesis(3, synthesis_db=synthesis_db)
     if prior:
         sections.append(
             f"=== PREVIOUS SYNTHESIS OBSERVATIONS (memory) ===\n"
@@ -184,7 +188,7 @@ def gather_context(lookback_hours: float = 24.0) -> str:
         sections.append("=== PREVIOUS SYNTHESIS OBSERVATIONS ===\nNone yet.")
 
     # Domain observations from ATProto
-    grouped = read_recent_observations(lookback_hours)
+    grouped = read_recent_observations(lookback_hours, subscriber_db=subscriber_db)
 
     if not grouped:
         sections.append(
@@ -273,7 +277,8 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
         }
 
 
-def write_observation(obs: dict, dry_run: bool = False) -> None:
+def write_observation(obs: dict, dry_run: bool = False,
+                      synthesis_db: Path = _DEFAULT_SYNTHESIS_DB) -> None:
     if dry_run:
         log.info("[DRY RUN] Would write synthesis observation:")
         log.info("  Summary:      %s", obs.get("summary", ""))
@@ -281,8 +286,8 @@ def write_observation(obs: dict, dry_run: bool = False) -> None:
         log.info("  Flagged:      %s", obs.get("flagged", False))
         return
 
-    SYNTHESIS_DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(SYNTHESIS_DB)
+    synthesis_db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(synthesis_db)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS synthesis_observations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -312,7 +317,7 @@ def write_observation(obs: dict, dry_run: bool = False) -> None:
     )
     conn.commit()
     conn.close()
-    log.info("Synthesis observation written to %s", SYNTHESIS_DB)
+    log.info("Synthesis observation written to %s", synthesis_db)
 
 
 # ---------------------------------------------------------------------------
@@ -326,13 +331,25 @@ def main() -> None:
                         help="Hours of observations to consider (default 24)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--subscriber-db", type=Path, default=_DEFAULT_SUBSCRIBER_DB,
+                        help="Path to subscriber.db (default: ../ATProto/data/subscriber.db on Pi, "
+                             "override to Synthesis/data/subscriber.db when running from repo)")
+    parser.add_argument("--synthesis-db", type=Path, default=_DEFAULT_SYNTHESIS_DB,
+                        help="Path to synthesis output DB (default: agent/data/synthesis.db)")
     args = parser.parse_args()
+
+    subscriber_db = args.subscriber_db
+    synthesis_db  = args.synthesis_db
 
     log.info("=== Synthesis Agent (ATProto) starting ===")
     log.info("Model: %s  |  Dry run: %s  |  Lookback: %.0fh",
              args.model, args.dry_run, args.lookback)
+    log.info("Subscriber DB: %s", subscriber_db)
+    log.info("Synthesis DB:  %s", synthesis_db)
 
-    context = gather_context(lookback_hours=args.lookback)
+    context = gather_context(lookback_hours=args.lookback,
+                             subscriber_db=subscriber_db,
+                             synthesis_db=synthesis_db)
     observation = reason(context, args.model, verbose=args.verbose)
 
     log.info("--- Synthesis conclusion ---")
@@ -343,7 +360,7 @@ def main() -> None:
     log.info("Flagged:      %s", observation.get("flagged", False))
     log.info("Summary: %s", observation.get("summary", ""))
 
-    write_observation(observation, dry_run=args.dry_run)
+    write_observation(observation, dry_run=args.dry_run, synthesis_db=synthesis_db)
     log.info("=== Synthesis Agent (ATProto) run complete ===")
 
 

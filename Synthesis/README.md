@@ -41,15 +41,42 @@ against `TRUSTED_PUBLISHERS` before acting on any record.
 
 ## Setup
 
+### On the Pi (production)
+
 ```bash
 # subscriber.py lives alongside publisher.py in ATProto/
 cp subscriber.py ~/Agentic/ATProto/
-cp agent/agent_atproto.py ~/Agentic/Synthesis/agent/
 
 cd ~/Agentic/ATProto
 source .venv/bin/activate
 pip install atproto   # adds firehose support to existing venv
 ```
+
+### On a laptop (from the repo)
+
+The subscriber and agent both run from the `Synthesis/` directory in-tree.
+`subscriber.db` ends up at `Synthesis/data/subscriber.db`; pass that path to the agent.
+
+```bash
+cd Synthesis
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install anthropic atproto
+
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# 1. Pull records from the firehose (run for ~2 min, or leave running)
+python subscriber.py --once --timeout 120
+
+# 2. Run the synthesis agent, pointing it at the local subscriber DB
+python agent/agent_atproto.py \
+  --subscriber-db data/subscriber.db \
+  --dry-run --verbose
+```
+
+The `--subscriber-db` flag accepts any path, so you can also point it at a copy of
+the Pi's `subscriber.db` if you've scp'd it over for offline testing.
 
 ## Test the subscriber
 
