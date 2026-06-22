@@ -1,35 +1,35 @@
 """
-ATProto Firehose Subscriber
----------------------------
-Long-running daemon that subscribes to the ATProto firehose and collects
-environmental monitoring observations published by trusted nodes.
+ATProto Subscriber
+------------------
+Fetches environmental monitoring observations published by trusted nodes
+and stores them in a local SQLite database for the synthesis agent.
 
-Filters by:
-  1. Publisher DID — only records from the trusted registry
-  2. Lexicon NSID — only net.cpricedomain.temp.monitor.observation records
+Default mode: fetch (cron-friendly, JIT, no persistent connection)
+  Calls com.atproto.repo.listRecords for each trusted publisher DID,
+  stores any new records, and exits. Run this just before the synthesis
+  agent on the same cron schedule.
 
-Stores received observations to a local SQLite database that the
-synthesis agent reads for cross-domain reasoning.
-
-This replaces the direct SQLite reads in synthesis/agent.py — instead of
-reading domain agent databases directly, the synthesis agent reads this
-subscriber database, which is populated from ATProto records.
-
-This is the decoupling step: synthesis can now run anywhere that can reach
-the firehose. The nodes it trusts are defined in the trusted registry,
-not by filesystem paths.
+Optional mode: --firehose (live stream, must be running at publish time)
+  Connects to the ATProto firehose and collects records as they arrive.
+  Useful for low-latency setups or testing, but architecturally inconsistent
+  with the cron-triggered node agents.
 
 Architecture:
-  Node (Pi) → ATProto PDS → Firehose → [this subscriber] → subscriber.db
-                                                                   ↓
-                                                        Synthesis agent reads
+  Node (Pi) → ATProto PDS ← [fetch mode: pulls on demand]
+                           → Firehose → [firehose mode: live stream]
+                                              ↓
+                                        subscriber.db
+                                              ↓
+                                      synthesis agent
 
-Run as a daemon:
-  python subscriber.py           # runs until stopped
-  python subscriber.py --once    # process for 60s then exit (for testing)
+Usage:
+  python subscriber.py                  # fetch from all trusted publishers, exit
+  python subscriber.py --lookback 48    # fetch records from last 48h (default 24)
+  python subscriber.py --firehose       # live firehose mode (legacy)
+  python subscriber.py --firehose --once --timeout 120  # firehose for 2 min
 
-Systemd service (recommended for production):
-  See subscriber.service in this directory
+Cron (run just before synthesis agent):
+  50 5,17 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python subscriber.py >> logs/subscriber.log 2>&1
 """
 
 import json
@@ -37,11 +37,10 @@ import logging
 import sqlite3
 import time
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from atproto import CAR, FirehoseSubscribeReposClient, parse_subscribe_repos_message
-from atproto import models as atproto_models
+import httpx
 
 # ---------------------------------------------------------------------------
 # Config
@@ -51,12 +50,14 @@ SUBSCRIBER_DB = Path(__file__).parent / "data" / "subscriber.db"
 
 LEXICON = "net.cpricedomain.temp.monitor.observation"
 
-# Trusted publisher registry — DIDs we will accept observations from
-# Add new node DIDs here as the network grows
+# Trusted publisher registry — DIDs we will accept observations from.
+# Add new node DIDs here as the network grows.
 TRUSTED_PUBLISHERS = {
     "did:plc:demqbviei2gxjjq2eqnm2rpi": "napa-node-01",  # napanode1.bsky.social
-    # "did:plc:...": "napa-node-02",  # add when node-02 is created
+    # "did:plc:...": "napa-node-02",
 }
+
+PDS_HOST = "https://bsky.social"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,9 +71,9 @@ log = logging.getLogger("atproto.subscriber")
 # Database
 # ---------------------------------------------------------------------------
 
-def init_db() -> sqlite3.Connection:
-    SUBSCRIBER_DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(SUBSCRIBER_DB)
+def init_db(db_path: Path) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS observations (
@@ -87,7 +88,7 @@ def init_db() -> sqlite3.Connection:
             flagged         INTEGER DEFAULT 0,
             flag_reason     TEXT,
             agent_model     TEXT,
-            raw_record      TEXT        -- full JSON record for future use
+            raw_record      TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_obs_type_time
@@ -116,12 +117,9 @@ def store_observation(conn: sqlite3.Connection, at_uri: str,
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                now,
-                at_uri,
-                publisher_did,
-                node_id,
+                now, at_uri, publisher_did, node_id,
                 record.get("observedAt"),
-                record.get("observationType", "").split("#")[-1],  # "watershed" etc
+                record.get("observationType", "").split("#")[-1],
                 record.get("summary"),
                 int(record.get("flagged", False)),
                 record.get("flagReason", ""),
@@ -130,43 +128,132 @@ def store_observation(conn: sqlite3.Connection, at_uri: str,
             ),
         )
         conn.commit()
-        return conn.execute(
-            "SELECT changes()"
-        ).fetchone()[0] > 0
+        return conn.execute("SELECT changes()").fetchone()[0] > 0
     except sqlite3.Error as exc:
         log.error("Failed to store observation %s: %s", at_uri, exc)
         return False
 
 
+def log_record(record: dict, node: str, is_new: bool) -> None:
+    if not is_new:
+        return
+    obs_type = record.get("observationType", "").split("#")[-1]
+    flagged = " ⚠️ FLAGGED" if record.get("flagged") else ""
+    log.info("Stored [%s] from %s: %s%s",
+             obs_type, node, (record.get("summary") or "")[:80], flagged)
+
+
 # ---------------------------------------------------------------------------
-# Firehose message handler
+# Fetch mode (default) — pull from PDS via listRecords
 # ---------------------------------------------------------------------------
 
-def make_handler(conn: sqlite3.Connection, stop_after: float = None):
-    """Returns a firehose message handler. stop_after: seconds to run (None = forever)."""
+def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
+                         lookback_hours: float) -> tuple[int, int]:
+    """
+    Fetch records for a single trusted publisher via com.atproto.repo.listRecords.
+    Returns (fetched, stored) counts.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    fetched = stored = 0
+    cursor = None
+
+    log.info("Fetching records from %s (%s)...", node_id, did)
+
+    with httpx.Client(timeout=30) as client:
+        while True:
+            params = {
+                "repo": did,
+                "collection": LEXICON,
+                "limit": 100,
+            }
+            if cursor:
+                params["cursor"] = cursor
+
+            resp = client.get(f"{PDS_HOST}/xrpc/com.atproto.repo.listRecords",
+                              params=params)
+            resp.raise_for_status()
+            data = resp.json()
+
+            records = data.get("records", [])
+            if not records:
+                break
+
+            for item in records:
+                record = item.get("value", {})
+                at_uri = item.get("uri", "")
+
+                # Stop if we've gone past the lookback window
+                observed_at_str = record.get("observedAt", "")
+                if observed_at_str:
+                    try:
+                        observed_at = datetime.fromisoformat(
+                            observed_at_str.replace("Z", "+00:00")
+                        )
+                        if observed_at < cutoff:
+                            return fetched, stored
+                    except ValueError:
+                        pass
+
+                fetched += 1
+                is_new = store_observation(conn, at_uri, did, record)
+                if is_new:
+                    stored += 1
+                    log_record(record, node_id, is_new=True)
+
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+
+    return fetched, stored
+
+
+def run_fetch(conn: sqlite3.Connection, lookback_hours: float) -> None:
+    """Fetch from all trusted publishers and exit."""
+    log.info("=== ATProto Subscriber (fetch mode) ===")
+    log.info("Trusted publishers: %s", list(TRUSTED_PUBLISHERS.values()))
+    log.info("Lexicon: %s  |  Lookback: %.0fh", LEXICON, lookback_hours)
+
+    total_fetched = total_stored = 0
+    for did, node_id in TRUSTED_PUBLISHERS.items():
+        try:
+            fetched, stored = fetch_from_publisher(conn, did, node_id, lookback_hours)
+            total_fetched += fetched
+            total_stored += stored
+            log.info("%s: %d fetched, %d new", node_id, fetched, stored)
+        except httpx.HTTPError as exc:
+            log.error("Failed to fetch from %s: %s", node_id, exc)
+
+    log.info("=== Fetch complete — %d fetched, %d new ===", total_fetched, total_stored)
+
+
+# ---------------------------------------------------------------------------
+# Firehose mode (--firehose) — live stream
+# ---------------------------------------------------------------------------
+
+def run_firehose(conn: sqlite3.Connection, stop_after: float = None) -> None:
+    """Connect to the ATProto firehose and collect records until stopped."""
+    from atproto import CAR, FirehoseSubscribeReposClient, parse_subscribe_repos_message
+    from atproto import models as atproto_models
+
+    log.info("=== ATProto Subscriber (firehose mode) ===")
+    log.info("Trusted publishers: %s", list(TRUSTED_PUBLISHERS.values()))
+    log.info("Lexicon: %s", LEXICON)
+    if stop_after:
+        log.info("Running for %.0f seconds then stopping", stop_after)
+
     start_time = time.time()
-    processed = 0
-    accepted = 0
 
     def on_message(message) -> None:
-        nonlocal processed, accepted
-
-        # Stop after timeout if set
         if stop_after and (time.time() - start_time) > stop_after:
             raise StopIteration("Time limit reached")
 
         commit = parse_subscribe_repos_message(message)
-
-        # Only process commit events
         if not isinstance(commit, atproto_models.ComAtprotoSyncSubscribeRepos.Commit):
             return
 
-        # Quick check: is this DID in our trusted registry?
         publisher_did = commit.repo
         if publisher_did not in TRUSTED_PUBLISHERS:
             return
-
-        # Decode the CAR blocks
         if not commit.blocks:
             return
 
@@ -175,18 +262,12 @@ def make_handler(conn: sqlite3.Connection, stop_after: float = None):
         except Exception:
             return
 
-        # Look for our lexicon records in the operations
         for op in commit.ops:
             if op.action != "create":
                 continue
-
-            # Check if this operation is in our lexicon collection
             if not op.path.startswith(LEXICON + "/"):
                 continue
 
-            processed += 1
-
-            # Find the record in the CAR blocks
             record_cid = op.cid
             if record_cid not in car.blocks:
                 continue
@@ -194,61 +275,16 @@ def make_handler(conn: sqlite3.Connection, stop_after: float = None):
             record = car.blocks[record_cid]
             if not isinstance(record, dict):
                 continue
-
-            # Verify it's actually our lexicon type
             if record.get("$type") != LEXICON:
                 continue
 
-            # Build AT URI
             rkey = op.path.split("/")[-1]
             at_uri = f"at://{publisher_did}/{LEXICON}/{rkey}"
-
-            # Store it
+            node_id = TRUSTED_PUBLISHERS.get(publisher_did, publisher_did[:16])
             is_new = store_observation(conn, at_uri, publisher_did, record)
-            if is_new:
-                accepted += 1
-                obs_type = record.get("observationType", "").split("#")[-1]
-                flagged = "⚠️ FLAGGED" if record.get("flagged") else ""
-                node = TRUSTED_PUBLISHERS.get(publisher_did, publisher_did[:16])
-                log.info(
-                    "Received [%s] from %s: %s %s",
-                    obs_type, node,
-                    (record.get("summary") or "")[:80],
-                    flagged,
-                )
+            log_record(record, node_id, is_new)
 
-    return on_message
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="ATProto firehose subscriber")
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        help="Run for 60 seconds then exit (for testing)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=60.0,
-        help="Timeout in seconds when --once is used (default 60)",
-    )
-    args = parser.parse_args()
-
-    conn = init_db()
-    log.info("=== ATProto Subscriber starting ===")
-    log.info("Trusted publishers: %s", list(TRUSTED_PUBLISHERS.values()))
-    log.info("Lexicon filter: %s", LEXICON)
-
-    stop_after = args.timeout if args.once else None
-    if args.once:
-        log.info("Running in --once mode for %.0f seconds", stop_after)
-
-    handler = make_handler(conn, stop_after=stop_after)
+    client = FirehoseSubscribeReposClient()
 
     def on_error(error: BaseException) -> None:
         if isinstance(error, StopIteration):
@@ -257,15 +293,52 @@ def main() -> None:
         else:
             log.error("Firehose error: %s", error)
 
-    client = FirehoseSubscribeReposClient()
-
     try:
-        client.start(handler, on_error)
+        client.start(on_message, on_error)
     except KeyboardInterrupt:
         log.info("Interrupted, stopping")
         client.stop()
 
-    log.info("=== Subscriber stopped ===")
+    log.info("=== Firehose subscriber stopped ===")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="ATProto subscriber — fetch mode (default) or firehose mode (--firehose)"
+    )
+    parser.add_argument(
+        "--firehose", action="store_true",
+        help="Use live firehose instead of fetch (must be running when nodes publish)",
+    )
+    parser.add_argument(
+        "--lookback", type=float, default=24.0,
+        help="Hours of history to fetch in fetch mode (default 24)",
+    )
+    parser.add_argument(
+        "--once", action="store_true",
+        help="[firehose mode] Stop after --timeout seconds",
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=60.0,
+        help="[firehose mode] Seconds to run with --once (default 60)",
+    )
+    parser.add_argument(
+        "--db", type=Path, default=SUBSCRIBER_DB,
+        help=f"Path to subscriber DB (default: {SUBSCRIBER_DB})",
+    )
+    args = parser.parse_args()
+
+    conn = init_db(args.db)
+
+    if args.firehose:
+        stop_after = args.timeout if args.once else None
+        run_firehose(conn, stop_after=stop_after)
+    else:
+        run_fetch(conn, lookback_hours=args.lookback)
 
 
 if __name__ == "__main__":

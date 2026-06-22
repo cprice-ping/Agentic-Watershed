@@ -66,49 +66,50 @@ pip install anthropic atproto
 
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# 1. Pull records from the firehose (run for ~2 min, or leave running)
-python subscriber.py --once --timeout 120
+# 1. Fetch records from trusted publishers (exits when done)
+python subscriber.py --db data/subscriber.db
 
-# 2. Run the synthesis agent, pointing it at the local subscriber DB
+# 2. Run the synthesis agent against the local DB
 python agent/agent_atproto.py \
   --subscriber-db data/subscriber.db \
   --dry-run --verbose
 ```
 
-The `--subscriber-db` flag accepts any path, so you can also point it at a copy of
-the Pi's `subscriber.db` if you've scp'd it over for offline testing.
+`subscriber.py` fetches records published in the last 24h by default.
+Use `--lookback 48` to go further back. The `--subscriber-db` flag on the
+agent accepts any path, so you can also point it at a copy of the Pi's
+`subscriber.db` scp'd over for offline testing.
 
-## Test the subscriber
+## subscriber.py — fetch mode vs firehose mode
 
-```bash
-cd ~/Agentic/ATProto
-source .venv/bin/activate
-python subscriber.py --once --timeout 120
+**Default (fetch mode)** — cron-friendly, JIT, no persistent connection.
+Calls `com.atproto.repo.listRecords` for each trusted publisher, stores new
+records, exits. Consistent with how the node agents work.
+
+**`--firehose` mode** — live stream. Must be running *at the moment* nodes publish
+or records are missed. Architecturally inconsistent with the cron-triggered nodes;
+kept for testing and low-latency future use.
+
+```
+# Fetch mode (default) — run just before synthesis agent
+python subscriber.py                   # last 24h of records
+python subscriber.py --lookback 48     # last 48h
+
+# Firehose mode
+python subscriber.py --firehose        # run until Ctrl-C
+python subscriber.py --firehose --once --timeout 120
 ```
 
-This connects to the firehose for 2 minutes and prints any matching records.
-Since your node publishes every 6 hours, you may need to wait or trigger
-a manual publisher run first.
+## Cron schedule (fetch mode)
 
-Check what's been received:
-```bash
-sqlite3 data/subscriber.db \
-  "SELECT received_at, node_id, observation_type, flagged, substr(summary,1,80) FROM observations ORDER BY received_at DESC LIMIT 10;"
-```
+Subscriber runs 10 minutes before synthesis agent to ensure records are present:
 
-## Run subscriber as a daemon (systemd)
+```cron
+# Fetch records from trusted publishers
+50 5,17 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python subscriber.py >> logs/subscriber.log 2>&1
 
-```bash
-sudo cp watershed-subscriber.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable watershed-subscriber
-sudo systemctl start watershed-subscriber
-sudo systemctl status watershed-subscriber
-```
-
-Check logs:
-```bash
-tail -f ~/Agentic/ATProto/logs/subscriber.log
+# Synthesis agent (10 min later)
+0 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent/agent_atproto.py >> logs/agent_atproto.log 2>&1
 ```
 
 ## Run the ATProto synthesis agent
