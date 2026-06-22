@@ -1,0 +1,253 @@
+{
+  "lexicon": 1,
+  "id": "net.cpricedomain.temp.monitor.observation",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "An environmental observation published by an autonomous monitoring node. The observationType field declares the domain; all domain-specific fields are optional to support partial nodes (e.g. PPM-only, weather-only).",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["observedAt", "nodeId", "observationType"],
+        "properties": {
+
+          "observedAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "ISO8601 UTC timestamp of the observation period this record covers."
+          },
+
+          "nodeId": {
+            "type": "string",
+            "description": "Human-readable identifier for the physical node. e.g. 'napa-home-01'. Not the DID — the DID is the publisher identity, this is a stable local label."
+          },
+
+          "observationType": {
+            "type": "string",
+            "knownValues": [
+              "net.cpricedomain.temp.monitor.observation#watershed",
+              "net.cpricedomain.temp.monitor.observation#weather",
+              "net.cpricedomain.temp.monitor.observation#aqi",
+              "net.cpricedomain.temp.monitor.observation#synthesis"
+            ],
+            "description": "The domain of this observation. Synthesis agents filter the firehose by this value. Nodes publish only the types they have data for."
+          },
+
+          "summary": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Plain language summary of conditions. Written for a general audience. Used as the public-facing text when posted to Bluesky."
+          },
+
+          "flagged": {
+            "type": "boolean",
+            "description": "True if conditions in this domain warrant attention. Domain agents set this; synthesis agents aggregate across domains."
+          },
+
+          "flagReason": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Brief reason if flagged. Empty string if not flagged."
+          },
+
+          "agentModel": {
+            "type": "string",
+            "description": "The LLM or SLM used to produce this observation. e.g. 'claude-haiku-4-5', 'phi-4-mini', 'qwen2.5-3b'. Allows synthesis agents to weight observations by model capability if desired."
+          },
+
+          "watershed": {
+            "type": "ref",
+            "ref": "#watershedData",
+            "description": "Present when observationType is watershed."
+          },
+
+          "weather": {
+            "type": "ref",
+            "ref": "#weatherData",
+            "description": "Present when observationType is weather."
+          },
+
+          "aqi": {
+            "type": "ref",
+            "ref": "#aqiData",
+            "description": "Present when observationType is aqi."
+          },
+
+          "synthesis": {
+            "type": "ref",
+            "ref": "#synthesisData",
+            "description": "Present when observationType is synthesis."
+          }
+        }
+      }
+    },
+
+    "watershedData": {
+      "type": "object",
+      "description": "Watershed-specific observation fields. All optional to support partial sensor deployments.",
+      "properties": {
+        "stationIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "USGS or other station identifiers contributing to this observation."
+        },
+        "dischargeMinCfs": {
+          "type": "number",
+          "description": "Minimum stream discharge in cubic feet per second across stations."
+        },
+        "dischargeMeanCfs": {
+          "type": "number",
+          "description": "Mean stream discharge in cubic feet per second across stations."
+        },
+        "dischargeMaxCfs": {
+          "type": "number",
+          "description": "Maximum stream discharge in cubic feet per second across stations."
+        },
+        "gageHeightMinFt": {
+          "type": "number",
+          "description": "Minimum gage height in feet across stations."
+        },
+        "gageHeightMaxFt": {
+          "type": "number",
+          "description": "Maximum gage height in feet across stations."
+        },
+        "floodStageThresholdFt": {
+          "type": "number",
+          "description": "NWS flood stage threshold in feet for the primary station."
+        },
+        "sevenDayTrend": {
+          "type": "string",
+          "knownValues": ["rising", "falling", "stable", "unknown"],
+          "description": "Direction of flow over the past 7 days."
+        }
+      }
+    },
+
+    "weatherData": {
+      "type": "object",
+      "description": "Weather-specific observation fields.",
+      "properties": {
+        "stationId": {
+          "type": "string",
+          "description": "Observation station identifier. e.g. 'KAPC' for Napa County Airport."
+        },
+        "temperatureF": {
+          "type": "number",
+          "description": "Current temperature in Fahrenheit."
+        },
+        "humidityPct": {
+          "type": "number",
+          "description": "Relative humidity percentage."
+        },
+        "windSpeedMph": {
+          "type": "number",
+          "description": "Wind speed in miles per hour."
+        },
+        "windGustMph": {
+          "type": "number",
+          "description": "Wind gust speed in miles per hour."
+        },
+        "windDirectionDeg": {
+          "type": "number",
+          "description": "Wind direction in degrees. 0/360=N, 90=E, 180=S, 270=W. NE (45°) indicates Diablo wind pattern."
+        },
+        "windPattern": {
+          "type": "string",
+          "knownValues": ["marine", "diablo", "valley", "calm", "unknown"],
+          "description": "Interpreted wind pattern. Diablo (NE/E offshore flow) dramatically increases fire risk."
+        },
+        "precipMm24h": {
+          "type": "number",
+          "description": "Precipitation in millimetres over the last 24 hours."
+        },
+        "activeAlerts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Active NWS alert event names. e.g. ['Red Flag Warning', 'Flood Watch']"
+        },
+        "fireRisk": {
+          "type": "string",
+          "knownValues": ["none", "low", "moderate", "high", "extreme"],
+          "description": "Weather agent's assessment of fire weather risk."
+        }
+      }
+    },
+
+    "aqiData": {
+      "type": "object",
+      "description": "Air quality observation fields.",
+      "properties": {
+        "pm25Aqi": {
+          "type": "integer",
+          "description": "PM2.5 Air Quality Index value. Primary wildfire smoke indicator."
+        },
+        "pm25Category": {
+          "type": "string",
+          "knownValues": ["Good", "Moderate", "Unhealthy for Sensitive Groups", "Unhealthy", "Very Unhealthy", "Hazardous"],
+          "description": "EPA AQI category for PM2.5."
+        },
+        "ozoneAqi": {
+          "type": "integer",
+          "description": "Ozone AQI value."
+        },
+        "ozoneCategory": {
+          "type": "string",
+          "description": "EPA AQI category for Ozone."
+        },
+        "pm25Rising": {
+          "type": "boolean",
+          "description": "True if PM2.5 AQI has risen ≥20 points in the last 3 hours."
+        },
+        "pm25ChangeAqi": {
+          "type": "integer",
+          "description": "Change in PM2.5 AQI over the last 3 hours. Positive = rising."
+        },
+        "smokeDetected": {
+          "type": "boolean",
+          "description": "True if pattern suggests wildfire smoke (PM2.5 spike without corresponding ozone rise)."
+        },
+        "reportingArea": {
+          "type": "string",
+          "description": "AirNow reporting area name. e.g. 'Napa'."
+        }
+      }
+    },
+
+    "synthesisData": {
+      "type": "object",
+      "description": "Cross-domain synthesis observation. Published by a synthesis agent, not a domain node.",
+      "properties": {
+        "fireRisk": {
+          "type": "string",
+          "knownValues": ["none", "low", "moderate", "high", "extreme"]
+        },
+        "floodRisk": {
+          "type": "string",
+          "knownValues": ["none", "low", "moderate", "high", "extreme"]
+        },
+        "airQualityRisk": {
+          "type": "string",
+          "knownValues": ["none", "low", "moderate", "high", "extreme"]
+        },
+        "overallRisk": {
+          "type": "string",
+          "knownValues": ["none", "low", "moderate", "high", "extreme"]
+        },
+        "domainsObserved": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Which domain types contributed to this synthesis. e.g. ['watershed', 'weather', 'aqi']. Allows consumers to understand confidence level."
+        },
+        "nodeCount": {
+          "type": "integer",
+          "description": "Number of distinct nodes whose observations contributed to this synthesis."
+        },
+        "trustedPublishers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "DIDs of nodes whose observations were used. Allows consumers to audit provenance."
+        }
+      }
+    }
+  }
+}
