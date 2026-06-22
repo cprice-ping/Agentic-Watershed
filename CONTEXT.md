@@ -172,6 +172,39 @@ is a hardcoded registry — that's the problem to solve. Options worth exploring
 **Running our own PDS** is the next infrastructure step — removes the dependency on
 `bsky.social` as host while keeping full ATProto compatibility and DID portability.
 
+### Why this breaks the IDP model — and why that matters
+
+The IDP model was designed for humans. It assumes trust is established by a person
+logging in, consenting, and receiving a token from a central authority. That authority
+is the source of truth for identity. Every token expires; every session ends; every
+agent must re-authenticate through the same central chokepoint.
+
+This breaks for agents at scale:
+- Agents outnumber humans by orders of magnitude and operate continuously
+- A central IDP is a single point of failure and a trust bottleneck
+- Token lifetimes and refresh flows assume a human available to re-consent
+- The IDP knows nothing about *what the agent has done* — only what it was granted
+
+**The charter model replaces this entirely.** Each agent's DID document is its
+charter — a self-describing declaration of identity, capability, and intent:
+
+- **"I am"** — permanent DID, cryptographically verifiable, no authority required
+- **"This is what I do"** — capability claims in the DID document (observe, synthesise, publish)
+- **"This is my history"** — the full ATProto record chain, publicly auditable, bound to the DID
+- **"This is what I want"** — the specific request, evaluated against all of the above
+
+A policy engine receiving that bundle has everything needed to make an authorisation
+decision: verified identity, declared scope, *and* a behavioural track record. It can
+ask not just "was this agent granted access?" but "has this agent ever acted outside
+its declared scope?" — a question no IDP token can answer.
+
+This is dynamic trust based on verifiable identity plus observable behaviour over time.
+Static grants (OAuth scopes, RBAC roles) are a degenerate case — useful when you know
+nothing about the agent's history. When you have the chain, you can do much better.
+
+The IDP doesn't disappear — it becomes one possible way to bootstrap initial trust.
+But it is no longer the authority. The DID chain is.
+
 ### Possible additions
 - Additional Pi nodes upvalley with their own domain agents and DIDs
 - Physical sensors via Pi GPIO → same collector interface, no agent changes needed
