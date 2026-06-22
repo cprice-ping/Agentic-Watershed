@@ -1,0 +1,20 @@
+[Unit]
+Description=ATProto Firehose Subscriber — Napa Valley Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cprice
+WorkingDirectory=/home/cprice/Agentic/ATProto
+ExecStart=/home/cprice/Agentic/ATProto/.venv/bin/python /home/cprice/Agentic/ATProto/subscriber.py
+Restart=on-failure
+RestartSec=30
+EnvironmentFile=/etc/environment
+
+# Logging
+StandardOutput=append:/home/cprice/Agentic/ATProto/logs/subscriber.log
+StandardError=append:/home/cprice/Agentic/ATProto/logs/subscriber.log
+
+[Install]
+WantedBy=multi-user.target
