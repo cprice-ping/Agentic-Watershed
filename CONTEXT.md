@@ -172,6 +172,58 @@ is a hardcoded registry — that's the problem to solve. Options worth exploring
 **Running our own PDS** is the next infrastructure step — removes the dependency on
 `bsky.social` as host while keeping full ATProto compatibility and DID portability.
 
+### DID onboarding problem — and the path to did:web
+
+The current agent DIDs (`napanode1.bsky.social`, `napasynth01.bsky.social`) were
+bootstrapped through Bluesky's human signup flow. That's wrong — an agent's birthright
+identity shouldn't require a person to click through an onboarding UI.
+
+**`did:web` is the near-term clean answer.** A DID document is just a JSON file served
+at a well-known URL:
+
+```
+did:web:cpricedomain.net:agents:napanode01
+  → https://cpricedomain.net/agents/napanode01/did.json
+```
+
+No signup flow. No human identity in the loop. Agent provisioning generates a keypair,
+writes the DID document to the domain, done. Three lines of Python.
+
+**The scaling problem:** `did:web` ties each DID to a URL path — one file (or route)
+per agent. Fine at tens, unmanageable at thousands.
+
+**What this wants to be: an Agent Identity Registry.**
+
+A lightweight API at your domain that mints and manages DIDs for agents:
+
+```
+POST /agents              → generate keypair, mint DID, record charter → returns DID
+GET  /agents/{id}/did.json → serve DID document (did:web resolution endpoint)
+GET  /agents/{id}/charter  → serve the agent's charter (capabilities, scope, intent)
+POST /agents/{id}/rotate   → rotate keys, update DID document
+DELETE /agents/{id}        → revoke — DID document returns tombstone
+```
+
+**Implementation complexity: low.** Standard JWK keypairs, SQLite, a tiny FastAPI
+app. A weekend project for the core. The hard questions are design:
+
+- **Charter schema** — what capability claims, scope, intent, operator identity fields
+  does a charter carry? Probably JSON-LD or a custom Lexicon.
+- **Key custody** — the registry should never hold private keys. The agent generates
+  its own keypair and registers only the public key. The registry issues the DID and
+  records the charter. Closer to a CA than an IDP.
+- **Provisioning policy** — who can mint a DID? Open self-service, or does the
+  registry gatekeep? If the registry is a trust anchor, this matters.
+- **Registry's own DID** — the registry itself should have a `did:web` at the domain
+  root. Agent DID documents reference it as their controller/issuer. Consumers can
+  verify: "this agent was provisioned by this trusted registry" — chain of trust
+  without a central CA.
+
+**This registry is the thing Ping should probably build.** It's an identity provider
+for agents — but one that issues birthright DIDs and stores charters rather than
+managing human sessions and issuing tokens. The registry's DID is the trust anchor;
+the agent's DID document is the verifiable claim that it was provisioned by that anchor.
+
 ### Why this breaks the IDP model — and why that matters
 
 The IDP model was designed for humans. It assumes trust is established by a person
