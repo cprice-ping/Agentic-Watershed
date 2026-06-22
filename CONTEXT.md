@@ -138,11 +138,39 @@ This is the central next step — it completes the distributed architecture:
 The `summary` field in synthesis output is already written for a public Bluesky post —
 high-risk events can surface as human-readable posts in addition to structured records.
 
-### Distributed identity exploration (follows ATProto work)
-- Move Synthesis agent to a separate device once firehose subscriber is built
-- Explore how node DIDs are provisioned, rotated, and revoked
-- What happens when Synthesis receives a record from a revoked DID mid-run?
-- This connects directly to Ping Identity's workload identity work
+### Birthright identity for agents — the core research question
+
+The deeper goal is an agent that has a **birthright identity**: a DID assigned at
+creation that is its identity for life, independent of where it runs, who operates
+it, or what infrastructure hosts it. ATProto's `did:plc` is the closest existing
+primitive to this:
+
+- The **DID is permanent** — not the handle, not the PDS URL, not the host
+- The **DID document is mutable** — keys can rotate, PDS can move, identity persists
+- **Data is bound to the DID**, not the PDS — move the PDS, the identity and its full
+  history follow
+- **Verification is decentralized** — any consumer can verify a signature against the
+  DID document without trusting a platform or CA
+
+What this enables: an agent can prove continuity of identity across time, machines,
+operators, and infrastructure changes. "I am the same agent that made this observation
+six months ago on a different machine" — provable from the DID chain alone.
+
+This is fundamentally different from platform workload identity (SPIFFE, k8s
+ServiceAccounts, Azure Managed Identity), which all require trusting the platform's
+assertion. The DID model is self-sovereign — the agent carries its own verifiable
+identity, and the platform is just where it happens to be running today.
+
+**The open question:** how does a DID get established as trusted in the first place,
+without reintroducing a centralized authority? The current `TRUSTED_PUBLISHERS` dict
+is a hardcoded registry — that's the problem to solve. Options worth exploring:
+- A trust registry published as ATProto records by a known authority DID
+- Web-of-trust: a trusted DID vouches for a new DID
+- Challenge/response at first contact: new node proves DID control before being added
+- Self-describing agents: the DID document itself carries capability/scope claims
+
+**Running our own PDS** is the next infrastructure step — removes the dependency on
+`bsky.social` as host while keeping full ATProto compatibility and DID portability.
 
 ### Possible additions
 - Additional Pi nodes upvalley with their own domain agents and DIDs
