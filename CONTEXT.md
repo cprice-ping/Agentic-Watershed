@@ -8,6 +8,29 @@ Last updated: 2026-06-22
 
 ---
 
+## Distributed architecture intent
+
+This is a **distributed multi-agent system**. The design separates node agents from the
+synthesis agent both logically and physically:
+
+- **Node agents** (Raspberry Pi): collect domain data, reason locally with Claude Haiku,
+  publish structured observations to ATProto/Bluesky using a custom lexicon
+  (`com.napavalley.monitor.observation`) and a per-node verified DID.
+
+- **Synthesis agent** (separate machine): subscribes to the ATProto firehose, filters
+  records by the custom lexicon, verifies publisher DIDs against a trusted registry,
+  and reasons across domains with Claude Sonnet.
+
+ATProto is the message bus between nodes, not just a publishing endpoint.
+The DID registry is the trust boundary — Synthesis only acts on observations from
+known, trusted node identities.
+
+**Current state: local prototype.** Synthesis runs on the same Pi and reads SQLite
+directly. This is a working stand-in until the ATProto publisher and firehose subscriber
+are built. The architecture is otherwise faithful to the distributed intent.
+
+---
+
 ## Current deployment state
 
 Running on a Raspberry Pi 5, Napa, California.
@@ -90,22 +113,39 @@ Required environment variables:
 - [ ] Let data accumulate (2-3 days) before evaluating synthesis quality
 - [ ] Monitor synthesis observations for cross-domain reasoning quality
 
-### Next feature: ATProto / Bluesky publisher
-When `flagged=true` in a synthesis observation, post `summary` to Bluesky.
-- The `summary` field in synthesis output is already written for a public audience
-- Need to: register an ATProto DID for the agent, design the lexicon, build publisher
-- Planned lexicon: `com.napavalley.monitor.observation`
-- Publisher should be a separate process that reads `synthesis.db` and posts when flagged
+### Next feature: ATProto publisher (closes the distributed loop)
 
-### Future: Distributed identity exploration
-- Move Synthesis agent to a separate device
-- Run domain MCP servers in HTTP mode (`--http` flag already implemented, ports 8000/8001/8002)
-- Explore workload identity: who is allowed to call a domain agent's MCP tools?
-- Candidate approaches: SPIFFE/SVID, PKI/X.509, charter-based authorisation
-- This is the bridge to the Ping Identity identity/trust work
+This is the central next step — it completes the distributed architecture:
+
+1. **Register ATProto DIDs** — one DID per domain agent (Watershed, Weather, AQI)
+   and a separate DID for the Synthesis agent. These are workload identities.
+
+2. **Build the domain publisher** — a separate process per stack that reads
+   `agent_observations` from local SQLite and posts new records to ATProto as
+   `com.napavalley.monitor.observation`. Runs after each domain agent cron job.
+
+3. **Design the lexicon** — `com.napavalley.monitor.observation` fields map to
+   the existing synthesis output schema. The lexicon is what makes records
+   machine-readable and filterable on the firehose.
+
+4. **Build the firehose subscriber** — replaces Synthesis's SQLite-direct reads.
+   Subscribes to the ATProto firehose, filters by lexicon, verifies author DIDs
+   against a trusted registry, accumulates observations, triggers Synthesis reasoning.
+
+5. **Trusted DID registry** — a simple list of known node DIDs that Synthesis
+   will accept observations from. The trust boundary for the distributed system.
+
+The `summary` field in synthesis output is already written for a public Bluesky post —
+high-risk events can surface as human-readable posts in addition to structured records.
+
+### Distributed identity exploration (follows ATProto work)
+- Move Synthesis agent to a separate device once firehose subscriber is built
+- Explore how node DIDs are provisioned, rotated, and revoked
+- What happens when Synthesis receives a record from a revoked DID mid-run?
+- This connects directly to Ping Identity's workload identity work
 
 ### Possible additions
-- AQI publisher to add more domain agents (separate Pi nodes upvalley)
+- Additional Pi nodes upvalley with their own domain agents and DIDs
 - Physical sensors via Pi GPIO → same collector interface, no agent changes needed
 - Additional USGS stations (Conn Creek, Milliken Creek tributaries)
 
@@ -120,10 +160,12 @@ restarted, or replaced without affecting the others.
 agent spawns the MCP server per tool call rather than running it persistently.
 Switching to persistent HTTP is one flag (`--http`) when needed.
 
-**Why does Synthesis read SQLite directly instead of via MCP?**
-Domain agent observations are already clean, structured conclusions.
-No need for the MCP abstraction layer when reading conclusions rather than raw data.
-This will change when Synthesis moves to a separate device.
+**Why does Synthesis read SQLite directly instead of via MCP (currently)?**
+Domain agent observations are already clean, structured conclusions — no need for
+the MCP abstraction layer when reading conclusions rather than raw data.
+This is a *prototype convenience*, not the target architecture. When Synthesis moves
+to a separate device, it will subscribe to the ATProto firehose instead of reading SQLite.
+The firehose subscriber is the planned replacement for the SQLite-direct reads.
 
 **Why Sonnet for Synthesis, Haiku for domain agents?**
 Cross-domain reasoning across multiple observation sets warrants more capability.

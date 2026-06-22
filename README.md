@@ -1,46 +1,84 @@
 # Agentic Watershed — Napa Valley Environmental Monitor
 
-An autonomous multi-agent environmental monitoring system running on a Raspberry Pi 5.
+An autonomous multi-agent environmental monitoring system for Napa Valley.
 Monitors the Napa River, local weather, and air quality — and reasons across all three
-to produce cross-domain risk assessments, published to Bluesky via ATProto.
+to produce cross-domain risk assessments.
 
 Built as a practical exploration of non-conversational agentic architecture:
 autonomous agents that perceive, reason, and act without a human in the loop.
+
+**Design intent: distributed from the start.** Node agents run on a Raspberry Pi,
+reason locally with Claude Haiku, and publish structured observations to ATProto/Bluesky
+using a custom lexicon. A Synthesis agent — intended to run on a *separate machine* —
+subscribes to the ATProto firehose, filters by that lexicon, verifies publisher DIDs
+against a trusted registry, and reasons across domains with Claude Sonnet.
+ATProto is the message bus, not just the output channel.
+
+The current deployment runs Synthesis on the same Pi and reads SQLite directly —
+a working prototype before the distributed pieces are in place.
 
 ---
 
 ## Architecture
 
 ```
-[USGS API]     → [Watershed Collector] → [watershed.db]
-[NWS API]      → [Weather Collector]   → [weather.db]
-[AirNow API]   → [AQI Collector]       → [aqi.db]
-                         ↓
-              [Domain MCP Servers]
-              (watershed / weather / aqi)
-                         ↓
-              [Domain Agents] (Claude Haiku)
-              Each reasons over its own domain,
-              writes structured conclusions to DB
-                         ↓
-              [Synthesis Agent] (Claude Sonnet)
-              Reads domain conclusions,
-              reasons across all three,
-              produces unified risk assessment
-                         ↓
-              [Bluesky Publisher] (planned)
-              Posts to ATProto when flagged
+                    ┌─────────────── Node (Raspberry Pi) ───────────────┐
+                    │                                                     │
+[USGS API]  → [Watershed Collector] → [watershed.db]                    │
+[NWS API]   → [Weather Collector]   → [weather.db]                      │
+[AirNow API]→ [AQI Collector]       → [aqi.db]                          │
+                         ↓                                               │
+              [Domain MCP Servers]                                       │
+              (watershed / weather / aqi)                                │
+                         ↓                                               │
+              [Domain Agents] (Claude Haiku)                            │
+              Each reasons over its own domain,                          │
+              writes structured conclusions,                             │
+              publishes to ATProto/Bluesky                              │
+              using custom lexicon + verified DID                       │
+                    └──────────────────────┬──────────────────────────┘
+                                           │ ATProto firehose
+                    ┌──────────────────────▼──────────────────────────┐
+                    │           Synthesis Machine (separate)           │
+                    │                                                   │
+                    │  [Synthesis Agent] (Claude Sonnet)               │
+                    │  Subscribes to firehose                          │
+                    │  Filters by custom lexicon                       │
+                    │  Verifies publisher DIDs against trusted registry│
+                    │  Reasons across domains                          │
+                    │  Produces unified risk assessment                │
+                    └───────────────────────────────────────────────┘
 ```
+
+### Current deployment (prototype)
+
+Synthesis runs on the same Pi and reads SQLite directly — skipping the ATProto
+transport until the publisher is built. The architecture is otherwise identical:
+domain agents write structured conclusions, Synthesis reads them and reasons across all three.
 
 ### Key design principles
 
-**Separation of concerns** — collectors know nothing about reasoning; agents know nothing about how data is stored. The MCP boundary separates perception from cognition.
+**ATProto as message bus** — domain agent observations are published as structured ATProto
+records using a custom lexicon (`com.napavalley.monitor.observation`). The Synthesis agent
+is a subscriber, not a database reader. This makes the system federable and the agents
+genuinely independent.
 
-**Stateless agents, persistent memory** — each agent run is independent. Memory is explicit: agents read prior `agent_observations` from the DB at the start of each run, and write new ones at the end. The next run reads these conclusions, not raw sensor data.
+**DID-based trust** — each publishing agent has an ATProto DID. The Synthesis agent
+verifies incoming records against a trusted DID registry before acting on them.
+A compromised or spoofed node is rejected at the boundary.
 
-**Conclusions, not data** — the synthesis agent reads what each domain agent *concluded*, not the underlying readings. Domain agents are specialists; the synthesiser reads their reports.
+**Separation of concerns** — collectors know nothing about reasoning; agents know nothing
+about how data is stored. The MCP boundary separates perception from cognition.
 
-**No conversation** — no human in the loop, no chat interface. Agents are cron-triggered, run to completion, and exit.
+**Stateless agents, persistent memory** — each agent run is independent. Memory is explicit:
+agents read prior `agent_observations` from the DB at the start of each run, and write new
+ones at the end. The next run reads these conclusions, not raw sensor data.
+
+**Conclusions, not data** — the synthesis agent reads what each domain agent *concluded*,
+not the underlying readings. Domain agents are specialists; the synthesiser reads their reports.
+
+**No conversation** — no human in the loop, no chat interface. Agents are cron-triggered,
+run to completion, and exit.
 
 ---
 
@@ -179,35 +217,44 @@ Each synthesis run produces a structured observation:
 
 ---
 
-## Planned: ATProto / Bluesky publisher
+## Next: ATProto publisher (the real message bus)
 
-When `flagged=true`, the synthesis agent's `summary` will be posted
-to Bluesky using a custom lexicon:
+Domain agents will publish observations to ATProto/Bluesky using a custom lexicon:
 
 ```
 com.napavalley.monitor.observation
 ```
 
-Fields will map to the synthesis output schema, making observations
-queryable and federable beyond just a text post.
+This is not just a posting mechanism — it's how the Synthesis agent receives
+domain observations in the distributed design. Fields map directly to the
+synthesis output schema, making observations queryable and federable.
+
+The publisher is a separate process per domain stack that:
+1. Reads `agent_observations` from the local SQLite DB
+2. Posts new (unflagged-for-publish) records to ATProto as `com.napavalley.monitor.observation`
+3. Uses the domain agent's registered DID as the author identity
 
 ---
 
-## Future: Distributed identity
+## Distributed identity
 
-Currently all agents run on a single Pi and share a filesystem.
-When distributed across nodes, each domain MCP server would run in HTTP mode
-and the synthesis agent would call tools over the network.
+Each node (Pi running domain agents) will have a registered ATProto DID.
+The Synthesis agent — running on a separate machine — subscribes to the firehose
+and filters for `com.napavalley.monitor.observation` records.
 
-This immediately surfaces workload identity questions:
-- How does the synthesis agent prove it's authorised to query domain agents?
-- How do domain agents verify the caller before releasing conclusions?
-- What happens when a node's identity is revoked mid-run?
+Before reasoning on any record, Synthesis verifies the author DID against a
+trusted registry. This is the workload identity boundary: a record from an
+unrecognised DID is discarded, not reasoned on.
 
-The architecture is designed to make this transition natural —
-the MCP tool contract is identical whether the transport is stdio or HTTPS.
-Candidate approaches: SPIFFE/SVID per node, charter-based authorisation,
-PKI/X.509 workload certificates.
+This surfaces interesting identity questions that connect to Ping Identity's work:
+- How does a node prove it's an authorised publisher?
+- How is the trusted DID registry maintained and updated?
+- What happens when a node's DID is revoked mid-run?
+- Can a compromised node publish plausible-looking records that fool Synthesis?
+
+The MCP servers already support HTTP mode (`--http` flag) for when domain agent
+tools need to be called across the network. Candidate workload identity approaches:
+SPIFFE/SVID per node, charter-based authorisation, PKI/X.509 certificates.
 
 ---
 

@@ -1,18 +1,39 @@
 # Synthesis Agent
 
 Cross-domain environmental risk assessment for Napa Valley.
-Reads concluded observations from all three domain agents and reasons across them.
+Reasons across observations from all three domain agents to produce unified risk assessments.
 
-## Architecture
+## Distributed architecture intent
+
+The Synthesis agent is designed to run on a **separate machine** from the node agents.
+In the target architecture:
+
+```
+ATProto firehose
+       ↓
+[Synthesis agent]  ← filters by com.napavalley.monitor.observation lexicon
+       ↓             verifies publisher DIDs against trusted registry
+[synthesis.db]
+       ↓
+(Bluesky post when flagged)
+```
+
+Domain agents on the Pi publish observations to ATProto as structured records.
+Synthesis subscribes to the firehose, filters by the custom lexicon, and verifies
+that each record's author DID is in the trusted registry before reasoning on it.
+
+## Current deployment (prototype)
 
 ```
 [Watershed agent_observations] ──┐
 [Weather agent_observations]   ──┼──→ [Synthesis agent] → [synthesis.db]
-[AQI agent_observations]       ──┘         ↓
-                                      (future: Bluesky publisher)
+[AQI agent_observations]       ──┘
 ```
 
-No collector. No MCP server. Reads SQLite directly from domain databases.
+Reads SQLite directly from domain databases on the same Pi.
+This is a working stand-in until the ATProto publisher and firehose subscriber are built.
+
+No collector. No MCP server.
 
 ## Key difference from domain agents
 
