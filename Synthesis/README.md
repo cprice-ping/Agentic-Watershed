@@ -6,10 +6,14 @@ Replaces the direct SQLite reads in the original synthesis/agent.py.
 ## Files
 
 - `subscriber.py` — long-running firehose daemon
-- `agent_atproto.py` — synthesis agent reading from subscriber.db
+- `agent/agent_atproto.py` — synthesis agent reading from subscriber.db
+- `agent/agent.py` — original synthesis agent (SQLite-direct, kept for comparison)
 - `watershed-subscriber.service` — systemd unit for the subscriber
 
-## Architecture
+## Distributed architecture intent
+
+The Synthesis agent is designed to run on a **separate machine** from the node agents.
+ATProto is the message bus — not just a publishing endpoint.
 
 ```
 Bluesky Firehose (wss://bsky.network)
@@ -22,7 +26,7 @@ Bluesky Firehose (wss://bsky.network)
          ↓
   agent_atproto.py (cron, 6h/18h)
   - reads subscriber.db
-  - reasons across domains
+  - reasons across domains with Sonnet
   - writes to synthesis.db
          ↓
   publisher.py (cron, 15min after agent)
@@ -30,12 +34,17 @@ Bluesky Firehose (wss://bsky.network)
   - publishes to Bluesky as napasynth01 DID (future)
 ```
 
+Domain agents on the Pi publish observations to ATProto as structured records using
+a custom lexicon (`com.napavalley.monitor.observation`) and a per-node verified DID.
+Synthesis subscribes to the firehose, filters by lexicon, and verifies author DIDs
+against `TRUSTED_PUBLISHERS` before acting on any record.
+
 ## Setup
 
 ```bash
 # subscriber.py lives alongside publisher.py in ATProto/
 cp subscriber.py ~/Agentic/ATProto/
-cp agent_atproto.py ~/Agentic/Synthesis/
+cp agent/agent_atproto.py ~/Agentic/Synthesis/agent/
 
 cd ~/Agentic/ATProto
 source .venv/bin/activate
@@ -80,7 +89,7 @@ tail -f ~/Agentic/ATProto/logs/subscriber.log
 ```bash
 cd ~/Agentic/Synthesis
 source .venv/bin/activate
-python agent_atproto.py --dry-run --verbose
+python agent/agent_atproto.py --dry-run --verbose
 ```
 
 ## Trusted publisher registry
@@ -100,20 +109,20 @@ accepting new records but existing ones remain in subscriber.db.
 
 ## Transition from direct SQLite synthesis
 
-The original `synthesis/agent.py` reads domain SQLite files directly (filesystem
-coupling). The new `agent_atproto.py` reads from `subscriber.db` (ATProto decoupled).
+The original `agent/agent.py` reads domain SQLite files directly (filesystem coupling).
+The new `agent/agent_atproto.py` reads from `subscriber.db` (ATProto decoupled).
 
 Run both in parallel during transition:
-- Keep original cron line for `synthesis/agent.py`
-- Add new cron line for `synthesis/agent_atproto.py`
+- Keep original cron line for `agent/agent.py`
+- Add new cron line for `agent/agent_atproto.py`
 - Compare outputs; switch fully when confident
 
 ```cron
 # Original (filesystem coupled)
-0 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
 
 # ATProto version (firehose decoupled)
-0 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent_atproto.py >> logs/agent_atproto.log 2>&1
+0 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent/agent_atproto.py >> logs/agent_atproto.log 2>&1
 ```
 
 ## What this enables
