@@ -205,6 +205,44 @@ nothing about the agent's history. When you have the chain, you can do much bett
 The IDP doesn't disappear — it becomes one possible way to bootstrap initial trust.
 But it is no longer the authority. The DID chain is.
 
+### Where the IDP re-enters — delegated agent authorisation
+
+The charter model handles agent-to-agent trust. But agents also need to act
+on behalf of people — and that's where the IDP has a legitimate role.
+
+The flow:
+
+1. **Person authenticates** to an IDP (Ping, in this case) in the normal way
+2. **Person delegates** to an agent DID for a specific scope:
+   "I authorise `napasynth01` (DID: `did:plc:...`) to access my environmental
+   data on MCP server X, for this purpose, for this duration"
+   — that delegation is a verifiable credential, signed by the person's identity,
+   referencing the agent's DID
+3. **Agent presents** its DID + the delegation credential to the MCP AuthZ server
+4. **AuthZ server issues a token** where:
+   - `sub` = the agent DID (not the person)
+   - `act` = the person (RFC 8693 Token Exchange — the human principal)
+   - scopes = what the agent is authorised to do on their behalf
+5. **MCP server** validates the token, sees both the agent identity and the human
+   principal, enforces policy against both
+
+Revocation is clean: revoke the delegation credential. The agent's DID and charter
+persist — it's just no longer authorised to act for that person. No token hunting,
+no session invalidation. The credential chain is the audit trail.
+
+This is OAuth 2.0 Token Exchange (RFC 8693) and Rich Authorization Requests
+(RFC 9396) done with agent-native primitives — where the subject is a DID with
+a charter and an observable history, not just an opaque client_id.
+
+**The demo this points toward:** this watershed synthesis agent, with its DID,
+its charter (declared in the DID document), and its public record of observations,
+asks a Ping-protected MCP server for a token to act on behalf of a user. The
+MCP AuthZ server (the one wired into this session) is exactly the thing that needs
+to understand that exchange. The IDP handles the human side. The DID chain handles
+the agent side. The AuthZ server holds them together.
+
+This is the bridge between the agentic watershed work and Ping's core product.
+
 ### Possible additions
 - Additional Pi nodes upvalley with their own domain agents and DIDs
 - Physical sensors via Pi GPIO → same collector interface, no agent changes needed
