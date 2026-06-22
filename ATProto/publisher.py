@@ -1,29 +1,20 @@
 """
-ATProto Publisher
------------------
-Reads domain agent observations from each stack's SQLite database
-and publishes them as ATProto records to a Bluesky PDS.
+ATProto Node Publisher
+----------------------
+Publishes domain agent observations (watershed, weather, aqi) to ATProto
+as the node identity (napanode1.bsky.social / napa-node-01 DID).
 
-Runs after each domain agent cycle — reads the most recent observation
-from each domain, publishes any that haven't been published yet.
+Domain observations are machine-readable, lexicon-tagged records intended
+for other agents to consume via the firehose subscriber. They are NOT
+the human-facing advisory — that's the synthesis publisher's job.
 
-Also publishes synthesis observations when available.
-
-Each record uses the net.cpricedomain.temp.monitor.observation lexicon.
-The node's DID is the publisher identity — established once via Bluesky
-account + custom domain handle.
-
-Setup required before first run:
-  1. Create a Bluesky account for the node (e.g. napa-node-01.bsky.social)
-  2. Generate an App Password in Settings → Privacy → App Passwords
-  3. Set BSKY_HANDLE and BSKY_APP_PASSWORD in /etc/environment
-  4. (Later) Set custom domain handle via DNS TXT record
+Identity: BSKY_HANDLE / BSKY_APP_PASSWORD → node DID (napa-node-01)
+          Set in /etc/environment on the Pi.
 
 Usage:
-  python publisher.py                  # publish any unpublished observations
-  python publisher.py --dry-run        # show what would be published
-  python publisher.py --domain all     # publish all domains (default)
-  python publisher.py --domain watershed  # publish single domain
+  python publisher.py                     # publish any unpublished observations
+  python publisher.py --dry-run           # show what would be published
+  python publisher.py --domain watershed  # single domain
 
 Cron (run after each agent cycle — 15 min after the last agent fires):
   15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
@@ -49,7 +40,6 @@ DB_PATHS = {
     "watershed": BASE / "Watershed" / "data" / "watershed.db",
     "weather":   BASE / "Weather"   / "data" / "weather.db",
     "aqi":       BASE / "AQI"       / "data" / "aqi.db",
-    "synthesis": BASE / "Synthesis" / "data" / "synthesis.db",
 }
 
 # Track what's been published — simple SQLite alongside the publisher
@@ -246,28 +236,6 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
     }
 
 
-def build_synthesis_record(row: dict, observed_at: str) -> dict:
-    return {
-        "$type": LEXICON,
-        "observedAt": observed_at,
-        "nodeId": NODE_ID,
-        "observationType": f"{LEXICON}#synthesis",
-        "summary": row.get("summary", ""),
-        "flagged": bool(row.get("flagged", False)),
-        "flagReason": row.get("flag_reason", ""),
-        "agentModel": "claude-sonnet-4-6",
-        "synthesis": {
-            "fireRisk": row.get("fire_risk", "none"),
-            "floodRisk": row.get("flood_risk", "none"),
-            "airQualityRisk": row.get("air_quality_risk", "none"),
-            "overallRisk": row.get("overall_risk", "none"),
-            "domainsObserved": ["watershed", "weather", "aqi"],
-            "nodeCount": 1,
-            "trustedPublishers": [],  # populated when distributed
-        },
-    }
-
-
 # ---------------------------------------------------------------------------
 # Post text builders
 # ---------------------------------------------------------------------------
@@ -289,39 +257,19 @@ def build_post_text(domain: str, row: dict) -> tuple[str, list[str]]:
         "watershed": "🌊 Watershed",
         "weather":   "🌤️ Weather",
         "aqi":       "💨 Air Quality",
-        "synthesis": "📊 Napa Valley Monitor",
     }
     label = domain_labels.get(domain, "📡 Monitor")
-
-    if domain == "synthesis":
-        overall = row.get("overall_risk", "none")
-        risk_emoji = {"none": "🟢", "low": "🟢", "moderate": "🟡",
-                      "high": "🟠", "extreme": "🔴"}.get(overall, "⚪")
-        header = f"{risk_emoji} {label} — {overall.upper()} risk"
-    elif flagged:
-        header = f"⚠️ {label} — conditions flagged"
-    else:
-        header = f"✅ {label} — normal conditions"
+    header = f"⚠️ {label} — conditions flagged" if flagged else f"✅ {label} — normal conditions"
 
     tags = ["NapaValley", "WatershedMonitor"]
-    if domain == "synthesis":
-        fire = row.get("fire_risk", "none")
-        if fire in ("high", "extreme"):
-            tags.append("FireWeather")
-        flood = row.get("flood_risk", "none")
-        if flood in ("high", "extreme"):
-            tags.append("FloodWatch")
     if flagged:
         tags.append("Flagged")
 
-    # Reserve space for header, newlines, and hashtags
     tag_str = " " + " ".join(f"#{t}" for t in tags)
-    overhead = len(header) + 2 + len(tag_str)  # header + \n\n + tags
-    summary_limit = 300 - overhead
-    summary = truncate_graphemes(summary, summary_limit)
+    overhead = len(header) + 2 + len(tag_str)
+    summary = truncate_graphemes(summary, 300 - overhead)
 
-    text = f"{header}\n\n{summary}"
-    return text, tags
+    return f"{header}\n\n{summary}", tags
 
 
 # ---------------------------------------------------------------------------
@@ -343,11 +291,6 @@ DOMAIN_CONFIG = {
         "table": "agent_observations",
         "db_key": "aqi",
         "builder": build_aqi_record,
-    },
-    "synthesis": {
-        "table": "synthesis_observations",
-        "db_key": "synthesis",
-        "builder": build_synthesis_record,
     },
 }
 
@@ -441,7 +384,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="ATProto publisher")
     parser.add_argument(
         "--domain",
-        choices=["all", "watershed", "weather", "aqi", "synthesis"],
+        choices=["all", "watershed", "weather", "aqi"],
         default="all",
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -459,7 +402,7 @@ def main() -> None:
     pub_conn = init_publisher_db()
 
     domains = (
-        ["watershed", "weather", "aqi", "synthesis"]
+        ["watershed", "weather", "aqi"]
         if args.domain == "all"
         else [args.domain]
     )
