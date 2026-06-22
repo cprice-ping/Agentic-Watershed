@@ -1,36 +1,43 @@
 """
-ATProto Publisher
------------------
-Reads domain agent observations from each stack's SQLite database
-and publishes them as ATProto records to a Bluesky PDS.
+ATProto Synthesis Publisher
+---------------------------
+Publishes synthesis (cross-domain advisory) observations to ATProto
+as the synthesis identity — a separate Bluesky account from the node.
 
-Runs after each domain agent cycle — reads the most recent observation
-from each domain, publishes any that haven't been published yet.
+This is a distinct identity from the node publisher (ATProto/publisher.py):
 
-Also publishes synthesis observations when available.
+  Node identity    (BSKY_HANDLE / BSKY_APP_PASSWORD)
+    → napanode1.bsky.social (napa-node-01)
+    → publishes: watershed, weather, aqi domain observations
+    → audience: other agents subscribing to the firehose
 
-Each record uses the net.cpricedomain.temp.monitor.observation lexicon.
-The node's DID is the publisher identity — established once via Bluesky
-account + custom domain handle.
+  Synthesis identity  (BSKY_SYNTH_HANDLE / BSKY_SYNTH_APP_PASSWORD)
+    → napasynth01.bsky.social (napa-synth-01)   ← needs creating
+    → publishes: cross-domain advisory summaries
+    → audience: people who want plain-language risk assessments
+
+Separating these identities means:
+  - A person can follow the synthesis account for advisories without
+    seeing the raw domain observations
+  - The synthesis DID can be moved to a different machine without
+    touching the node's credentials
+  - Trust is explicit: the synthesis account's DID is a distinct
+    identity from the node, with its own key material
 
 Setup required before first run:
-  1. Create a Bluesky account for the node (e.g. napa-node-01.bsky.social)
+  1. Create a Bluesky account for synthesis (e.g. napasynth01.bsky.social)
   2. Generate an App Password in Settings → Privacy → App Passwords
-  3. Set BSKY_HANDLE and BSKY_APP_PASSWORD in /etc/environment
-  4. (Later) Set custom domain handle via DNS TXT record
+  3. Set BSKY_SYNTH_HANDLE and BSKY_SYNTH_APP_PASSWORD in /etc/environment
 
 Usage:
-  python publisher.py                  # publish any unpublished observations
-  python publisher.py --dry-run        # show what would be published
-  python publisher.py --domain all     # publish all domains (default)
-  python publisher.py --domain watershed  # publish single domain
+  python publisher.py           # publish any unpublished synthesis observations
+  python publisher.py --dry-run
 
-Cron (run after each agent cycle — 15 min after the last agent fires):
-  15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
+Cron (run after synthesis agent — 15 min after agent fires):
+  15 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 """
 
 import argparse
-import json
 import logging
 import os
 import sqlite3
@@ -43,32 +50,23 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-BASE = Path("/home/cprice/Agentic")
+SYNTHESIS_DB = Path(__file__).parent / "data" / "synthesis.db"
+PUBLISHER_DB = Path(__file__).parent / "data" / "synth_publisher.db"
 
-DB_PATHS = {
-    "watershed": BASE / "Watershed" / "data" / "watershed.db",
-    "weather":   BASE / "Weather"   / "data" / "weather.db",
-    "aqi":       BASE / "AQI"       / "data" / "aqi.db",
-    "synthesis": BASE / "Synthesis" / "data" / "synthesis.db",
-}
-
-# Track what's been published — simple SQLite alongside the publisher
-PUBLISHER_DB = Path(__file__).parent / "data" / "publisher.db"
-
-BSKY_PDS = "https://bsky.social"
-LEXICON  = "net.cpricedomain.temp.monitor.observation"
-NODE_ID  = "napa-node-01"
+BSKY_PDS  = "https://bsky.social"
+LEXICON   = "net.cpricedomain.temp.monitor.observation"
+SYNTH_ID  = "napa-synth-01"
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
-log = logging.getLogger("atproto.publisher")
+log = logging.getLogger("atproto.synth_publisher")
 
 
 # ---------------------------------------------------------------------------
-# Publisher DB — tracks what's been published to avoid duplicates
+# Publisher DB
 # ---------------------------------------------------------------------------
 
 def init_publisher_db() -> sqlite3.Connection:
@@ -76,44 +74,39 @@ def init_publisher_db() -> sqlite3.Connection:
     conn = sqlite3.connect(PUBLISHER_DB)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS published (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            published_at    TEXT NOT NULL,
-            domain          TEXT NOT NULL,
-            source_id       INTEGER NOT NULL,   -- rowid from source DB
-            observed_at     TEXT NOT NULL,
-            at_uri          TEXT,               -- at://did/.../rkey
-            flagged         INTEGER DEFAULT 0,
-            UNIQUE(domain, source_id)
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            published_at TEXT NOT NULL,
+            source_id    INTEGER NOT NULL UNIQUE,
+            observed_at  TEXT NOT NULL,
+            at_uri       TEXT,
+            overall_risk TEXT,
+            flagged      INTEGER DEFAULT 0
         );
     """)
     conn.commit()
     return conn
 
 
-def already_published(conn: sqlite3.Connection, domain: str, source_id: int) -> bool:
-    row = conn.execute(
-        "SELECT id FROM published WHERE domain = ? AND source_id = ?",
-        (domain, source_id),
-    ).fetchone()
-    return row is not None
+def already_published(conn: sqlite3.Connection, source_id: int) -> bool:
+    return conn.execute(
+        "SELECT id FROM published WHERE source_id = ?", (source_id,)
+    ).fetchone() is not None
 
 
-def mark_published(conn: sqlite3.Connection, domain: str, source_id: int,
-                   observed_at: str, at_uri: str, flagged: bool) -> None:
+def mark_published(conn: sqlite3.Connection, source_id: int, observed_at: str,
+                   at_uri: str, overall_risk: str, flagged: bool) -> None:
     conn.execute(
-        """
-        INSERT OR IGNORE INTO published
-            (published_at, domain, source_id, observed_at, at_uri, flagged)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (datetime.now(timezone.utc).isoformat(), domain, source_id,
-         observed_at, at_uri, int(flagged)),
+        """INSERT OR IGNORE INTO published
+           (published_at, source_id, observed_at, at_uri, overall_risk, flagged)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (datetime.now(timezone.utc).isoformat(), source_id,
+         observed_at, at_uri, overall_risk, int(flagged)),
     )
     conn.commit()
 
 
 # ---------------------------------------------------------------------------
-# ATProto session
+# ATProto session (shared with node publisher — could extract to a lib later)
 # ---------------------------------------------------------------------------
 
 class BlueskySession:
@@ -136,34 +129,21 @@ class BlueskySession:
         log.info("Logged in as %s (DID: %s)", self.handle, self.did)
 
     def create_record(self, collection: str, record: dict) -> str:
-        """Create a record in the PDS. Returns the AT URI."""
         resp = self.client.post(
             "/xrpc/com.atproto.repo.createRecord",
             headers={"Authorization": f"Bearer {self.access_jwt}"},
-            json={
-                "repo": self.did,
-                "collection": collection,
-                "record": record,
-            },
+            json={"repo": self.did, "collection": collection, "record": record},
         )
         resp.raise_for_status()
         return resp.json().get("uri", "")
 
     def create_post(self, text: str, tags: list[str] = None) -> str:
-        """Create a Bluesky post (app.bsky.feed.post). Returns AT URI."""
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-        # Build facets for hashtags
-        # ATProto requires UTF-8 byte offsets, not character offsets
         facets = []
         full_text = text
         if tags:
-            # Build the full text first, then calculate offsets from it
-            tag_parts = [f"#{t}" for t in tags]
-            tag_str = " " + " ".join(tag_parts)
+            tag_str = " " + " ".join(f"#{t}" for t in tags)
             full_text = text + tag_str
-
-            # Calculate byte offsets by scanning the encoded full text
             full_bytes = full_text.encode("utf-8")
             for tag in tags:
                 needle = f"#{tag}".encode("utf-8")
@@ -171,315 +151,148 @@ class BlueskySession:
                 if idx == -1:
                     continue
                 facets.append({
-                    "index": {
-                        "byteStart": idx,
-                        "byteEnd": idx + len(needle),
-                    },
-                    "features": [{
-                        "$type": "app.bsky.richtext.facet#tag",
-                        "tag": tag,
-                    }],
+                    "index": {"byteStart": idx, "byteEnd": idx + len(needle)},
+                    "features": [{"$type": "app.bsky.richtext.facet#tag", "tag": tag}],
                 })
 
-        record = {
-            "$type": "app.bsky.feed.post",
-            "text": full_text,
-            "createdAt": now,
-        }
+        record = {"$type": "app.bsky.feed.post", "text": full_text, "createdAt": now}
         if facets:
             record["facets"] = facets
-
         return self.create_record("app.bsky.feed.post", record)
 
 
 # ---------------------------------------------------------------------------
-# Observation builders — convert DB rows to lexicon records
+# Build synthesis lexicon record and post
 # ---------------------------------------------------------------------------
 
-def build_watershed_record(row: dict, observed_at: str) -> dict:
+def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
     return {
         "$type": LEXICON,
         "observedAt": observed_at,
-        "nodeId": NODE_ID,
-        "observationType": f"{LEXICON}#watershed",
-        "summary": row.get("summary", ""),
-        "flagged": bool(row.get("flagged", False)),
-        "flagReason": "",
-        "agentModel": "claude-haiku-4-5",
-        "watershed": {
-            "stationIds": ["USGS-11458000", "USGS-11456000"],
-            "sevenDayTrend": "unknown",  # could be derived from DB in future
-        },
-    }
-
-
-def build_weather_record(row: dict, observed_at: str) -> dict:
-    return {
-        "$type": LEXICON,
-        "observedAt": observed_at,
-        "nodeId": NODE_ID,
-        "observationType": f"{LEXICON}#weather",
-        "summary": row.get("summary", ""),
-        "flagged": bool(row.get("flagged", False)),
-        "flagReason": "",
-        "agentModel": "claude-haiku-4-5",
-        "weather": {
-            "stationId": "KAPC",
-            "activeAlerts": [],
-        },
-    }
-
-
-def build_aqi_record(row: dict, observed_at: str) -> dict:
-    return {
-        "$type": LEXICON,
-        "observedAt": observed_at,
-        "nodeId": NODE_ID,
-        "observationType": f"{LEXICON}#aqi",
-        "summary": row.get("summary", ""),
-        "flagged": bool(row.get("flagged", False)),
-        "flagReason": "",
-        "agentModel": "claude-haiku-4-5",
-        "aqi": {
-            "reportingArea": "Napa",
-        },
-    }
-
-
-def build_synthesis_record(row: dict, observed_at: str) -> dict:
-    return {
-        "$type": LEXICON,
-        "observedAt": observed_at,
-        "nodeId": NODE_ID,
+        "nodeId": SYNTH_ID,
         "observationType": f"{LEXICON}#synthesis",
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": row.get("flag_reason", ""),
         "agentModel": "claude-sonnet-4-6",
         "synthesis": {
-            "fireRisk": row.get("fire_risk", "none"),
-            "floodRisk": row.get("flood_risk", "none"),
-            "airQualityRisk": row.get("air_quality_risk", "none"),
-            "overallRisk": row.get("overall_risk", "none"),
+            "fireRisk":        row.get("fire_risk", "none"),
+            "floodRisk":       row.get("flood_risk", "none"),
+            "airQualityRisk":  row.get("air_quality_risk", "none"),
+            "overallRisk":     row.get("overall_risk", "none"),
+            "synthesisDid":    synth_did,
             "domainsObserved": ["watershed", "weather", "aqi"],
-            "nodeCount": 1,
-            "trustedPublishers": [],  # populated when distributed
         },
     }
 
 
-# ---------------------------------------------------------------------------
-# Post text builders
-# ---------------------------------------------------------------------------
-
-def truncate_graphemes(text: str, limit: int) -> str:
-    """Truncate text to a grapheme limit. Uses character count as approximation
-    (close enough for ASCII-heavy environmental summaries)."""
-    if len(text) <= limit:
-        return text
-    return text[:limit - 1] + "…"
-
-
-def build_post_text(domain: str, row: dict) -> tuple[str, list[str]]:
-    """Returns (post_text, hashtags). Post text fits within Bluesky's 300 grapheme limit."""
-    summary = row.get("summary", "")
+def build_post(row: dict) -> tuple[str, list[str]]:
+    overall = row.get("overall_risk", "none")
     flagged = bool(row.get("flagged", False))
+    summary = row.get("summary", "")
 
-    domain_labels = {
-        "watershed": "🌊 Watershed",
-        "weather":   "🌤️ Weather",
-        "aqi":       "💨 Air Quality",
-        "synthesis": "📊 Napa Valley Monitor",
-    }
-    label = domain_labels.get(domain, "📡 Monitor")
+    risk_emoji = {"none": "🟢", "low": "🟢", "moderate": "🟡",
+                  "high": "🟠", "extreme": "🔴"}.get(overall, "⚪")
+    header = f"{risk_emoji} Napa Valley Advisory — {overall.upper()} risk"
 
-    if domain == "synthesis":
-        overall = row.get("overall_risk", "none")
-        risk_emoji = {"none": "🟢", "low": "🟢", "moderate": "🟡",
-                      "high": "🟠", "extreme": "🔴"}.get(overall, "⚪")
-        header = f"{risk_emoji} {label} — {overall.upper()} risk"
-    elif flagged:
-        header = f"⚠️ {label} — conditions flagged"
-    else:
-        header = f"✅ {label} — normal conditions"
-
-    tags = ["NapaValley", "WatershedMonitor"]
-    if domain == "synthesis":
-        fire = row.get("fire_risk", "none")
-        if fire in ("high", "extreme"):
-            tags.append("FireWeather")
-        flood = row.get("flood_risk", "none")
-        if flood in ("high", "extreme"):
-            tags.append("FloodWatch")
+    tags = ["NapaValley", "NapaFire", "NapaWeather"]
+    if row.get("fire_risk") in ("high", "extreme"):
+        tags.append("FireWeather")
+    if row.get("flood_risk") in ("high", "extreme"):
+        tags.append("FloodWatch")
     if flagged:
         tags.append("Flagged")
 
-    # Reserve space for header, newlines, and hashtags
     tag_str = " " + " ".join(f"#{t}" for t in tags)
-    overhead = len(header) + 2 + len(tag_str)  # header + \n\n + tags
-    summary_limit = 300 - overhead
-    summary = truncate_graphemes(summary, summary_limit)
+    overhead = len(header) + 2 + len(tag_str)
+    max_summary = 300 - overhead
+    if len(summary) > max_summary:
+        summary = summary[:max_summary - 1] + "…"
 
-    text = f"{header}\n\n{summary}"
-    return text, tags
-
-
-# ---------------------------------------------------------------------------
-# Domain publication
-# ---------------------------------------------------------------------------
-
-DOMAIN_CONFIG = {
-    "watershed": {
-        "table": "agent_observations",
-        "db_key": "watershed",
-        "builder": build_watershed_record,
-    },
-    "weather": {
-        "table": "agent_observations",
-        "db_key": "weather",
-        "builder": build_weather_record,
-    },
-    "aqi": {
-        "table": "agent_observations",
-        "db_key": "aqi",
-        "builder": build_aqi_record,
-    },
-    "synthesis": {
-        "table": "synthesis_observations",
-        "db_key": "synthesis",
-        "builder": build_synthesis_record,
-    },
-}
-
-
-def get_unpublished(domain: str, pub_conn: sqlite3.Connection) -> list[dict]:
-    """Get observations from domain DB that haven't been published yet."""
-    db_path = DB_PATHS[domain]
-    if not db_path.exists():
-        log.warning("DB not found for domain '%s': %s", domain, db_path)
-        return []
-
-    config = DOMAIN_CONFIG[domain]
-    try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"SELECT rowid AS source_id, * FROM {config['table']} ORDER BY rowid DESC LIMIT 20"
-        ).fetchall()
-        conn.close()
-    except sqlite3.Error as exc:
-        log.error("Failed to read %s DB: %s", domain, exc)
-        return []
-
-    unpublished = []
-    for row in rows:
-        source_id = row["source_id"]
-        if not already_published(pub_conn, domain, source_id):
-            unpublished.append(dict(row) | {"_source_id": source_id})
-
-    return unpublished
-
-
-def publish_domain(domain: str, session: BlueskySession,
-                   pub_conn: sqlite3.Connection, dry_run: bool) -> int:
-    unpublished = get_unpublished(domain, pub_conn)
-    if not unpublished:
-        log.info("[%s] Nothing new to publish", domain)
-        return 0
-
-    config = DOMAIN_CONFIG[domain]
-    count = 0
-
-    for row in reversed(unpublished):  # oldest first
-        source_id = row["_source_id"]
-        observed_at = row.get("observed_at") or row.get("observedAt", "")
-
-        # Normalise timestamp to Z suffix
-        if observed_at and "+00:00" in observed_at:
-            observed_at = observed_at.replace("+00:00", "Z")
-        if observed_at and not observed_at.endswith("Z"):
-            observed_at += "Z"
-
-        record = config["builder"](row, observed_at)
-        post_text, tags = build_post_text(domain, row)
-        flagged = bool(row.get("flagged", False))
-
-        if dry_run:
-            log.info("[%s] [DRY RUN] Would publish observation %d:", domain, source_id)
-            log.info("  Post: %s", post_text[:100] + "...")
-            log.info("  Flagged: %s  Tags: %s", flagged, tags)
-            mark_published(pub_conn, domain, source_id, observed_at, "dry-run", flagged)
-            count += 1
-            continue
-
-        try:
-            # Publish the structured lexicon record
-            record_uri = session.create_record(LEXICON, record)
-            log.info("[%s] Published lexicon record: %s", domain, record_uri)
-
-            # Publish the human-readable Bluesky post
-            post_uri = session.create_post(post_text, tags)
-            log.info("[%s] Published post: %s", domain, post_uri)
-
-            mark_published(pub_conn, domain, source_id, observed_at, record_uri, flagged)
-            count += 1
-
-        except httpx.HTTPStatusError as exc:
-            log.error("[%s] Failed to publish observation %d: %s — %s",
-                      domain, source_id, exc, exc.response.text)
-        except httpx.HTTPError as exc:
-            log.error("[%s] Failed to publish observation %d: %s", domain, source_id, exc)
-
-    return count
+    return f"{header}\n\n{summary}", tags
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="ATProto publisher")
-    parser.add_argument(
-        "--domain",
-        choices=["all", "watershed", "weather", "aqi", "synthesis"],
-        default="all",
-    )
+    parser = argparse.ArgumentParser(description="Synthesis ATProto publisher")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    handle = os.environ.get("BSKY_HANDLE", "").strip()
-    app_password = os.environ.get("BSKY_APP_PASSWORD", "").strip()
+    handle = os.environ.get("BSKY_SYNTH_HANDLE", "").strip()
+    app_password = os.environ.get("BSKY_SYNTH_APP_PASSWORD", "").strip()
 
-    if not handle or not app_password:
+    if not args.dry_run and (not handle or not app_password):
         raise RuntimeError(
-            "BSKY_HANDLE and BSKY_APP_PASSWORD must be set in /etc/environment. "
-            "Create a Bluesky account for this node and generate an App Password."
+            "BSKY_SYNTH_HANDLE and BSKY_SYNTH_APP_PASSWORD must be set. "
+            "Create a Bluesky account for the synthesis identity and generate an App Password. "
+            "This is a separate account from the node (BSKY_HANDLE)."
         )
+
+    if not SYNTHESIS_DB.exists():
+        log.warning("Synthesis DB not found at %s — nothing to publish", SYNTHESIS_DB)
+        return
 
     pub_conn = init_publisher_db()
 
-    domains = (
-        ["watershed", "weather", "aqi", "synthesis"]
-        if args.domain == "all"
-        else [args.domain]
-    )
+    # Read unpublished synthesis observations
+    conn = sqlite3.connect(SYNTHESIS_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT rowid AS source_id, * FROM synthesis_observations ORDER BY rowid DESC LIMIT 20"
+    ).fetchall()
+    conn.close()
 
-    log.info("=== ATProto Publisher starting ===")
-    log.info("Domains: %s  |  Dry run: %s", domains, args.dry_run)
+    unpublished = [dict(r) for r in rows if not already_published(pub_conn, r["source_id"])]
+    if not unpublished:
+        log.info("Nothing new to publish")
+        return
 
+    log.info("=== Synthesis Publisher starting ===")
+    log.info("Account: %s  |  Dry run: %s  |  Unpublished: %d",
+             handle or "(dry-run)", args.dry_run, len(unpublished))
+
+    session = None
     if not args.dry_run:
         session = BlueskySession(handle, app_password)
         session.login()
-    else:
-        session = None
 
-    total = 0
-    for domain in domains:
-        count = publish_domain(domain, session, pub_conn, dry_run=args.dry_run)
-        log.info("[%s] Published %d record(s)", domain, count)
-        total += count
+    for row in reversed(unpublished):  # oldest first
+        source_id = row["source_id"]
+        observed_at = (row.get("observed_at") or "").replace("+00:00", "Z")
+        if observed_at and not observed_at.endswith("Z"):
+            observed_at += "Z"
 
-    log.info("=== Publisher complete — %d total records published ===", total)
+        post_text, tags = build_post(row)
+        overall_risk = row.get("overall_risk", "none")
+        flagged = bool(row.get("flagged", False))
+
+        if args.dry_run:
+            log.info("[DRY RUN] Would publish synthesis observation %d:", source_id)
+            log.info("  Risk: %s  |  Flagged: %s", overall_risk, flagged)
+            log.info("  Post: %s", post_text[:120] + "...")
+            mark_published(pub_conn, source_id, observed_at, "dry-run", overall_risk, flagged)
+            continue
+
+        try:
+            record = build_synthesis_record(row, observed_at, session.did)
+            record_uri = session.create_record(LEXICON, record)
+            log.info("Published lexicon record: %s", record_uri)
+
+            post_uri = session.create_post(post_text, tags)
+            log.info("Published advisory post: %s", post_uri)
+
+            mark_published(pub_conn, source_id, observed_at, record_uri, overall_risk, flagged)
+
+        except httpx.HTTPStatusError as exc:
+            log.error("Failed to publish observation %d: %s — %s",
+                      source_id, exc, exc.response.text)
+        except httpx.HTTPError as exc:
+            log.error("Failed to publish observation %d: %s", source_id, exc)
+
+    log.info("=== Synthesis Publisher complete ===")
 
 
 if __name__ == "__main__":
