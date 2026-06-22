@@ -50,7 +50,9 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-SYNTHESIS_DB = Path(__file__).parent / "data" / "synthesis.db"
+# Pi layout:    /Agentic/Synthesis/data/synthesis.db
+# Laptop/repo:  Synthesis/agent/data/synthesis.db  (agent writes here when run in-tree)
+_DEFAULT_SYNTHESIS_DB = Path(__file__).parent / "agent" / "data" / "synthesis.db"
 PUBLISHER_DB = Path(__file__).parent / "data" / "synth_publisher.db"
 
 BSKY_PDS  = "https://bsky.social"
@@ -219,7 +221,11 @@ def build_post(row: dict) -> tuple[str, list[str]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Synthesis ATProto publisher")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--synthesis-db", type=Path, default=_DEFAULT_SYNTHESIS_DB,
+                        help="Path to synthesis.db (default: agent/data/synthesis.db)")
     args = parser.parse_args()
+
+    SYNTHESIS_DB = args.synthesis_db
 
     handle = os.environ.get("BSKY_SYNTH_HANDLE", "").strip()
     app_password = os.environ.get("BSKY_SYNTH_APP_PASSWORD", "").strip()
