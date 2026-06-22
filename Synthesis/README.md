@@ -1,120 +1,142 @@
-# Synthesis Agent
+# ATProto Synthesis Subscriber
 
-Cross-domain environmental risk assessment for Napa Valley.
-Reasons across observations from all three domain agents to produce unified risk assessments.
+Firehose subscriber and distributed synthesis agent.
+Replaces the direct SQLite reads in the original synthesis/agent.py.
+
+## Files
+
+- `subscriber.py` — long-running firehose daemon
+- `agent/agent_atproto.py` — synthesis agent reading from subscriber.db
+- `agent/agent.py` — original synthesis agent (SQLite-direct, kept for comparison)
+- `watershed-subscriber.service` — systemd unit for the subscriber
 
 ## Distributed architecture intent
 
 The Synthesis agent is designed to run on a **separate machine** from the node agents.
-In the target architecture:
+ATProto is the message bus — not just a publishing endpoint.
 
 ```
-ATProto firehose
-       ↓
-[Synthesis agent]  ← filters by com.napavalley.monitor.observation lexicon
-       ↓             verifies publisher DIDs against trusted registry
-[synthesis.db]
-       ↓
-(Bluesky post when flagged)
+Bluesky Firehose (wss://bsky.network)
+         ↓
+  subscriber.py (daemon)
+  - verifies DID ∈ trusted registry
+  - filters by LEXICON NSID
+  - decodes CAR blocks
+  - stores to subscriber.db
+         ↓
+  agent_atproto.py (cron, 6h/18h)
+  - reads subscriber.db
+  - reasons across domains with Sonnet
+  - writes to synthesis.db
+         ↓
+  publisher.py (cron, 15min after agent)
+  - reads synthesis.db
+  - publishes to Bluesky as napasynth01 DID (future)
 ```
 
-Domain agents on the Pi publish observations to ATProto as structured records.
-Synthesis subscribes to the firehose, filters by the custom lexicon, and verifies
-that each record's author DID is in the trusted registry before reasoning on it.
-
-## Current deployment (prototype)
-
-```
-[Watershed agent_observations] ──┐
-[Weather agent_observations]   ──┼──→ [Synthesis agent] → [synthesis.db]
-[AQI agent_observations]       ──┘
-```
-
-Reads SQLite directly from domain databases on the same Pi.
-This is a working stand-in until the ATProto publisher and firehose subscriber are built.
-
-No collector. No MCP server.
-
-## Key difference from domain agents
-
-Domain agents ask: "What is happening in my domain?"
-The synthesis agent asks: "What does the combination mean?"
-
-The interesting signal is in intersections:
-- High temp + low humidity + NE winds + PM2.5 rising = fire risk corridor
-- Rising river + active precipitation + flood watch = act now
-- PM2.5 spike alone = smoke somewhere upwind, monitor wind direction
+Domain agents on the Pi publish observations to ATProto as structured records using
+a custom lexicon (`com.napavalley.monitor.observation`) and a per-node verified DID.
+Synthesis subscribes to the firehose, filters by lexicon, and verifies author DIDs
+against `TRUSTED_PUBLISHERS` before acting on any record.
 
 ## Setup
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install anthropic
+# subscriber.py lives alongside publisher.py in ATProto/
+cp subscriber.py ~/Agentic/ATProto/
+cp agent/agent_atproto.py ~/Agentic/Synthesis/agent/
 
-export ANTHROPIC_API_KEY=sk-ant-...
+cd ~/Agentic/ATProto
+source .venv/bin/activate
+pip install atproto   # adds firehose support to existing venv
 ```
 
-Note: only `anthropic` needed — no MCP, no httpx. Reads SQLite directly.
-
-## Usage
+## Test the subscriber
 
 ```bash
-# First run (domain agents may not have data yet — that's fine)
-python agent/agent.py --dry-run --verbose
-
-# Live run
-python agent/agent.py
-
-# Use Sonnet for richer cross-domain reasoning (default)
-python agent/agent.py --model sonnet
-
-# Read more domain history per run
-python agent/agent.py --observations 10
+cd ~/Agentic/ATProto
+source .venv/bin/activate
+python subscriber.py --once --timeout 120
 ```
 
-## Cron
+This connects to the firehose for 2 minutes and prints any matching records.
+Since your node publishes every 6 hours, you may need to wait or trigger
+a manual publisher run first.
+
+Check what's been received:
+```bash
+sqlite3 data/subscriber.db \
+  "SELECT received_at, node_id, observation_type, flagged, substr(summary,1,80) FROM observations ORDER BY received_at DESC LIMIT 10;"
+```
+
+## Run subscriber as a daemon (systemd)
+
+```bash
+sudo cp watershed-subscriber.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable watershed-subscriber
+sudo systemctl start watershed-subscriber
+sudo systemctl status watershed-subscriber
+```
+
+Check logs:
+```bash
+tail -f ~/Agentic/ATProto/logs/subscriber.log
+```
+
+## Run the ATProto synthesis agent
+
+```bash
+cd ~/Agentic/Synthesis
+source .venv/bin/activate
+python agent/agent_atproto.py --dry-run --verbose
+```
+
+## Trusted publisher registry
+
+In `subscriber.py`, the `TRUSTED_PUBLISHERS` dict maps DID → node name:
+
+```python
+TRUSTED_PUBLISHERS = {
+    "did:plc:demqbviei2gxjjq2eqnm2rpi": "napa-node-01",
+    # "did:plc:...": "napa-node-02",
+}
+```
+
+Adding a new node: add its DID here. The subscriber starts accepting its records
+immediately. No other configuration needed. Removing a DID: the subscriber stops
+accepting new records but existing ones remain in subscriber.db.
+
+## Transition from direct SQLite synthesis
+
+The original `agent/agent.py` reads domain SQLite files directly (filesystem coupling).
+The new `agent/agent_atproto.py` reads from `subscriber.db` (ATProto decoupled).
+
+Run both in parallel during transition:
+- Keep original cron line for `agent/agent.py`
+- Add new cron line for `agent/agent_atproto.py`
+- Compare outputs; switch fully when confident
 
 ```cron
-# Synthesis runs twice daily — no need to run every 6 hours
-# Offset from domain agents (which run at :00, :01, :02) — run at :03
-0 6,18 * * * cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
+# Original (filesystem coupled)
+0 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
+
+# ATProto version (firehose decoupled)
+0 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent/agent_atproto.py >> logs/agent_atproto.log 2>&1
 ```
 
-## Full cron schedule — all four stacks
+## What this enables
 
-```
-Watershed collector:  */15 * * * *
-Weather collector:    */30 * * * *
-AQI collector:        */30 * * * *
+Once the subscriber is running and agent_atproto.py is working:
 
-Watershed agent:      0 0,6,12,18 * * *
-Weather agent:        0 1,7,13,19 * * *
-AQI agent:            0 2,8,14,20 * * *
+1. **Synthesis can move off the Pi** — copy subscriber.db anywhere, or point
+   a remote subscriber at the same firehose. The synthesis agent follows the data.
 
-Synthesis agent:      0 6,18 * * *       ← reads after morning/evening domain runs
-```
+2. **Multiple nodes, zero config** — a second node (napa-node-02) just needs its
+   DID added to TRUSTED_PUBLISHERS. The subscriber picks up its records automatically.
 
-## Output schema
+3. **Trust is explicit** — the registry is the trust boundary. Unknown nodes
+   publishing valid lexicon records are silently ignored.
 
-Each synthesis observation stores:
-- `summary`          — plain language, suitable for Bluesky post
-- `fire_risk`        — none/low/moderate/high/extreme
-- `flood_risk`       — none/low/moderate/high/extreme
-- `air_quality_risk` — none/low/moderate/high/extreme
-- `overall_risk`     — none/low/moderate/high/extreme
-- `flagged`          — true if overall_risk ≥ moderate or any domain = high/extreme
-- `flag_reason`      — brief reason if flagged
-- `reasoning`        — full cross-domain reasoning
-
-## Model choice
-
-Synthesis defaults to Sonnet (not Haiku) because cross-domain reasoning
-across 5 domain observations each is more complex than single-domain assessment.
-Use `--model opus` for the most thorough analysis.
-
-## Next: Bluesky publisher
-
-When flagged=true, post summary to ATProto.
-The summary field is already written for a public audience.
-```
+4. **Provenance is auditable** — every observation in subscriber.db has a
+   publisher_did. The synthesis reasoning includes which nodes contributed.
