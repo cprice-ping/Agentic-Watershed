@@ -4,7 +4,7 @@ Living document. Update this as the project evolves so coding agents and
 collaborators can pick up where things left off without needing the full
 conversation history.
 
-Last updated: 2026-06-22
+Last updated: 2026-06-23
 
 ---
 
@@ -56,7 +56,10 @@ All stacks deployed under `/home/cprice/Agentic/`.
 
 | Schedule | Status |
 |----------|--------|
-| 6h, 18h | ✅ Running live (not dry-run), writing to `synthesis.db` |
+| 6h, 18h UTC | ✅ Running in Azure Container Apps Job (`synthesis-agent`, `rg-agentic-watershed`, `westus2`) |
+
+The Synthesis agent now runs in Azure, not on the laptop. Pi (edge) → ATProto → Azure (cloud) → Bluesky.
+First cloud run confirmed 2026-06-23 17:33 UTC. Advisory posts visible at `napasynth01.bsky.social`.
 
 Accumulating domain observations — first meaningful cross-domain synthesis
 expected after 2-3 days of data. Baseline established on first run (2026-06-22):
@@ -115,23 +118,45 @@ Required environment variables:
 - [x] Synthesis publisher — separate identity (`napasynth01.bsky.social`), advisory framing
 - [x] End-to-end pipeline confirmed: Pi nodes → ATProto → Synthesis agent → advisory post
 - [x] TRUSTED_PUBLISHERS dict in place as interim trust boundary (did:web registry replaces this)
+- [x] Synthesis agent containerised and deployable to Azure Container Apps Job
 
-### Next: host Synthesis agent outside the laptop
+### Host Synthesis agent outside the laptop — DONE
 
-The Synthesis agent currently runs on a laptop (cron, local `~/.venv`). That's not
-a reliable execution environment — laptop sleeps, travels, closes. The node agents
-on the Pi run continuously; Synthesis should too.
+The Synthesis agent is now containerised and deployable to **Azure Container Apps Jobs**,
+replacing the laptop cron with a cloud-hosted, cron-scheduled run-to-completion job.
 
-**Target: Azure Container Instance (ACI)**
+**What was built:**
 
-Simple, low-cost, no k8s overhead for a single cron-triggered container:
-- Container image built from `Synthesis/` — agent + subscriber + publisher
-- Cron replaced by ACI's restart policy or Azure Container Apps job schedule
-- Env vars (`ANTHROPIC_API_KEY`, `BSKY_SYNTH_HANDLE`, `BSKY_SYNTH_APP_PASSWORD`)
-  injected as ACI environment variables or Azure Key Vault references
-- SQLite replaced by a small Azure-hosted Postgres (or keep SQLite on a mounted
-  Azure File Share — simpler for now)
-- Demonstrates the architecture as genuinely distributed: Pi (edge) → ATProto → Azure (cloud)
+| File | Purpose |
+|------|---------|
+| `Synthesis/requirements.txt` | Python dependencies (anthropic, httpx, atproto) |
+| `Synthesis/Dockerfile` | Container image — copies subscriber, agent, publisher |
+| `Synthesis/entrypoint.sh` | Pipeline script: subscriber → agent_atproto → publisher |
+| `Synthesis/deploy/deploy.sh` | Azure CLI provisioning script (full infrastructure + image) |
+| `Synthesis/deploy/job.yaml` | Container Apps Job spec template (image + volume mount) |
+
+**Architecture:**
+- Image built via `az acr build` — no local Docker daemon required
+- SQLite databases persisted on an **Azure File Share** mounted at `/data`
+  (subscriber.db, synthesis.db, synth_publisher.db)
+- Secrets (`ANTHROPIC_API_KEY`, `BSKY_SYNTH_HANDLE`, `BSKY_SYNTH_APP_PASSWORD`)
+  injected as Container Apps secrets — never stored in the image or YAML
+- Managed identity granted `AcrPull` on the registry — no credential rotation needed
+- Schedule: `0 6,18 * * *` UTC (matching existing twice-daily cadence)
+- Pipeline runs to completion in under 10 min; job is killed after 600s if hung
+
+**To deploy:**
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export BSKY_SYNTH_HANDLE=napasynth01.bsky.social
+export BSKY_SYNTH_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
+cd Synthesis/deploy && ./deploy.sh
+```
+
+**To trigger a manual run:**
+```bash
+az containerapp job start --name synthesis-agent --resource-group rg-agentic-watershed
+```
 
 This is also the first non-local execution of a registry-aware agent once the
 did:web registry is ready — the Synthesis DID will be provisioned against the
@@ -349,6 +374,98 @@ This is the bridge between the agentic watershed work and Ping's core product.
 - Additional Pi nodes upvalley with their own domain agents and DIDs
 - Physical sensors via Pi GPIO → same collector interface, no agent changes needed
 - Additional USGS stations (Conn Creek, Milliken Creek tributaries)
+
+### Next: move Synthesis agent from reactive to predictive
+
+**The goal:** the agent should notice trends, anticipate risk windows, and eventually
+compare its predictions against outcomes — building a track record over time.
+
+Four phases, each buildable independently:
+
+---
+
+**Phase 1 — Better context ✅ DONE (2026-06-23)**
+
+Shipped in `agent_atproto.py`:
+
+- **Deeper memory**: `read_recent_synthesis()` now returns 14 observations (7 days of
+  twice-daily runs) presented oldest-first as a timeline. The agent can now see weekly
+  drift, not just recent state.
+
+- **Seasonal calendar**: `seasonal_context()` function computes and injects the current
+  date, fire season status (day N of 183), days until Diablo wind season onset, and
+  flood season status into every prompt. Anchors the model in the actual calendar year.
+
+- **Domain trajectories**: per-type observation cap increased from 5 → 6. Domain
+  observations are trimmed of noise fields (publisher DID, agent model) so the token
+  budget goes to signal.
+
+- **Updated system prompt**: explicitly instructs the agent to reason about trajectory
+  and flag developing trends even when current conditions are still benign.
+
+---
+
+**Phase 2 — Explicit trend calculation ✅ DONE (2026-06-23)**
+
+Shipped in `agent_atproto.py`:
+
+- `compute_trends()` function extracts numeric fields from `raw_record` JSON in
+  `subscriber.db` for each domain and computes deltas across the observation window.
+
+- Metrics tracked:
+  - Watershed: `dischargeMeanCfs`, `gageHeightMaxFt`
+  - Weather: `temperatureF`, `humidityPct`, `windSpeedMph`, `precipMm24h`,
+    `windDirectionDeg` (with Diablo quadrant detection), `windPattern` (categorical change)
+  - AQI: `pm25Aqi`, `ozoneAqi`
+
+- Each metric shows: old → new value, delta, hours elapsed, direction, and a plain-language
+  risk note (e.g. *"humidity: -18% over 12h, falling — ⚠ fire risk building"*).
+
+- Diablo wind detector: flags automatically when `windDirectionDeg` enters the 22°–112°
+  NE/E quadrant with `⚠ DIABLO QUADRANT (NE/E offshore flow)`.
+
+- Trends section is inserted after the domain observations in every prompt. If fewer than
+  2 data points exist per domain, the section is omitted gracefully.
+
+---
+
+**Phase 3 — Prediction and outcome tracking (next)**
+
+This is the feedback loop that makes the agent genuinely learn:
+
+- When the agent flags a risk (`flagged=True` or `overall_risk >= moderate`), write a
+  **prediction record** to `synthesis.db`:
+  `{predicted_at, risk_type, risk_level, prediction_horizon_hours, resolved: false}`
+
+- On each subsequent run, check open predictions: did the predicted condition
+  materialise? Resolution criteria are objective (e.g. *flood risk predicted →
+  gage height exceeded X cfs within 24h*).
+
+- Feed the prediction history into future prompts:
+  *"Your last 5 flagged predictions: [3 confirmed, 1 false positive, 1 pending]."*
+
+- The agent's published ATProto record chain is already the public audit trail —
+  the prediction records just close the loop privately.
+
+- **Start now** — begin accumulating the prediction ledger even though there's little
+  to resolve yet. First real test: Diablo wind season (September–November).
+
+*Changes needed:* new `predictions` table in `synthesis.db`, new `check_predictions()`
+function, updated system prompt, resolution logic in `gather_context()`.
+
+---
+
+**Phase 4 — Calibration (post-autumn)**
+
+Once Phase 3 has accumulated a season of data:
+
+- Track precision/recall by risk type and season.
+- Feed a calibration summary into the system prompt.
+- Seasonal recalibration: a separate monthly job updates the calibration summary
+  on the Azure File Share, read by the synthesis agent on each run.
+
+*Changes needed:* calibration job (new cron), calibration summary file on Azure
+File Share, system prompt update to include it.
 
 ---
 

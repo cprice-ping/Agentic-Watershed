@@ -1,0 +1,101 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "anthropicApiKey": {
+      "type": "securestring"
+    },
+    "bskySynthHandle": {
+      "type": "string"
+    },
+    "bskySynthAppPassword": {
+      "type": "securestring"
+    },
+    "acrPassword": {
+      "type": "securestring"
+    },
+    "acrLoginServer": {
+      "type": "string"
+    },
+    "acrUsername": {
+      "type": "string"
+    },
+    "fullImage": {
+      "type": "string"
+    },
+    "environmentId": {
+      "type": "string"
+    },
+    "jobName": {
+      "type": "string",
+      "defaultValue": "synthesis-agent"
+    },
+    "cronExpression": {
+      "type": "string",
+      "defaultValue": "0 6,18 * * *"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/jobs",
+      "apiVersion": "2024-03-01",
+      "name": "[parameters('jobName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "environmentId": "[parameters('environmentId')]",
+        "configuration": {
+          "triggerType": "Schedule",
+          "scheduleTriggerConfig": {
+            "cronExpression": "[parameters('cronExpression')]",
+            "parallelism": 1,
+            "replicaCompletionCount": 1
+          },
+          "replicaTimeout": 600,
+          "secrets": [
+            { "name": "anthropic-api-key",      "value": "[parameters('anthropicApiKey')]" },
+            { "name": "bsky-synth-handle",       "value": "[parameters('bskySynthHandle')]" },
+            { "name": "bsky-synth-app-password", "value": "[parameters('bskySynthAppPassword')]" },
+            { "name": "acr-password",            "value": "[parameters('acrPassword')]" }
+          ],
+          "registries": [
+            {
+              "server":            "[parameters('acrLoginServer')]",
+              "username":          "[parameters('acrUsername')]",
+              "passwordSecretRef": "acr-password"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name":  "synthesis",
+              "image": "[parameters('fullImage')]",
+              "resources": {
+                "cpu":    0.5,
+                "memory": "1Gi"
+              },
+              "env": [
+                { "name": "ANTHROPIC_API_KEY",       "secretRef": "anthropic-api-key" },
+                { "name": "BSKY_SYNTH_HANDLE",       "secretRef": "bsky-synth-handle" },
+                { "name": "BSKY_SYNTH_APP_PASSWORD", "secretRef": "bsky-synth-app-password" }
+              ],
+              "volumeMounts": [
+                { "volumeName": "synthesis-data", "mountPath": "/data" }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name":        "synthesis-data",
+              "storageType": "AzureFile",
+              "storageName": "synthesis-data"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

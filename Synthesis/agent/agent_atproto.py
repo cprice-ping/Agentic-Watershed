@@ -28,6 +28,7 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 import anthropic
 
@@ -51,27 +52,36 @@ DEFAULT_MODEL = "sonnet"
 
 SYSTEM_PROMPT = """You are a cross-domain environmental risk assessment agent for Napa Valley, California.
 
-You receive concluded observations from autonomous monitoring nodes, published via ATProto
-and collected from the firehose. Each observation was produced by a domain agent running
-on a trusted node and includes a summary, flagged status, and observation type.
+You receive:
+  1. A seasonal calendar showing where we are in the fire/flood year and key upcoming transitions
+  2. Your own recent synthesis history (memory) — previous risk assessments to reason about trends
+  3. Current domain observations from autonomous monitoring nodes (watershed, weather, AQI)
+     published via ATProto by trusted nodes with verified DIDs
 
-Your job is to reason ACROSS domains to produce a unified risk picture.
+Your job is to reason ACROSS domains and ACROSS time to produce a unified risk picture.
+Don't just assess current conditions — assess trajectory. Are conditions improving or
+deteriorating? Are we approaching a known risk window? How does today compare to recent days?
 
 FIRE RISK compounds when:
   - Weather: high temp (≥90°F), low humidity (≤25%), wind ≥15mph, especially NE/E (Diablo winds)
   - AQI: PM2.5 rising or elevated — may indicate fire already started upwind
   - Watershed: low river flow (summer base conditions reduce firefighting water availability)
+  Diablo winds (NE/E offshore flow) are the dominant risk multiplier in autumn. Even moderate
+  temps with NE winds warrant elevated vigilance during September–November.
 
 FLOOD RISK compounds when:
-  - Watershed: rising gage height or flow rate
-  - Weather: active precipitation or flood watch active
+  - Watershed: rising gage height or flow rate, especially rapid rise
+  - Weather: active precipitation, saturated ground, or atmospheric river event
 
 SMOKE is primarily AQI but wind direction matters:
-  - NE/E winds + PM2.5 spike = smoke from interior, act now
+  - NE/E winds + PM2.5 spike = smoke from interior (fire nearby), act now
   - SW winds + PM2.5 = coastal aerosol, likely transient
 
-Note: observations come from ATProto records published by nodes with verified DIDs.
-The trustedPublishers field tells you which nodes contributed.
+TRAJECTORY SIGNALS to look for across your recent history:
+  - Gradual drying trend in humidity over multiple days = fire risk building
+  - AQI creeping up over several runs = smoke accumulating, monitor
+  - River flow declining faster than seasonal baseline = drought stress developing
+  - Wind direction shifting from SW/W to NE/E = offshore flow pattern developing
 
 You must respond in this exact JSON format (no markdown, no extra text):
 {
@@ -82,10 +92,11 @@ You must respond in this exact JSON format (no markdown, no extra text):
   "overall_risk": "none|low|moderate|high|extreme",
   "flagged": true or false,
   "flag_reason": "brief reason if flagged, empty string if not",
-  "reasoning": "Full cross-domain reasoning"
+  "reasoning": "Full cross-domain reasoning including trajectory assessment and seasonal context"
 }
 
-flagged=true if overall_risk is moderate or higher, OR if any single domain is high/extreme.
+flagged=true if overall_risk is moderate or higher, OR if any single domain is high/extreme,
+OR if a concerning trajectory is developing even if current conditions are still benign.
 """
 
 logging.basicConfig(
@@ -142,9 +153,13 @@ def read_recent_observations(lookback_hours: float = 24.0,
     return grouped
 
 
-def read_recent_synthesis(n: int = 3,
+def read_recent_synthesis(n: int = 14,
                           synthesis_db: Path = _DEFAULT_SYNTHESIS_DB) -> list[dict]:
-    """Read recent synthesis observations for memory/continuity."""
+    """Read recent synthesis observations for memory/continuity.
+
+    Default 14 = 7 days of twice-daily runs — enough to see weekly drift
+    and detect slow-moving trends (gradual drying, creeping AQI, etc.).
+    """
     if not synthesis_db.exists():
         return []
     try:
@@ -166,28 +181,258 @@ def read_recent_synthesis(n: int = 3,
         return []
 
 
+def seasonal_context() -> str:
+    """Return a dynamic seasonal calendar for Napa Valley based on the current date.
+
+    Gives the agent explicit awareness of where we are in the fire/flood year
+    and how far we are from key risk transitions — without relying on the model
+    to know the current date from training data.
+    """
+    now = datetime.now(timezone.utc)
+    doy = now.timetuple().tm_yday  # 1-365
+    date_str = now.strftime("%B %d, %Y")
+
+    # Approximate day-of-year boundaries (non-leap year)
+    FIRE_START        = 152   # June 1
+    DIABLO_START      = 258   # September 15  — offshore NE/E wind season begins
+    DIABLO_PEAK       = 280   # October 7     — historically highest ignition risk
+    DIABLO_END        = 319   # November 15
+    FIRE_END          = 334   # November 30
+    WET_ONSET         = 305   # November 1    — first significant rain probability
+    FLOOD_START       = 335   # December 1
+    FLOOD_END         = 90    # March 31
+
+    lines = [f"Current date: {date_str} (day {doy} of year)"]
+
+    # ── Fire season ────────────────────────────────────────────────────────
+    if FIRE_START <= doy <= FIRE_END:
+        days_in        = doy - FIRE_START + 1
+        days_remaining = FIRE_END - doy
+        lines.append(
+            f"Fire season: ACTIVE — day {days_in} of "
+            f"{FIRE_END - FIRE_START + 1} ({days_remaining} days remaining)"
+        )
+    elif doy < FIRE_START:
+        lines.append(f"Fire season: not yet active ({FIRE_START - doy} days until June 1)")
+    else:
+        lines.append("Fire season: ended for this calendar year")
+
+    # ── Diablo wind season ─────────────────────────────────────────────────
+    if DIABLO_START <= doy <= DIABLO_END:
+        days_in = doy - DIABLO_START + 1
+        to_peak = max(0, DIABLO_PEAK - doy)
+        peak_note = f", {to_peak} days to historical peak" if to_peak > 0 else " (past peak)"
+        lines.append(
+            f"Diablo wind season: ACTIVE — day {days_in}{peak_note}. "
+            f"NE/E winds dramatically increase fire risk. Highest vigilance warranted."
+        )
+    elif FIRE_START <= doy < DIABLO_START:
+        days_until = DIABLO_START - doy
+        lines.append(
+            f"Diablo wind season: {days_until} days until onset (September 15). "
+            f"Begin monitoring wind direction closely as onset approaches."
+        )
+    else:
+        lines.append("Diablo wind season: not active")
+
+    # ── Wet season / flood risk ────────────────────────────────────────────
+    if doy <= FLOOD_END:          # Jan 1 – Mar 31
+        lines.append(f"Flood season: ACTIVE — {FLOOD_END - doy} days remaining (through March 31)")
+    elif doy >= FLOOD_START:      # Dec 1+
+        lines.append("Flood season: ACTIVE — early season, atmospheric rivers possible")
+    elif WET_ONSET <= doy < FLOOD_START:   # Nov 1 – Nov 30
+        lines.append(f"Flood season: {FLOOD_START - doy} days until onset. First significant rain events possible now.")
+    elif DIABLO_END < doy < WET_ONSET:     # mid-Nov shoulder
+        lines.append(f"Flood season: {FLOOD_START - doy} days until onset (December 1)")
+    else:                          # Apr – Oct
+        lines.append("Flood season: not active (dry season)")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Trend calculation (Phase 2)
+# ---------------------------------------------------------------------------
+
+_COMPASS = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
+            "S","SSW","SW","WSW","W","WNW","NW","NNW"]
+
+def _deg_to_compass(deg: float) -> str:
+    return _COMPASS[round(deg / 22.5) % 16]
+
+def _is_diablo(deg: float) -> bool:
+    """NNE–ESE range (22°–112°) — offshore NE/E Diablo wind pattern."""
+    return 22 <= deg <= 112
+
+
+def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
+    """Extract numeric metrics from raw domain records and compute deltas
+    across the observation window.
+
+    The agent receives prose summaries from domain nodes, but prose hides
+    direction. This function makes trends explicit and pre-calculated so the
+    agent doesn't have to infer "humidity is falling" from two sentences —
+    it sees "-18% over 12h (falling) — fire risk building".
+
+    Returns a formatted section string, or None if fewer than 2 data points
+    exist for every domain (nothing to compute).
+    """
+
+    # (lexicon_field, display_label, unit, rise_note, fall_note)
+    WATERSHED_METRICS = [
+        ("dischargeMeanCfs", "River discharge (mean)", "cfs",
+         "flood risk building",    "normal summer decline / drought stress if rapid"),
+        ("gageHeightMaxFt",  "Gage height (max)",      "ft",
+         "flood risk building",    "normal"),
+    ]
+    WEATHER_METRICS = [
+        ("temperatureF",  "Temperature",  "°F",
+         "warming",                        "cooling / fire risk easing"),
+        ("humidityPct",   "Humidity",     "%",
+         "fire risk easing",              "⚠ fire risk building if trend continues"),
+        ("windSpeedMph",  "Wind speed",   "mph",
+         "increased transport of smoke/embers", "easing"),
+        ("precipMm24h",   "Precip 24h",  "mm",
+         "wetting — flood risk if prolonged",   "drying"),
+    ]
+    AQI_METRICS = [
+        ("pm25Aqi",   "PM2.5 AQI", "",
+         "⚠ smoke accumulating — check wind direction", "clearing"),
+        ("ozoneAqi",  "Ozone AQI", "",
+         "ozone building (heat/traffic)",              "easing"),
+    ]
+
+    DOMAIN_METRICS = {
+        "watershed": WATERSHED_METRICS,
+        "weather":   WEATHER_METRICS,
+        "aqi":       AQI_METRICS,
+    }
+
+    sections = []
+
+    for domain, metric_defs in DOMAIN_METRICS.items():
+        records = grouped.get(domain, [])
+        if len(records) < 2:
+            continue
+
+        # Sort oldest → newest for delta (SQL returns newest-first)
+        by_time = sorted(records, key=lambda r: r.get("observed_at", ""))
+        oldest, latest = by_time[0], by_time[-1]
+
+        oldest_raw = json.loads(oldest.get("raw_record") or "{}").get(domain, {}) or {}
+        latest_raw = json.loads(latest.get("raw_record") or "{}").get(domain, {}) or {}
+
+        try:
+            t_old = datetime.fromisoformat(oldest["observed_at"].replace("Z", "+00:00"))
+            t_new = datetime.fromisoformat(latest["observed_at"].replace("Z", "+00:00"))
+            hours = max(0.5, (t_new - t_old).total_seconds() / 3600)
+        except (KeyError, ValueError):
+            hours = 12.0
+
+        lines = []
+        for field, label, unit, rise_note, fall_note in metric_defs:
+            old_val = oldest_raw.get(field)
+            new_val = latest_raw.get(field)
+            if old_val is None or new_val is None:
+                continue
+            try:
+                old_val, new_val = float(old_val), float(new_val)
+            except (TypeError, ValueError):
+                continue
+
+            delta = new_val - old_val
+            if abs(delta) < 0.05:
+                direction = "stable"
+                note = ""
+            elif delta > 0:
+                direction = "rising"
+                note = rise_note
+            else:
+                direction = "falling"
+                note = fall_note
+
+            pct = f" ({delta / old_val * 100:+.0f}%)" if old_val != 0 else ""
+            lines.append(
+                f"  {label}: {old_val:.1f}{unit} → {new_val:.1f}{unit}"
+                f" ({delta:+.1f}{unit}{pct} over {hours:.0f}h, {direction})"
+                + (f" — {note}" if note else "")
+            )
+
+        # Wind direction: special-case because it's circular and Diablo-relevant
+        old_wd = oldest_raw.get("windDirectionDeg")
+        new_wd = latest_raw.get("windDirectionDeg")
+        if domain == "weather" and old_wd is not None and new_wd is not None:
+            old_c = _deg_to_compass(float(old_wd))
+            new_c = _deg_to_compass(float(new_wd))
+            diablo_note = ""
+            if _is_diablo(float(new_wd)):
+                diablo_note = " — ⚠ DIABLO QUADRANT (NE/E offshore flow)"
+            elif _is_diablo(float(old_wd)) and not _is_diablo(float(new_wd)):
+                diablo_note = " — shifting away from Diablo pattern"
+            lines.append(
+                f"  Wind direction: {float(old_wd):.0f}° ({old_c}) → "
+                f"{float(new_wd):.0f}° ({new_c}){diablo_note}"
+            )
+
+        # Wind pattern categorical change
+        old_wp = oldest_raw.get("windPattern")
+        new_wp = latest_raw.get("windPattern")
+        if domain == "weather" and old_wp and new_wp and old_wp != new_wp:
+            diablo_flag = " ⚠" if new_wp == "diablo" else ""
+            lines.append(f"  Wind pattern: {old_wp} → {new_wp}{diablo_flag}")
+
+        if lines:
+            sections.append(
+                f"{domain.upper()} ({hours:.0f}h window, "
+                f"{oldest['observed_at'][:16]} → {latest['observed_at'][:16]}):\n"
+                + "\n".join(lines)
+            )
+
+    if not sections:
+        return None
+
+    return "=== COMPUTED TRENDS ===\n" + "\n\n".join(sections)
+
+
 # ---------------------------------------------------------------------------
 # Context assembly
 # ---------------------------------------------------------------------------
 
 def gather_context(lookback_hours: float = 24.0,
+                   memory_runs: int = 14,
+                   obs_per_type: int = 6,
                    subscriber_db: Path = _DEFAULT_SUBSCRIBER_DB,
                    synthesis_db: Path = _DEFAULT_SYNTHESIS_DB) -> str:
+    """Assemble the full context string passed to the synthesis agent.
+
+    Args:
+        lookback_hours:  How far back to fetch domain observations from subscriber.db.
+        memory_runs:     How many prior synthesis observations to include as memory.
+                         Default 14 = 7 days at twice-daily cadence.
+        obs_per_type:    Max domain observations per type to include.
+                         More = richer trajectory signal for the LLM.
+    """
     log.info("Reading observations from subscriber DB (last %.0fh)...", lookback_hours)
 
     sections = []
 
-    # Memory
-    prior = read_recent_synthesis(3, synthesis_db=synthesis_db)
+    # ── Seasonal calendar ──────────────────────────────────────────────────
+    sections.append(
+        f"=== SEASONAL CALENDAR ===\n{seasonal_context()}"
+    )
+
+    # ── Memory: recent synthesis history ──────────────────────────────────
+    prior = read_recent_synthesis(memory_runs, synthesis_db=synthesis_db)
     if prior:
+        log.info("Memory: %d prior synthesis observations loaded", len(prior))
         sections.append(
-            f"=== PREVIOUS SYNTHESIS OBSERVATIONS (memory) ===\n"
-            f"{json.dumps(prior, indent=2)}"
+            f"=== SYNTHESIS HISTORY (last {len(prior)} runs — oldest first) ===\n"
+            f"{json.dumps(list(reversed(prior)), indent=2)}"
         )
     else:
-        sections.append("=== PREVIOUS SYNTHESIS OBSERVATIONS ===\nNone yet.")
+        sections.append("=== SYNTHESIS HISTORY ===\nNone yet — first run.")
 
-    # Domain observations from ATProto
+    # ── Domain observations from ATProto ───────────────────────────────────
     grouped = read_recent_observations(lookback_hours, subscriber_db=subscriber_db)
 
     if not grouped:
@@ -200,40 +445,40 @@ def gather_context(lookback_hours: float = 24.0,
         for obs_type, records in grouped.items():
             log.info("  %s: %d observation(s)", obs_type, len(records))
 
-            # Show publisher provenance
             publishers = list({r["node_id"] for r in records})
             section = (
                 f"=== {obs_type.upper()} OBSERVATIONS "
-                f"(from: {', '.join(publishers)}) ===\n"
+                f"(from: {', '.join(publishers)}, "
+                f"{min(len(records), obs_per_type)} of {len(records)} shown, newest first) ===\n"
             )
 
-            # Include up to 5 most recent per type
-            for r in records[:5]:
+            for r in records[:obs_per_type]:
                 raw = json.loads(r["raw_record"]) if r["raw_record"] else {}
                 section += json.dumps({
                     "observed_at": r["observed_at"],
                     "node": r["node_id"],
-                    "publisher_did": r["publisher_did"],
                     "summary": r["summary"],
                     "flagged": bool(r["flagged"]),
-                    "agent_model": r["agent_model"],
-                    # Include domain-specific fields if present
+                    # Domain-specific numeric/structured fields for trajectory reading
                     **{k: v for k, v in raw.items()
                        if k in ("watershed", "weather", "aqi") and v},
                 }, indent=2) + "\n"
 
             sections.append(section)
 
+        # Computed trends — pre-calculated deltas so the agent sees direction
+        # explicitly rather than having to infer it from prose summaries.
+        trends = compute_trends(grouped)
+        if trends:
+            sections.append(trends)
+        else:
+            log.info("Trends: insufficient data points (need ≥2 per domain)")
+
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    location_context = (
-        "Location: Napa Valley, California. "
-        "Fire season June–November. Flood risk December–March. "
-        "Diablo winds (NE/E offshore) dramatically increase fire risk in autumn."
-    )
 
     return (
         f"Synthesis run at: {now}\n"
-        f"{location_context}\n\n"
+        f"Location: Napa Valley, California\n\n"
         + "\n\n".join(sections)
     )
 
@@ -329,6 +574,8 @@ def main() -> None:
     parser.add_argument("--model", choices=list(MODELS.keys()), default=DEFAULT_MODEL)
     parser.add_argument("--lookback", type=float, default=24.0,
                         help="Hours of observations to consider (default 24)")
+    parser.add_argument("--memory", type=int, default=14,
+                        help="Prior synthesis runs to include as memory (default 14 = 7 days)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--subscriber-db", type=Path, default=_DEFAULT_SUBSCRIBER_DB,
@@ -348,6 +595,7 @@ def main() -> None:
     log.info("Synthesis DB:  %s", synthesis_db)
 
     context = gather_context(lookback_hours=args.lookback,
+                             memory_runs=args.memory,
                              subscriber_db=subscriber_db,
                              synthesis_db=synthesis_db)
     observation = reason(context, args.model, verbose=args.verbose)
