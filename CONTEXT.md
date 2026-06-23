@@ -32,6 +32,43 @@ pattern (edge agent → structured record → verified identity → synthesis) i
 
 ---
 
+## Lineage and kindred work
+
+The seed was Ruthanna Emrys' novel **"A Half-Built Garden"** — a vision of
+decentralised, federated systems operating at human (and non-human) scale without
+a central authority, and of non-human participants treated as first-class actors in
+a shared network. Watching what **AT Protocol** was actually building — portable
+identity (`did:plc`), data bound to the identity rather than the platform, and
+federation as a first principle — made it concrete: this is the closest existing
+substrate for agents that own their identity and history independent of where they run.
+
+Identity is a small but critical part of the bigger idea. The bigger idea is
+autonomous agents as portable, verifiable, federated participants in a shared
+information space — perceiving, reasoning, and publishing without central coordination
+or a human in the loop. Identity is what makes the trust boundary possible, but it
+serves the architecture, not the other way around.
+
+Adjacent thinkers and projects working nearby ground:
+
+- **Bluesky / ATProto** — user-owned identity and data, PDS portability. The substrate.
+- **Spritely Institute** (Christine Lemmer-Webber, co-author of ActivityPub) —
+  object capabilities and distributed identity at the protocol level; the strongest
+  "no central authority" research thread.
+- **DIF (Decentralised Identity Foundation)** — standards home for `did:web`, VCs,
+  and the agent-identity problem. The specs this project builds against.
+- **Ink & Switch** (Geoffrey Litt et al.) — agents as first-class collaborators in
+  systems rather than tools; shares the "agent as peer" framing.
+- **Ceramic, Transmute (Orie Steele)** — decentralised data and machine/non-human
+  identity, adjacent but more blockchain-native than this project needs.
+
+**The unoccupied space:** nobody is quite using ATProto as the message bus for
+agent-to-agent communication with DID-based trust between autonomous nodes. Most
+agent-identity work is either blockchain-native (heavy) or OAuth-native (human-first).
+The combination here — ATProto portability + `did:web` simplicity + autonomous edge
+agents — is relatively unexplored. That's the generative gap.
+
+---
+
 ## Current deployment state
 
 Running on a Raspberry Pi 5, Napa, California.
