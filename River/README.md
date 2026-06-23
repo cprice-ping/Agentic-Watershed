@@ -95,6 +95,6 @@ The `flagged` field on observations is the signal for future alerting
 ## Next steps
 
 - `bluesky_publisher.py` — post flagged observations to ATProto
-- Custom lexicon: `com.yourhandle.watershed.observation`
+- Custom lexicon: `net.cpricedomain.temp.monitor.observation`
 - Add more stations (Conn Creek, Milliken Creek)
 - Physical sensors via Pi GPIO → same collector interface

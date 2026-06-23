@@ -15,7 +15,7 @@ synthesis agent both logically and physically:
 
 - **Node agents** (Raspberry Pi): collect domain data, reason locally with Claude Haiku,
   publish structured observations to ATProto/Bluesky using a custom lexicon
-  (`com.napavalley.monitor.observation`) and a per-node verified DID.
+  (`net.cpricedomain.temp.monitor.observation`) and a per-node verified DID.
 
 - **Synthesis agent** (separate machine): subscribes to the ATProto firehose, filters
   records by the custom lexicon, verifies publisher DIDs against a trusted registry,

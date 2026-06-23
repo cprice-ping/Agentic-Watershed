@@ -59,7 +59,7 @@ domain agents write structured conclusions, Synthesis reads them and reasons acr
 ### Key design principles
 
 **ATProto as message bus** — domain agent observations are published as structured ATProto
-records using a custom lexicon (`com.napavalley.monitor.observation`). The Synthesis agent
+records using a custom lexicon (`net.cpricedomain.temp.monitor.observation`). The Synthesis agent
 is a subscriber, not a database reader. This makes the system federable and the agents
 genuinely independent.
 
@@ -222,7 +222,7 @@ Each synthesis run produces a structured observation:
 Domain agents will publish observations to ATProto/Bluesky using a custom lexicon:
 
 ```
-com.napavalley.monitor.observation
+net.cpricedomain.temp.monitor.observation
 ```
 
 This is not just a posting mechanism — it's how the Synthesis agent receives
@@ -231,7 +231,7 @@ synthesis output schema, making observations queryable and federable.
 
 The publisher is a separate process per domain stack that:
 1. Reads `agent_observations` from the local SQLite DB
-2. Posts new (unflagged-for-publish) records to ATProto as `com.napavalley.monitor.observation`
+2. Posts new (unflagged-for-publish) records to ATProto as `net.cpricedomain.temp.monitor.observation`
 3. Uses the domain agent's registered DID as the author identity
 
 ---
@@ -240,7 +240,7 @@ The publisher is a separate process per domain stack that:
 
 Each node (Pi running domain agents) will have a registered ATProto DID.
 The Synthesis agent — running on a separate machine — subscribes to the firehose
-and filters for `com.napavalley.monitor.observation` records.
+and filters for `net.cpricedomain.temp.monitor.observation` records.
 
 Before reasoning on any record, Synthesis verifies the author DID against a
 trusted registry. This is the workload identity boundary: a record from an
