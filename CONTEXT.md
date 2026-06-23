@@ -322,8 +322,8 @@ The flow:
    referencing the agent's DID
 3. **Agent presents** its DID + the delegation credential to the MCP AuthZ server
 4. **AuthZ server issues a token** where:
-   - `sub` = the agent DID (not the person)
-   - `act` = the person (RFC 8693 Token Exchange — the human principal)
+   - `sub` = the person (the principal being acted on behalf of)
+   - `act` = the agent DID (RFC 8693 Token Exchange — the actor)
    - scopes = what the agent is authorised to do on their behalf
 5. **MCP server** validates the token, sees both the agent identity and the human
    principal, enforces policy against both
