@@ -361,12 +361,14 @@ restarted, or replaced without affecting the others.
 agent spawns the MCP server per tool call rather than running it persistently.
 Switching to persistent HTTP is one flag (`--http`) when needed.
 
-**Why does Synthesis read SQLite directly instead of via MCP (currently)?**
-Domain agent observations are already clean, structured conclusions — no need for
-the MCP abstraction layer when reading conclusions rather than raw data.
-This is a *prototype convenience*, not the target architecture. When Synthesis moves
-to a separate device, it will subscribe to the ATProto firehose instead of reading SQLite.
-The firehose subscriber is the planned replacement for the SQLite-direct reads.
+**Why does Synthesis use ATProto instead of reading SQLite directly?**
+The Synthesis agent runs on a separate machine from the Pi nodes — it has no access
+to their local SQLite databases. ATProto is the message bus: domain agents publish
+structured observations as lexicon records, Synthesis subscribes via
+`com.atproto.repo.listRecords` (fetch mode, cron-triggered), and reasons across
+whatever it finds. This also decouples the agents completely — a node can be replaced,
+moved, or added without any change to Synthesis. The subscriber verifies author DIDs
+against `TRUSTED_PUBLISHERS` (interim) before accepting records.
 
 **Why Sonnet for Synthesis, Haiku for domain agents?**
 Cross-domain reasoning across multiple observation sets warrants more capability.
