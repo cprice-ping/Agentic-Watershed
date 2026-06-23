@@ -48,7 +48,63 @@ Before implementing anything, check these. They cover most of the problem space:
 
 ---
 
-## Core principle
+## Verifiable Credentials for agents — no wallet needed
+
+VCs don't require a wallet. That's a common misconception from the consumer
+identity world, where wallets (Apple Wallet, Google Wallet, browser extensions)
+are the UX layer for humans who can't remember their own keys.
+
+**A wallet exists because humans can't sign things themselves. Agents can.**
+
+The wallet collapses to two things an agent already has:
+- A directory of JSON files (`~/.agent/charters/{did}.json`)
+- A signing function (standard JWK crypto)
+
+### The three operations — no wallet involved
+
+**Issuance** — registry generates the charter as a signed W3C VC and returns it
+to the agent. Agent stores it as a local file. Done.
+
+**Presentation** — when the agent needs to prove its charter to something (an MCP
+AuthZ server, a subscriber checking trust), it constructs a **Verifiable Presentation**:
+a wrapper around the VC, signed by the agent's own key right now, proving it holds
+the credential. Just a JSON object + a signature.
+
+**Verification** — the verifier checks two signatures:
+1. The registry's signature on the VC — proves the charter was issued by a trusted registry
+2. The agent's signature on the presentation — proves the presenter controls the DID in the VC
+
+Both are standard public key crypto against DID documents. No network call required
+if DID documents are cached. No wallet, no session, no intermediary.
+
+```python
+# Agent presents its charter to an MCP AuthZ server
+presentation = agent.create_presentation(charter_vc)  # signed with agent's own key
+
+# Verifier checks both signatures independently
+result = verifier.verify_presentation(presentation)
+# → confirmed: issued by trusted registry + presenter controls the DID
+```
+
+### Why this matters for agents at scale
+
+The human VC flow requires a wallet app, a user to approve the presentation,
+and often a network round-trip to an issuer or revocation endpoint. All of that
+exists to compensate for the human not being able to handle cryptographic material
+directly.
+
+Agents handle their own keys. The entire wallet layer drops away. What remains
+is just the credential format (W3C VC) and the crypto (JWK signatures) — both
+well-specified, both implementable in ~100 lines of Python.
+
+This is why VCs are a better fit for agent charters than OAuth scopes or RBAC:
+the credential is self-contained, cryptographically verifiable, and carries its
+own provenance (who issued it, when, for what). No runtime call to an auth server
+needed to verify it.
+
+---
+
+
 
 Agents generate their own keypairs locally. The registry never sees private keys.
 It stores public keys, mints DIDs, serves DID documents, and issues charter VCs.
