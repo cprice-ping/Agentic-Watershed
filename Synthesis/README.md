@@ -35,7 +35,7 @@ Bluesky Firehose (wss://bsky.network)
 ```
 
 Domain agents on the Pi publish observations to ATProto as structured records using
-a custom lexicon (`com.napavalley.monitor.observation`) and a per-node verified DID.
+a custom lexicon (`net.cpricedomain.temp.monitor.observation`) and a per-node verified DID.
 Synthesis subscribes to the firehose, filters by lexicon, and verifies author DIDs
 against `TRUSTED_PUBLISHERS` before acting on any record.
 
