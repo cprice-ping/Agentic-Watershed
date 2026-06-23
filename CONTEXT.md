@@ -456,6 +456,23 @@ Also fixed in this session:
 
 First real calibration test: Diablo wind season (September–November 2026).
 
+**Known limitation — confirmation signals use `flagged`, not numeric fields:**
+Prediction resolution currently confirms via the domain agent's `flagged=True` field
+rather than specific numeric thresholds (`fireRisk`, `gageHeightMaxFt`, `pm25Aqi`).
+This is because the Pi-side publisher only writes `summary` and `flagged` to ATProto
+records — the numeric fields aren't populated. The constants (`FIRE_CONFIRM_LEVELS`,
+`FLOOD_ACTION_STAGE_FT`, `AQI_USG_THRESHOLD`) are retained in code for when the
+publisher is extended. This is a deferred Pi-side change, not an oversight.
+
+**What this project actually is:**
+Agentic-Watershed is not primarily a fire/flood prediction system — prediction
+accuracy is a secondary concern. The project is an exploration of distributed agent
+architecture: how agents at the edge (Pi nodes) publish structured, DID-signed
+observations; how a separate agent in the cloud (Azure) subscribes, reasons across
+domains, and publishes advisories; and how identity, trust, and data flow across
+that boundary without central coordination. The environmental domain is the vehicle,
+not the destination.
+
 ---
 
 **Phase 4 — Calibration (post-autumn)**
