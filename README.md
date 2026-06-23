@@ -45,11 +45,13 @@ The environmental monitoring problem is well-suited because it has real data sou
                     └───────────────────────────────────────────────┘
 ```
 
-### Current deployment (prototype)
+### Current deployment
 
-Synthesis runs on the same Pi and reads SQLite directly — skipping the ATProto
-transport until the publisher is built. The architecture is otherwise identical:
-domain agents write structured conclusions, Synthesis reads them and reasons across all three.
+Pi nodes (edge) → ATProto/Bluesky → Synthesis agent (Azure Container Apps Job) → Bluesky advisory.
+
+Domain agents publish structured lexicon records from the Pi. Synthesis subscribes via
+`com.atproto.repo.listRecords`, verifies publisher DIDs, reasons across domains with Claude Sonnet,
+and posts advisories from `napasynth01.bsky.social`. The full pipeline is live.
 
 ### Key design principles
 
