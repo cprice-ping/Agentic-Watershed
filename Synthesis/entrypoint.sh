@@ -50,7 +50,7 @@ echo ""
 echo "--- [1/3] Subscribe: fetching observations from ATProto ---"
 python /app/subscriber.py \
     --db "${WORK_DIR}/subscriber.db" \
-    --lookback 13
+    --lookback 15
 
 # ---------------------------------------------------------------------------
 # Step 2: Synthesise

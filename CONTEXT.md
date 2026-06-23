@@ -429,29 +429,32 @@ Shipped in `agent_atproto.py`:
 
 ---
 
-**Phase 3 — Prediction and outcome tracking (next)**
+**Phase 3 — Prediction and outcome tracking ✅ DONE (2026-06-23)**
 
-This is the feedback loop that makes the agent genuinely learn:
+Prediction ledger is live. Key design decisions encoded as constants (not prompt-implied):
 
-- When the agent flags a risk (`flagged=True` or `overall_risk >= moderate`), write a
-  **prediction record** to `synthesis.db`:
-  `{predicted_at, risk_type, risk_level, prediction_horizon_hours, resolved: false}`
+| Constant | Value | Meaning |
+|---|---|---|
+| `FLOOD_ACTION_STAGE_FT` | 12.0 ft | Gage height that confirms a flood prediction |
+| `AQI_USG_THRESHOLD` | 100 | PM2.5 AQI that confirms an air quality prediction |
+| `FIRE_CONFIRM_LEVELS` | `{high, extreme}` | `weather.fireRisk` values that confirm fire |
+| `FIRE_CONFIRM_ALERTS` | Red Flag Warning, Fire Weather Watch | NWS alert names |
+| Horizons | fire=48h, flood=72h, air_quality=24h | Auto-expiry windows |
 
-- On each subsequent run, check open predictions: did the predicted condition
-  materialise? Resolution criteria are objective (e.g. *flood risk predicted →
-  gage height exceeded X cfs within 24h*).
+`predictions` table added to `synthesis.db`. On each run:
+1. `check_predictions()` runs at the **top** of `gather_context()` — resolves open
+   predictions against current observations, marks expired ones `expired` (not left
+   as `pending` indefinitely).
+2. Compact ledger summary injected into every prompt (counts + 5 most recent).
+3. `write_predictions()` called **before** `write_observation()` — ledger survives
+   a crash between agent and publisher steps.
 
-- Feed the prediction history into future prompts:
-  *"Your last 5 flagged predictions: [3 confirmed, 1 false positive, 1 pending]."*
+Also fixed in this session:
+- `--lookback 13 → 15` in `entrypoint.sh` (safer overlap for clock drift/startup delay)
+- `_is_diablo()`: full meteorological rationale in docstring (22°–112° not a magic number)
+- System prompt: handles absent trends section explicitly; explains prediction ledger to agent
 
-- The agent's published ATProto record chain is already the public audit trail —
-  the prediction records just close the loop privately.
-
-- **Start now** — begin accumulating the prediction ledger even though there's little
-  to resolve yet. First real test: Diablo wind season (September–November).
-
-*Changes needed:* new `predictions` table in `synthesis.db`, new `check_predictions()`
-function, updated system prompt, resolution logic in `gather_context()`.
+First real calibration test: Diablo wind season (September–November 2026).
 
 ---
 

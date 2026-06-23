@@ -50,6 +50,29 @@ MODELS = {
 
 DEFAULT_MODEL = "sonnet"
 
+# ---------------------------------------------------------------------------
+# Prediction resolution constants (Phase 3)
+# ---------------------------------------------------------------------------
+# Encoding thresholds as constants prevents drift — the agent can't argue itself
+# into a looser definition of "confirmed" over successive runs.
+
+FLOOD_ACTION_STAGE_FT = 12.0   # Gage height at which flooding begins to affect low-lying areas
+AQI_USG_THRESHOLD     = 100    # EPA PM2.5 "Unhealthy for Sensitive Groups" threshold
+FIRE_CONFIRM_LEVELS   = frozenset({"high", "extreme"})  # weather.fireRisk values that confirm
+FIRE_CONFIRM_ALERTS   = frozenset({"Red Flag Warning", "Fire Weather Watch"})  # NWS alert names
+
+# How long a prediction stays pending before auto-expiry if no confirming observation arrives.
+# After the window closes the event either happened or didn't — leaving it pending pollutes calibration.
+PREDICTION_HORIZON_HOURS: dict[str, int] = {
+    "fire":        48,   # Fire weather develops fast; 2-day window is sufficient
+    "flood":       72,   # Atmospheric rivers have multi-day lead times
+    "air_quality": 24,   # Smoke disperses or accumulates quickly
+}
+
+# Only write prediction records for these risk levels — none/low generate too many
+# false positives to be calibration-useful.
+PREDICTION_RISK_LEVELS = frozenset({"moderate", "high", "extreme"})
+
 SYSTEM_PROMPT = """You are a cross-domain environmental risk assessment agent for Napa Valley, California.
 
 You receive:
@@ -94,6 +117,16 @@ You must respond in this exact JSON format (no markdown, no extra text):
   "flag_reason": "brief reason if flagged, empty string if not",
   "reasoning": "Full cross-domain reasoning including trajectory assessment and seasonal context"
 }
+
+COMPUTED TRENDS may not be present if this is the first run or data was unavailable in the
+lookback window. If the trends section is absent or shows insufficient data, rely on prose
+summaries and synthesis history alone for trajectory assessment.
+
+PREDICTION LEDGER: You will see a summary of how your past risk assessments have resolved.
+Use the confirmed vs expired ratio to calibrate confidence — many false positives means you
+are being too aggressive; raise your threshold. You do not need to phrase predictions in your
+summary. A prediction record is written automatically for every domain you assess as moderate+
+risk. Focus on honest risk assessment; outcome tracking is handled externally.
 
 flagged=true if overall_risk is moderate or higher, OR if any single domain is high/extreme,
 OR if a concerning trajectory is developing even if current conditions are still benign.
@@ -261,7 +294,15 @@ def _deg_to_compass(deg: float) -> str:
     return _COMPASS[round(deg / 22.5) % 16]
 
 def _is_diablo(deg: float) -> bool:
-    """NNE–ESE range (22°–112°) — offshore NE/E Diablo wind pattern."""
+    """Return True if wind direction is in the Diablo quadrant (NNE–ESE, 22°–112°).
+
+    Meteorological rationale: Diablo winds are offshore, downslope flows from the
+    interior Coast Ranges toward the Bay. They arrive from the NE–E quadrant,
+    compressing and warming adiabatically as they descend. The 22°–112° range covers
+    NNE through ESE — the full sector associated with offshore flow in the Napa/Sonoma
+    region. Winds outside this range (N, S, W) are typically onshore marine or valley
+    breezes and do not carry the same fire risk multiplier.
+    """
     return 22 <= deg <= 112
 
 
@@ -395,6 +436,193 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Prediction ledger (Phase 3)
+# ---------------------------------------------------------------------------
+
+def _ensure_predictions_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS predictions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            made_at         TEXT NOT NULL,
+            risk_type       TEXT NOT NULL,       -- 'fire' | 'flood' | 'air_quality'
+            predicted_level TEXT NOT NULL,       -- 'moderate' | 'high' | 'extreme'
+            horizon_hours   INTEGER NOT NULL,    -- resolution window in hours
+            status          TEXT NOT NULL DEFAULT 'pending',
+                                                 -- 'pending'|'confirmed'|'false_positive'|'expired'
+            resolved_at     TEXT,
+            resolution_note TEXT
+        )
+    """)
+    conn.commit()
+
+
+def _resolve_prediction(risk_type: str, grouped: dict[str, list[dict]]) -> Optional[str]:
+    """Check whether current observations satisfy the resolution criteria for a prediction.
+
+    Returns a short note string if the prediction is confirmed, None if not yet confirmed.
+    Thresholds are the module-level constants — not inferred from context.
+    """
+    if risk_type == "fire":
+        for rec in grouped.get("weather", []):
+            raw = json.loads(rec.get("raw_record") or "{}").get("weather", {}) or {}
+            if raw.get("fireRisk") in FIRE_CONFIRM_LEVELS:
+                return f"weather.fireRisk={raw['fireRisk']}"
+            hit = FIRE_CONFIRM_ALERTS & set(raw.get("activeAlerts") or [])
+            if hit:
+                return f"NWS alert: {', '.join(sorted(hit))}"
+
+    elif risk_type == "flood":
+        for rec in grouped.get("watershed", []):
+            raw = json.loads(rec.get("raw_record") or "{}").get("watershed", {}) or {}
+            gage = raw.get("gageHeightMaxFt")
+            if gage is not None and float(gage) >= FLOOD_ACTION_STAGE_FT:
+                return (f"gageHeightMaxFt={float(gage):.1f}ft "
+                        f"(\u2265 action stage {FLOOD_ACTION_STAGE_FT}ft)")
+
+    elif risk_type == "air_quality":
+        for rec in grouped.get("aqi", []):
+            raw = json.loads(rec.get("raw_record") or "{}").get("aqi", {}) or {}
+            pm25 = raw.get("pm25Aqi")
+            if pm25 is not None and int(pm25) >= AQI_USG_THRESHOLD:
+                return f"pm25Aqi={pm25} (\u2265 USG threshold {AQI_USG_THRESHOLD})"
+            if raw.get("smokeDetected"):
+                return "smokeDetected=true"
+
+    return None
+
+
+def check_predictions(grouped: dict[str, list[dict]],
+                      synthesis_db: Path,
+                      dry_run: bool = False) -> Optional[str]:
+    """Resolve open predictions against current observations; return a prompt-ready summary.
+
+    Called at the TOP of gather_context() so the agent always sees an up-to-date ledger.
+    Expired predictions are marked automatically — a prediction that sits unresolved past
+    its horizon_hours is 'expired', not left pending to pollute calibration data.
+    """
+    if not synthesis_db.exists():
+        return None
+
+    try:
+        conn = sqlite3.connect(synthesis_db)
+        conn.row_factory = sqlite3.Row
+        _ensure_predictions_table(conn)
+
+        now     = datetime.now(timezone.utc)
+        now_str = now.isoformat()
+
+        for row in [dict(r) for r in conn.execute(
+            "SELECT * FROM predictions WHERE status = 'pending'"
+        ).fetchall()]:
+            made_at = datetime.fromisoformat(row["made_at"].replace("Z", "+00:00"))
+            note    = _resolve_prediction(row["risk_type"], grouped)
+
+            if note:
+                new_status = "confirmed"
+            elif (now - made_at) > timedelta(hours=row["horizon_hours"]):
+                new_status = "expired"
+                note = f"No confirming observations within {row['horizon_hours']}h window"
+            else:
+                continue  # Still within window — leave pending
+
+            if not dry_run:
+                conn.execute(
+                    """UPDATE predictions
+                       SET status = ?, resolved_at = ?, resolution_note = ?
+                       WHERE id = ?""",
+                    (new_status, now_str, note, row["id"]),
+                )
+            log.info("Prediction %d (%s): pending \u2192 %s | %s",
+                     row["id"], row["risk_type"], new_status, note)
+
+        if not dry_run:
+            conn.commit()
+
+        # Build compact prompt summary from last 30 days
+        cutoff_30d = (now - timedelta(days=30)).isoformat()
+        rows = conn.execute(
+            """SELECT risk_type, predicted_level, status, made_at, resolution_note
+               FROM predictions WHERE made_at >= ?
+               ORDER BY made_at DESC""",
+            (cutoff_30d,),
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return None
+
+        counts: dict[str, int] = {}
+        for r in rows:
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        count_str = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+
+        lines = [
+            f"=== PREDICTION LEDGER (last 30 days \u2014 {len(rows)} total: {count_str}) ===",
+            "Recent predictions (newest first):",
+        ]
+        for p in [dict(r) for r in rows[:5]]:
+            age_h = (now - datetime.fromisoformat(
+                p["made_at"].replace("Z", "+00:00"))).total_seconds() / 3600
+            line  = (f"  [{p['status'].upper()}] {p['risk_type']} \u2192 {p['predicted_level']} "
+                     f"({age_h:.0f}h ago)")
+            if p["resolution_note"]:
+                line += f": {p['resolution_note']}"
+            lines.append(line)
+
+        return "\n".join(lines)
+
+    except sqlite3.Error as exc:
+        log.error("Failed to check predictions: %s", exc)
+        return None
+
+
+def write_predictions(obs: dict,
+                      synthesis_db: Path,
+                      dry_run: bool = False) -> None:
+    """Write prediction records for any domain assessed as moderate+ risk.
+
+    Called BEFORE write_observation() so the ledger is updated even if the
+    container is interrupted between the agent and publisher steps.
+    """
+    to_predict = [
+        (domain, level)
+        for domain, level in (
+            ("fire",        obs.get("fire_risk", "none")),
+            ("flood",       obs.get("flood_risk", "none")),
+            ("air_quality", obs.get("air_quality_risk", "none")),
+        )
+        if level in PREDICTION_RISK_LEVELS
+    ]
+
+    if not to_predict:
+        log.info("Predictions: no domains at moderate+ risk \u2014 no new predictions written")
+        return
+
+    if dry_run:
+        for domain, level in to_predict:
+            log.info("[DRY RUN] Would write prediction: %s risk = %s (horizon %dh)",
+                     domain, level, PREDICTION_HORIZON_HOURS.get(domain, 48))
+        return
+
+    synthesis_db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(synthesis_db)
+    _ensure_predictions_table(conn)
+    now = datetime.now(timezone.utc).isoformat()
+
+    for domain, level in to_predict:
+        horizon = PREDICTION_HORIZON_HOURS.get(domain, 48)
+        conn.execute(
+            """INSERT INTO predictions (made_at, risk_type, predicted_level, horizon_hours)
+               VALUES (?, ?, ?, ?)""",
+            (now, domain, level, horizon),
+        )
+        log.info("Prediction written: %s risk = %s (expires in %dh)", domain, level, horizon)
+
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Context assembly
 # ---------------------------------------------------------------------------
 
@@ -402,7 +630,8 @@ def gather_context(lookback_hours: float = 24.0,
                    memory_runs: int = 14,
                    obs_per_type: int = 6,
                    subscriber_db: Path = _DEFAULT_SUBSCRIBER_DB,
-                   synthesis_db: Path = _DEFAULT_SYNTHESIS_DB) -> str:
+                   synthesis_db: Path = _DEFAULT_SYNTHESIS_DB,
+                   dry_run: bool = False) -> str:
     """Assemble the full context string passed to the synthesis agent.
 
     Args:
@@ -410,16 +639,29 @@ def gather_context(lookback_hours: float = 24.0,
         memory_runs:     How many prior synthesis observations to include as memory.
                          Default 14 = 7 days at twice-daily cadence.
         obs_per_type:    Max domain observations per type to include.
-                         More = richer trajectory signal for the LLM.
+        dry_run:         If True, prediction resolution is logged but not written to DB.
     """
     log.info("Reading observations from subscriber DB (last %.0fh)...", lookback_hours)
 
     sections = []
 
+    # ── Fetch observations first — needed for prediction resolution ────────
+    grouped = read_recent_observations(lookback_hours, subscriber_db=subscriber_db)
+
+    # ── Resolve open predictions against current observations ──────────────
+    # Must happen before building the prompt so the agent sees the updated ledger.
+    pred_summary = check_predictions(grouped, synthesis_db, dry_run=dry_run)
+
     # ── Seasonal calendar ──────────────────────────────────────────────────
     sections.append(
         f"=== SEASONAL CALENDAR ===\n{seasonal_context()}"
     )
+
+    # ── Prediction ledger ──────────────────────────────────────────────────
+    if pred_summary:
+        sections.append(pred_summary)
+    else:
+        sections.append("=== PREDICTION LEDGER ===\nNo prediction history yet.")
 
     # ── Memory: recent synthesis history ──────────────────────────────────
     prior = read_recent_synthesis(memory_runs, synthesis_db=synthesis_db)
@@ -433,8 +675,6 @@ def gather_context(lookback_hours: float = 24.0,
         sections.append("=== SYNTHESIS HISTORY ===\nNone yet — first run.")
 
     # ── Domain observations from ATProto ───────────────────────────────────
-    grouped = read_recent_observations(lookback_hours, subscriber_db=subscriber_db)
-
     if not grouped:
         sections.append(
             "=== NODE OBSERVATIONS ===\n"
@@ -472,7 +712,12 @@ def gather_context(lookback_hours: float = 24.0,
         if trends:
             sections.append(trends)
         else:
-            log.info("Trends: insufficient data points (need ≥2 per domain)")
+            log.info("Trends: insufficient data (need \u22652 observations per domain)")
+            sections.append(
+                "=== COMPUTED TRENDS ===\n"
+                "Insufficient data for trend calculation (need \u22652 observations per domain). "
+                "Assess trajectory from prose summaries and synthesis history."
+            )
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -597,7 +842,8 @@ def main() -> None:
     context = gather_context(lookback_hours=args.lookback,
                              memory_runs=args.memory,
                              subscriber_db=subscriber_db,
-                             synthesis_db=synthesis_db)
+                             synthesis_db=synthesis_db,
+                             dry_run=args.dry_run)
     observation = reason(context, args.model, verbose=args.verbose)
 
     log.info("--- Synthesis conclusion ---")
@@ -608,6 +854,9 @@ def main() -> None:
     log.info("Flagged:      %s", observation.get("flagged", False))
     log.info("Summary: %s", observation.get("summary", ""))
 
+    # Write predictions BEFORE the synthesis observation — the ledger is updated
+    # even if the container is interrupted before publisher.py runs.
+    write_predictions(observation, synthesis_db=synthesis_db, dry_run=args.dry_run)
     write_observation(observation, dry_run=args.dry_run, synthesis_db=synthesis_db)
     log.info("=== Synthesis Agent (ATProto) run complete ===")
 
