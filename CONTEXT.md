@@ -109,34 +109,33 @@ Required environment variables:
 
 ## What's next
 
-### Immediate
-- [ ] Let data accumulate (2-3 days) before evaluating synthesis quality
-- [ ] Monitor synthesis observations for cross-domain reasoning quality
+### Done
+- [x] ATProto publisher — domain observations published to Bluesky as structured lexicon records
+- [x] Synthesis subscriber — fetch-mode (cron-shaped, not firehose daemon), lookback window
+- [x] Synthesis publisher — separate identity (`napasynth01.bsky.social`), advisory framing
+- [x] End-to-end pipeline confirmed: Pi nodes → ATProto → Synthesis agent → advisory post
+- [x] TRUSTED_PUBLISHERS dict in place as interim trust boundary (did:web registry replaces this)
 
-### Next feature: ATProto publisher (closes the distributed loop)
+### Next: host Synthesis agent outside the laptop
 
-This is the central next step — it completes the distributed architecture:
+The Synthesis agent currently runs on a laptop (cron, local `~/.venv`). That's not
+a reliable execution environment — laptop sleeps, travels, closes. The node agents
+on the Pi run continuously; Synthesis should too.
 
-1. **Register ATProto DIDs** — one DID per domain agent (Watershed, Weather, AQI)
-   and a separate DID for the Synthesis agent. These are workload identities.
+**Target: Azure Container Instance (ACI)**
 
-2. **Build the domain publisher** — a separate process per stack that reads
-   `agent_observations` from local SQLite and posts new records to ATProto as
-   `com.napavalley.monitor.observation`. Runs after each domain agent cron job.
+Simple, low-cost, no k8s overhead for a single cron-triggered container:
+- Container image built from `Synthesis/` — agent + subscriber + publisher
+- Cron replaced by ACI's restart policy or Azure Container Apps job schedule
+- Env vars (`ANTHROPIC_API_KEY`, `BSKY_SYNTH_HANDLE`, `BSKY_SYNTH_APP_PASSWORD`)
+  injected as ACI environment variables or Azure Key Vault references
+- SQLite replaced by a small Azure-hosted Postgres (or keep SQLite on a mounted
+  Azure File Share — simpler for now)
+- Demonstrates the architecture as genuinely distributed: Pi (edge) → ATProto → Azure (cloud)
 
-3. **Design the lexicon** — `com.napavalley.monitor.observation` fields map to
-   the existing synthesis output schema. The lexicon is what makes records
-   machine-readable and filterable on the firehose.
-
-4. **Build the firehose subscriber** — replaces Synthesis's SQLite-direct reads.
-   Subscribes to the ATProto firehose, filters by lexicon, verifies author DIDs
-   against a trusted registry, accumulates observations, triggers Synthesis reasoning.
-
-5. **Trusted DID registry** — a simple list of known node DIDs that Synthesis
-   will accept observations from. The trust boundary for the distributed system.
-
-The `summary` field in synthesis output is already written for a public Bluesky post —
-high-risk events can surface as human-readable posts in addition to structured records.
+This is also the first non-local execution of a registry-aware agent once the
+did:web registry is ready — the Synthesis DID will be provisioned against the
+cloud instance, not a developer laptop.
 
 ### Birthright identity for agents — the core research question
 
