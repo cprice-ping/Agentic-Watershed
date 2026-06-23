@@ -8,26 +8,27 @@ Last updated: 2026-06-23
 
 ---
 
-## Distributed architecture intent
+## What this is
 
-This is a **distributed multi-agent system**. The design separates node agents from the
-synthesis agent both logically and physically:
+A distributed system of autonomous agents connected by identity and a federated protocol.
+The domain is Napa Valley environmental data. That's the concrete surface — the actual
+subject is the architecture:
 
-- **Node agents** (Raspberry Pi): collect domain data, reason locally with Claude Haiku,
-  publish structured observations to ATProto/Bluesky using a custom lexicon
-  (`net.cpricedomain.temp.monitor.observation`) and a per-node verified DID.
+- **Edge agents with workload identity** — each node runs on a Raspberry Pi, reasons
+  locally with Claude Haiku, and publishes structured records to ATProto under its own
+  DID. The DID is the agent's identity, not a login credential.
+- **ATProto as message bus** — agents don't share filesystems. Records flow over a
+  federated protocol using a custom lexicon (`net.cpricedomain.temp.monitor.observation`).
+  Any agent that knows the lexicon and trusts the DID can participate, from anywhere.
+- **DID-based trust boundary** — the Synthesis agent verifies publisher DIDs against
+  a trusted registry before acting on any record. Unrecognised nodes are rejected, not
+  silently trusted.
+- **Synthesis at the cloud layer** — a separate agent subscribes to the ATProto firehose,
+  reasons across domains with Claude Sonnet, and publishes its own signed record.
 
-- **Synthesis agent** (separate machine): subscribes to the ATProto firehose, filters
-  records by the custom lexicon, verifies publisher DIDs against a trusted registry,
-  and reasons across domains with Claude Sonnet.
-
-ATProto is the message bus between nodes, not just a publishing endpoint.
-The DID registry is the trust boundary — Synthesis only acts on observations from
-known, trusted node identities.
-
-**Current state: local prototype.** Synthesis runs on the same Pi and reads SQLite
-directly. This is a working stand-in until the ATProto publisher and firehose subscriber
-are built. The architecture is otherwise faithful to the distributed intent.
+The environmental monitoring domain is well-suited because it has real APIs, genuine
+cross-domain reasoning, and seasonal patterns worth tracking over time. The architecture
+pattern (edge agent → structured record → verified identity → synthesis) is the point.
 
 ---
 

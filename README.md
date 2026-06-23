@@ -1,21 +1,16 @@
-# Agentic Watershed — Napa Valley Environmental Monitor
+# Agentic Watershed
 
-An autonomous multi-agent environmental monitoring system for Napa Valley.
-Monitors the Napa River, local weather, and air quality — and reasons across all three
-to produce cross-domain risk assessments.
+A distributed system of autonomous agents connected by identity and a federated protocol.
 
-Built as a practical exploration of non-conversational agentic architecture:
-autonomous agents that perceive, reason, and act without a human in the loop.
+The domain is Napa Valley environmental data — watershed, weather, air quality.
+That's the concrete surface. The actual subject is the architecture:
 
-**Design intent: distributed from the start.** Node agents run on a Raspberry Pi,
-reason locally with Claude Haiku, and publish structured observations to ATProto/Bluesky
-using a custom lexicon. A Synthesis agent — intended to run on a *separate machine* —
-subscribes to the ATProto firehose, filters by that lexicon, verifies publisher DIDs
-against a trusted registry, and reasons across domains with Claude Sonnet.
-ATProto is the message bus, not just the output channel.
+- **Autonomous agents at the edge** — cron-triggered, no human in the loop, perceive → reason → publish → exit
+- **DID-based workload identity** — each node agent has an ATProto DID; the Synthesis agent verifies it before acting on any record. A spoofed or compromised node is rejected at the boundary, not silently trusted.
+- **A federated protocol as the message bus** — agents don't share filesystems or databases. They communicate via ATProto records using a custom lexicon. Any agent anywhere that knows the lexicon and trusts the DID can participate.
+- **Conclusions, not data** — domain agents publish what they *concluded*, not raw readings. The Synthesis agent reads their reports, not their sensors.
 
-The current deployment runs Synthesis on the same Pi and reads SQLite directly —
-a working prototype before the distributed pieces are in place.
+The environmental monitoring problem is well-suited because it has real data sources, genuine multi-domain reasoning, and seasonal risk patterns worth tracking — but the patterns here (edge agent → structured record → verified identity → synthesis) apply anywhere.
 
 ---
 
@@ -78,7 +73,8 @@ ones at the end. The next run reads these conclusions, not raw sensor data.
 not the underlying readings. Domain agents are specialists; the synthesiser reads their reports.
 
 **No conversation** — no human in the loop, no chat interface. Agents are cron-triggered,
-run to completion, and exit.
+run to completion, and exit. The environmental domain makes this natural: weather doesn't
+wait for a prompt.
 
 ---
 
