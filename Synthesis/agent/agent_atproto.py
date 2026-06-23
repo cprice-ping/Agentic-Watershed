@@ -457,36 +457,33 @@ def _ensure_predictions_table(conn: sqlite3.Connection) -> None:
 
 
 def _resolve_prediction(risk_type: str, grouped: dict[str, list[dict]]) -> Optional[str]:
-    """Check whether current observations satisfy the resolution criteria for a prediction.
+    """Check whether current observations confirm a prediction.
 
-    Returns a short note string if the prediction is confirmed, None if not yet confirmed.
-    Thresholds are the module-level constants — not inferred from context.
+    Each risk type maps to its corresponding domain agent. Confirmation uses the
+    domain agent's top-level `flagged` field rather than specific numeric sub-fields,
+    because the ATProto publisher currently writes only summary/flagged to lexicon
+    records — numeric fields (fireRisk, gageHeightMaxFt, pm25Aqi, activeAlerts) are
+    not populated by the edge publisher. The `flagged` field IS authoritative: it is
+    the domain agent's own assessment that conditions warrant attention, which is
+    exactly what confirms a synthesis prediction.
+
+    When the publisher is extended to populate numeric fields, add specific checks
+    here using the module-level constants (FIRE_CONFIRM_LEVELS, FLOOD_ACTION_STAGE_FT,
+    AQI_USG_THRESHOLD, FIRE_CONFIRM_ALERTS).
     """
-    if risk_type == "fire":
-        for rec in grouped.get("weather", []):
-            raw = json.loads(rec.get("raw_record") or "{}").get("weather", {}) or {}
-            if raw.get("fireRisk") in FIRE_CONFIRM_LEVELS:
-                return f"weather.fireRisk={raw['fireRisk']}"
-            hit = FIRE_CONFIRM_ALERTS & set(raw.get("activeAlerts") or [])
-            if hit:
-                return f"NWS alert: {', '.join(sorted(hit))}"
+    domain_map = {
+        "fire":        "weather",
+        "flood":       "watershed",
+        "air_quality": "aqi",
+    }
+    domain = domain_map.get(risk_type)
+    if not domain:
+        return None
 
-    elif risk_type == "flood":
-        for rec in grouped.get("watershed", []):
-            raw = json.loads(rec.get("raw_record") or "{}").get("watershed", {}) or {}
-            gage = raw.get("gageHeightMaxFt")
-            if gage is not None and float(gage) >= FLOOD_ACTION_STAGE_FT:
-                return (f"gageHeightMaxFt={float(gage):.1f}ft "
-                        f"(\u2265 action stage {FLOOD_ACTION_STAGE_FT}ft)")
-
-    elif risk_type == "air_quality":
-        for rec in grouped.get("aqi", []):
-            raw = json.loads(rec.get("raw_record") or "{}").get("aqi", {}) or {}
-            pm25 = raw.get("pm25Aqi")
-            if pm25 is not None and int(pm25) >= AQI_USG_THRESHOLD:
-                return f"pm25Aqi={pm25} (\u2265 USG threshold {AQI_USG_THRESHOLD})"
-            if raw.get("smokeDetected"):
-                return "smokeDetected=true"
+    for rec in grouped.get(domain, []):
+        if rec.get("flagged"):
+            excerpt = (rec.get("summary") or "")[:100].strip()
+            return f"{domain} agent flagged: {excerpt}" if excerpt else f"{domain} agent flagged"
 
     return None
 
@@ -610,6 +607,17 @@ def write_predictions(obs: dict,
     now = datetime.now(timezone.utc).isoformat()
 
     for domain, level in to_predict:
+        # Deduplication: skip if a pending prediction already exists for this type.
+        # Without this, 14 consecutive moderate-fire runs write 14 pending records,
+        # making the 30-day ledger count noisy and the prompt summary misleading.
+        existing = conn.execute(
+            "SELECT id FROM predictions WHERE risk_type = ? AND status = 'pending'",
+            (domain,),
+        ).fetchone()
+        if existing:
+            log.info("Prediction %s: id=%d already pending, skipping", domain, existing[0])
+            continue
+
         horizon = PREDICTION_HORIZON_HOURS.get(domain, 48)
         conn.execute(
             """INSERT INTO predictions (made_at, risk_type, predicted_level, horizon_hours)
