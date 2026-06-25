@@ -178,7 +178,7 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
     client = anthropic.Anthropic()
     message = client.messages.create(
         model=model_id,
-        max_tokens=1024,
+        max_tokens=2048,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": context}],
     )
