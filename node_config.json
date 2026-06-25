@@ -1,0 +1,19 @@
+{
+  "node_id": "napa-node-01",
+  "location": "Napa Valley, California",
+  "weather": {
+    "observation_station": "KAPC",
+    "alert_zones": ["CAZ505", "CAC055"]
+  },
+  "watershed": {
+    "usgs_stations": {
+      "11458000": "Napa River near Napa",
+      "11456000": "Napa River near St Helena"
+    }
+  },
+  "aqi": {
+    "lat": 38.2975,
+    "lon": -122.2869,
+    "reporting_area": "Napa"
+  }
+}

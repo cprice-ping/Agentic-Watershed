@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sqlite3
 import time
@@ -30,15 +31,13 @@ from pathlib import Path
 import httpx
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration  (location-specific values come from node_config.json)
 # ---------------------------------------------------------------------------
 
 DB_PATH = Path(__file__).parent / "data" / "watershed.db"
 
-STATIONS = {
-    "11458000": "Napa River near Napa",
-    "11456000": "Napa River near St Helena",
-}
+_NODE_CFG = json.loads((Path(__file__).parent.parent / "node_config.json").read_text())
+STATIONS  = _NODE_CFG["watershed"]["usgs_stations"]
 
 # USGS Instantaneous Values endpoint (legacy — stable, widely used)
 USGS_IV_URL = "https://waterservices.usgs.gov/nwis/iv/"

@@ -47,7 +47,9 @@ PUBLISHER_DB = Path(__file__).parent / "data" / "publisher.db"
 
 BSKY_PDS = "https://bsky.social"
 LEXICON  = "net.cpricedomain.temp.monitor.observation"
-NODE_ID  = "napa-node-01"
+
+_NODE_CFG = json.loads((BASE / "node_config.json").read_text())
+NODE_ID   = _NODE_CFG["node_id"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -197,7 +199,7 @@ def build_watershed_record(row: dict, observed_at: str) -> dict:
         "flagReason": "",
         "agentModel": "claude-haiku-4-5",
         "watershed": {
-            "stationIds": ["USGS-11458000", "USGS-11456000"],
+            "stationIds": [f"USGS-{sid}" for sid in _NODE_CFG["watershed"]["usgs_stations"]],
             "sevenDayTrend": "unknown",  # could be derived from DB in future
         },
     }
@@ -214,7 +216,7 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
         "flagReason": "",
         "agentModel": "claude-haiku-4-5",
         "weather": {
-            "stationId": "KAPC",
+            "stationId": _NODE_CFG["weather"]["observation_station"],
             "activeAlerts": [],
         },
     }
@@ -231,7 +233,7 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         "flagReason": "",
         "agentModel": "claude-haiku-4-5",
         "aqi": {
-            "reportingArea": "Napa",
+            "reportingArea": _NODE_CFG["aqi"]["reporting_area"],
         },
     }
 

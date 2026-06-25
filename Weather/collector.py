@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sqlite3
 import time
@@ -23,19 +24,14 @@ from pathlib import Path
 import httpx
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration  (location-specific values come from node_config.json)
 # ---------------------------------------------------------------------------
 
 DB_PATH = Path(__file__).parent / "data" / "weather.db"
 
-# NWS observation station — Napa County Airport
-# https://api.weather.gov/stations/KAPC/observations
-OBSERVATION_STATION = "KAPC"
-
-# NWS alerts zone for Napa County
-# CAZ505 = Napa County interior valleys (fire weather zone)
-# CAC055 = Napa County (general)
-ALERT_ZONES = ["CAZ505", "CAC055"]
+_NODE_CFG           = json.loads((Path(__file__).parent.parent / "node_config.json").read_text())
+OBSERVATION_STATION = _NODE_CFG["weather"]["observation_station"]
+ALERT_ZONES         = _NODE_CFG["weather"]["alert_zones"]
 
 NWS_BASE = "https://api.weather.gov"
 
