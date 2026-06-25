@@ -26,7 +26,7 @@ import httpx
 # Configuration
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path(__file__).parent.parent / "data" / "weather.db"
+DB_PATH = Path(__file__).parent / "data" / "weather.db"
 
 # NWS observation station — Napa County Airport
 # https://api.weather.gov/stations/KAPC/observations

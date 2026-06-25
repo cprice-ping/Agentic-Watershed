@@ -33,7 +33,7 @@ import httpx
 # Configuration
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path(__file__).parent.parent / "data" / "watershed.db"
+DB_PATH = Path(__file__).parent / "data" / "watershed.db"
 
 STATIONS = {
     "11458000": "Napa River near Napa",

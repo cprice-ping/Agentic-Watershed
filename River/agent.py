@@ -38,7 +38,7 @@ import anthropic
 # Config
 # ---------------------------------------------------------------------------
 
-MCP_SERVER_PATH = Path(__file__).parent.parent / "mcp_server" / "mcp_server.py"
+MCP_SERVER_PATH = Path(__file__).parent / "mcp_server.py"
 
 MODELS = {
     "haiku": "claude-haiku-4-5-20251001",

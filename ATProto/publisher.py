@@ -34,12 +34,12 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-BASE = Path("/home/cprice/Agentic")
+BASE = Path(__file__).parent.parent
 
 DB_PATHS = {
-    "watershed": BASE / "Watershed" / "data" / "watershed.db",
-    "weather":   BASE / "Weather"   / "data" / "weather.db",
-    "aqi":       BASE / "AQI"       / "data" / "aqi.db",
+    "watershed": BASE / "River"   / "data" / "watershed.db",
+    "weather":   BASE / "Weather" / "data" / "weather.db",
+    "aqi":       BASE / "AQI"     / "data" / "aqi.db",
 }
 
 # Track what's been published — simple SQLite alongside the publisher

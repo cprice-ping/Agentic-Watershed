@@ -30,7 +30,7 @@ from mcp.server.fastmcp import FastMCP
 # Config — points at the same DB the collector writes to
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path(__file__).parent.parent / "data" / "watershed.db"
+DB_PATH = Path(__file__).parent / "data" / "watershed.db"
 
 mcp = FastMCP(
     "watershed",

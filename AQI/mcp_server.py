@@ -25,7 +25,7 @@ from mcp.server.fastmcp import FastMCP
 # Config
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path(__file__).parent.parent / "data" / "aqi.db"
+DB_PATH = Path(__file__).parent / "data" / "aqi.db"
 
 mcp = FastMCP(
     "aqi",
