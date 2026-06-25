@@ -147,7 +147,9 @@ def parse_usgs_response(data: dict) -> list[dict]:
 
         latest = values[-1]
         raw_value = latest.get("value")
-        qualifier = ",".join(q.get("qualifierCode", "") for q in latest.get("qualifiers", []))
+        # USGS qualifiers are plain strings in the IV API (e.g. ["P", "Ice"]), not dicts
+        qualifiers = latest.get("qualifiers", [])
+        qualifier = ",".join(q if isinstance(q, str) else q.get("qualifierCode", "") for q in qualifiers)
 
         # USGS uses -999999 as no-data sentinel
         value = float(raw_value) if raw_value and float(raw_value) != -999999 else None
