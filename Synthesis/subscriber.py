@@ -34,6 +34,7 @@ Cron (run just before synthesis agent):
 
 import json
 import logging
+import os
 import sqlite3
 import time
 import argparse
@@ -50,12 +51,20 @@ SUBSCRIBER_DB = Path(__file__).parent / "data" / "subscriber.db"
 
 LEXICON = "net.cpricedomain.temp.monitor.observation"
 
-# Trusted publisher registry — DIDs we will accept observations from.
-# Add new node DIDs here as the network grows.
-TRUSTED_PUBLISHERS = {
-    "did:plc:demqbviei2gxjjq2eqnm2rpi": "napa-node-01",  # napanode1.bsky.social
-    # "did:plc:...": "napa-node-02",
-}
+# Trusted publisher registry — loaded from publishers.json.
+# Azure: edit /data/publishers.json on the File Share (no image rebuild needed).
+# Local: edit Synthesis/publishers.json in the repo.
+_DATA_DIR         = Path(os.environ.get("DATA_DIR", "/data"))
+_PUBLISHERS_PATH  = (
+    _DATA_DIR / "publishers.json"
+    if (_DATA_DIR / "publishers.json").exists()
+    else Path(__file__).parent / "publishers.json"
+)
+TRUSTED_PUBLISHERS: dict[str, str] = (
+    json.loads(_PUBLISHERS_PATH.read_text())
+    if _PUBLISHERS_PATH.exists()
+    else {"did:plc:demqbviei2gxjjq2eqnm2rpi": "napa-node-01"}
+)
 
 PDS_HOST = "https://bsky.social"
 
