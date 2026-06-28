@@ -353,7 +353,6 @@ def publish_domain(domain: str, session: BlueskySession,
             log.info("[%s] [DRY RUN] Would publish observation %d:", domain, source_id)
             log.info("  Post: %s", post_text[:100] + "...")
             log.info("  Flagged: %s  Tags: %s", flagged, tags)
-            mark_published(pub_conn, domain, source_id, observed_at, "dry-run", flagged)
             count += 1
             continue
 
