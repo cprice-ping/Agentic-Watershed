@@ -17,7 +17,7 @@ Usage:
   python publisher.py --domain watershed  # single domain
 
 Cron (run after each agent cycle — 15 min after the last agent fires):
-  15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
+  15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 """
 
 import argparse
@@ -34,7 +34,7 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-BASE = Path("/home/cprice/Agentic")
+BASE = Path("/home/cprice/Agentic-Watershed")
 
 DB_PATHS = {
     "watershed": BASE / "Watershed" / "data" / "watershed.db",
