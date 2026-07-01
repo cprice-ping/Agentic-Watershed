@@ -34,12 +34,12 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-BASE = Path("/home/cprice/Agentic-Watershed")
+BASE = Path(__file__).parent.parent
 
 DB_PATHS = {
-    "watershed": BASE / "Watershed" / "data" / "watershed.db",
-    "weather":   BASE / "Weather"   / "data" / "weather.db",
-    "aqi":       BASE / "AQI"       / "data" / "aqi.db",
+    "watershed": BASE / "River"   / "data" / "watershed.db",
+    "weather":   BASE / "Weather" / "data" / "weather.db",
+    "aqi":       BASE / "AQI"     / "data" / "aqi.db",
 }
 
 # Track what's been published — simple SQLite alongside the publisher
@@ -47,7 +47,9 @@ PUBLISHER_DB = Path(__file__).parent / "data" / "publisher.db"
 
 BSKY_PDS = "https://bsky.social"
 LEXICON  = "net.cpricedomain.temp.monitor.observation"
-NODE_ID  = "napa-node-01"
+
+_NODE_CFG = json.loads((BASE / "node_config.json").read_text())
+NODE_ID   = _NODE_CFG["node_id"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -183,10 +185,113 @@ class BlueskySession:
 
 
 # ---------------------------------------------------------------------------
+# Collector data enrichment — fetch numeric readings closest to observed_at
+# ---------------------------------------------------------------------------
+
+def _fetch_weather_numerics(observed_at: str) -> dict:
+    db_path = DB_PATHS["weather"]
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT temperature_f, humidity_pct, wind_speed_mph,
+                   wind_direction_deg, wind_gust_mph, precip_24h_mm
+            FROM observations
+            ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
+            LIMIT 1
+            """,
+            (observed_at,),
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else {}
+    except sqlite3.Error:
+        return {}
+
+
+def _fetch_watershed_numerics(observed_at: str) -> dict:
+    db_path = DB_PATHS["watershed"]
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT parameter_code, value
+            FROM readings
+            WHERE parameter_code IN ('00060', '00065') AND value IS NOT NULL
+            ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
+            LIMIT 10
+            """,
+            (observed_at,),
+        ).fetchall()
+        conn.close()
+        result = {}
+        seen: set = set()
+        for r in rows:
+            code = r["parameter_code"]
+            if code not in seen:
+                seen.add(code)
+                if code == "00060":
+                    result["dischargeCfs"] = r["value"]
+                elif code == "00065":
+                    result["gageHeightFt"] = r["value"]
+        return result
+    except sqlite3.Error:
+        return {}
+
+
+def _fetch_aqi_numerics(observed_at: str) -> dict:
+    db_path = DB_PATHS["aqi"]
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT parameter, aqi
+            FROM observations
+            WHERE parameter IN ('PM2.5', 'OZONE') AND aqi IS NOT NULL
+            ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
+            LIMIT 10
+            """,
+            (observed_at,),
+        ).fetchall()
+        conn.close()
+        result = {}
+        seen: set = set()
+        for r in rows:
+            param = r["parameter"]
+            if param not in seen:
+                seen.add(param)
+                if param == "PM2.5":
+                    result["pm25Aqi"] = r["aqi"]
+                elif param == "OZONE":
+                    result["ozoneAqi"] = r["aqi"]
+        return result
+    except sqlite3.Error:
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Observation builders — convert DB rows to lexicon records
 # ---------------------------------------------------------------------------
 
 def build_watershed_record(row: dict, observed_at: str) -> dict:
+    numerics = _fetch_watershed_numerics(observed_at)
+    watershed_block: dict = {
+        "stationIds": [f"USGS-{sid}" for sid in _NODE_CFG["watershed"]["usgs_stations"]],
+        "sevenDayTrend": "unknown",
+    }
+    if "dischargeCfs" in numerics:
+        watershed_block["dischargeCfs"] = numerics["dischargeCfs"]
+    if "gageHeightFt" in numerics:
+        watershed_block["gageHeightFt"] = numerics["gageHeightFt"]
+
     return {
         "$type": LEXICON,
         "observedAt": observed_at,
@@ -196,14 +301,22 @@ def build_watershed_record(row: dict, observed_at: str) -> dict:
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
         "agentModel": "claude-haiku-4-5",
-        "watershed": {
-            "stationIds": ["USGS-11458000", "USGS-11456000"],
-            "sevenDayTrend": "unknown",  # could be derived from DB in future
-        },
+        "watershed": watershed_block,
     }
 
 
 def build_weather_record(row: dict, observed_at: str) -> dict:
+    numerics = _fetch_weather_numerics(observed_at)
+    weather_block: dict = {
+        "stationId": _NODE_CFG["weather"]["observation_station"],
+        "activeAlerts": [],
+    }
+    for field in ("temperature_f", "humidity_pct", "wind_speed_mph",
+                  "wind_direction_deg", "wind_gust_mph", "precip_24h_mm"):
+        val = numerics.get(field)
+        if val is not None:
+            weather_block[field] = val
+
     return {
         "$type": LEXICON,
         "observedAt": observed_at,
@@ -213,14 +326,20 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
         "agentModel": "claude-haiku-4-5",
-        "weather": {
-            "stationId": "KAPC",
-            "activeAlerts": [],
-        },
+        "weather": weather_block,
     }
 
 
 def build_aqi_record(row: dict, observed_at: str) -> dict:
+    numerics = _fetch_aqi_numerics(observed_at)
+    aqi_block: dict = {
+        "reportingArea": _NODE_CFG["aqi"]["reporting_area"],
+    }
+    if "pm25Aqi" in numerics:
+        aqi_block["pm25Aqi"] = numerics["pm25Aqi"]
+    if "ozoneAqi" in numerics:
+        aqi_block["ozoneAqi"] = numerics["ozoneAqi"]
+
     return {
         "$type": LEXICON,
         "observedAt": observed_at,
@@ -230,9 +349,7 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
         "agentModel": "claude-haiku-4-5",
-        "aqi": {
-            "reportingArea": "Napa",
-        },
+        "aqi": aqi_block,
     }
 
 
