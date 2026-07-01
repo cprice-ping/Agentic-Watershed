@@ -1,15 +1,23 @@
 """
 ATProto Node Publisher
 ----------------------
-Publishes domain agent observations (watershed, weather, aqi) to ATProto
-as the node identity (napanode1.bsky.social / napa-node-01 DID).
+Publishes domain agent observations (watershed, weather, aqi) as structured
+ATProto lexicon records, under the node's own identity.
 
-Domain observations are machine-readable, lexicon-tagged records intended
-for other agents to consume via the firehose subscriber. They are NOT
-the human-facing advisory — that's the synthesis publisher's job.
+Domain observations are machine-readable records intended for other agents
+(Synthesis) to consume, not a human-facing feed — there is no accompanying
+app.bsky.feed.post here. That's the synthesis publisher's job, on its own
+identity, on the public Bluesky network.
+
+PDS: defaults to a self-hosted PDS (see ATProto/pds/) so the node's identity
+     doesn't depend on Bluesky-run infrastructure. Override with
+     ATPROTO_PDS_URL or "pds_url" in node_config.json; falls back to
+     bsky.social if neither is set.
 
 Identity: BSKY_HANDLE / BSKY_APP_PASSWORD → node DID (napa-node-01)
-          Set in /etc/environment on the Pi.
+          Set in /etc/environment on the Pi. Against a self-hosted PDS these
+          are the node's PDS account handle/password, not a Bluesky app
+          password.
 
 Usage:
   python publisher.py                     # publish any unpublished observations
@@ -45,11 +53,19 @@ DB_PATHS = {
 # Track what's been published — simple SQLite alongside the publisher
 PUBLISHER_DB = Path(__file__).parent / "data" / "publisher.db"
 
-BSKY_PDS = "https://bsky.social"
-LEXICON  = "net.cpricedomain.temp.monitor.observation"
+LEXICON = "net.cpricedomain.temp.monitor.observation"
 
 _NODE_CFG = json.loads((BASE / "node_config.json").read_text())
 NODE_ID   = _NODE_CFG["node_id"]
+
+# PDS endpoint domain agents publish to. Defaults to a self-hosted PDS
+# (see ATProto/pds/) — set ATPROTO_PDS_URL or "pds_url" in node_config.json
+# to override. Falls back to bsky.social only for back-compat.
+BSKY_PDS = (
+    os.environ.get("ATPROTO_PDS_URL")
+    or _NODE_CFG.get("pds_url")
+    or "https://bsky.social"
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,47 +157,6 @@ class BlueskySession:
         resp.raise_for_status()
         return resp.json().get("uri", "")
 
-    def create_post(self, text: str, tags: list[str] = None) -> str:
-        """Create a Bluesky post (app.bsky.feed.post). Returns AT URI."""
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-        # Build facets for hashtags
-        # ATProto requires UTF-8 byte offsets, not character offsets
-        facets = []
-        full_text = text
-        if tags:
-            # Build the full text first, then calculate offsets from it
-            tag_parts = [f"#{t}" for t in tags]
-            tag_str = " " + " ".join(tag_parts)
-            full_text = text + tag_str
-
-            # Calculate byte offsets by scanning the encoded full text
-            full_bytes = full_text.encode("utf-8")
-            for tag in tags:
-                needle = f"#{tag}".encode("utf-8")
-                idx = full_bytes.find(needle)
-                if idx == -1:
-                    continue
-                facets.append({
-                    "index": {
-                        "byteStart": idx,
-                        "byteEnd": idx + len(needle),
-                    },
-                    "features": [{
-                        "$type": "app.bsky.richtext.facet#tag",
-                        "tag": tag,
-                    }],
-                })
-
-        record = {
-            "$type": "app.bsky.feed.post",
-            "text": full_text,
-            "createdAt": now,
-        }
-        if facets:
-            record["facets"] = facets
-
-        return self.create_record("app.bsky.feed.post", record)
 
 
 # ---------------------------------------------------------------------------
@@ -354,42 +329,6 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Post text builders
-# ---------------------------------------------------------------------------
-
-def truncate_graphemes(text: str, limit: int) -> str:
-    """Truncate text to a grapheme limit. Uses character count as approximation
-    (close enough for ASCII-heavy environmental summaries)."""
-    if len(text) <= limit:
-        return text
-    return text[:limit - 1] + "…"
-
-
-def build_post_text(domain: str, row: dict) -> tuple[str, list[str]]:
-    """Returns (post_text, hashtags). Post text fits within Bluesky's 300 grapheme limit."""
-    summary = row.get("summary", "")
-    flagged = bool(row.get("flagged", False))
-
-    domain_labels = {
-        "watershed": "🌊 Watershed",
-        "weather":   "🌤️ Weather",
-        "aqi":       "💨 Air Quality",
-    }
-    label = domain_labels.get(domain, "📡 Monitor")
-    header = f"⚠️ {label} — conditions flagged" if flagged else f"✅ {label} — normal conditions"
-
-    tags = ["NapaValley", "WatershedMonitor"]
-    if flagged:
-        tags.append("Flagged")
-
-    tag_str = " " + " ".join(f"#{t}" for t in tags)
-    overhead = len(header) + 2 + len(tag_str)
-    summary = truncate_graphemes(summary, 300 - overhead)
-
-    return f"{header}\n\n{summary}", tags
-
-
-# ---------------------------------------------------------------------------
 # Domain publication
 # ---------------------------------------------------------------------------
 
@@ -461,25 +400,22 @@ def publish_domain(domain: str, session: BlueskySession,
             observed_at += "Z"
 
         record = config["builder"](row, observed_at)
-        post_text, tags = build_post_text(domain, row)
         flagged = bool(row.get("flagged", False))
 
         if dry_run:
             log.info("[%s] [DRY RUN] Would publish observation %d:", domain, source_id)
-            log.info("  Post: %s", post_text[:100] + "...")
-            log.info("  Flagged: %s  Tags: %s", flagged, tags)
-            mark_published(pub_conn, domain, source_id, observed_at, "dry-run", flagged)
+            log.info("  Record: %s", json.dumps(record)[:200] + "...")
+            log.info("  Flagged: %s", flagged)
             count += 1
             continue
 
         try:
-            # Publish the structured lexicon record
+            # Publish the structured lexicon record. This PDS is the node's
+            # own — domain agents write for other agents to consume, not for
+            # a human Bluesky audience, so there's no accompanying app.bsky
+            # post here. That's Synthesis's job, on its own identity.
             record_uri = session.create_record(LEXICON, record)
             log.info("[%s] Published lexicon record: %s", domain, record_uri)
-
-            # Publish the human-readable Bluesky post
-            post_uri = session.create_post(post_text, tags)
-            log.info("[%s] Published post: %s", domain, post_uri)
 
             mark_published(pub_conn, domain, source_id, observed_at, record_uri, flagged)
             count += 1
