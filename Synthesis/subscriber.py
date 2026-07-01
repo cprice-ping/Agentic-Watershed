@@ -10,9 +10,11 @@ Default mode: fetch (cron-friendly, JIT, no persistent connection)
   agent on the same cron schedule.
 
 Optional mode: --firehose (live stream, must be running at publish time)
-  Connects to the ATProto firehose and collects records as they arrive.
-  Useful for low-latency setups or testing, but architecturally inconsistent
-  with the cron-triggered node agents.
+  Connects to the public Bluesky relay firehose and collects records as they
+  arrive. Only sees records from PDSs the relay crawls — won't see anything
+  from a self-hosted PDS that isn't registered with a relay. Also
+  architecturally inconsistent with the cron-triggered node agents; fetch
+  mode (default) is the supported path.
 
 Architecture:
   Node (Pi) → ATProto PDS ← [fetch mode: pulls on demand]
@@ -66,7 +68,10 @@ TRUSTED_PUBLISHERS: dict[str, str] = (
     else {"did:plc:demqbviei2gxjjq2eqnm2rpi": "napa-node-01"}
 )
 
-PDS_HOST = "https://bsky.social"
+# PDS to fetch trusted-publisher records from. All trusted publishers are
+# expected to live on the same PDS. Override with ATPROTO_PDS_URL if the
+# node moves off bsky.social to a self-hosted PDS (see ATProto/pds/).
+PDS_HOST = os.environ.get("ATPROTO_PDS_URL", "https://bsky.social")
 
 logging.basicConfig(
     level=logging.INFO,
