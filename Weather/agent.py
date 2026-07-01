@@ -34,7 +34,7 @@ import anthropic
 # Config
 # ---------------------------------------------------------------------------
 
-MCP_SERVER_PATH = Path(__file__).parent.parent / "mcp_server" / "mcp_server.py"
+MCP_SERVER_PATH = Path(__file__).parent / "mcp_server.py"
 
 MODELS = {
     "haiku": "claude-haiku-4-5-20251001",
@@ -178,7 +178,7 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
     client = anthropic.Anthropic()
     message = client.messages.create(
         model=model_id,
-        max_tokens=1024,
+        max_tokens=2048,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": context}],
     )

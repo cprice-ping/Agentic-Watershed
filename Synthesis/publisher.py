@@ -53,7 +53,7 @@ import httpx
 # Pi layout:    /Agentic/Synthesis/data/synthesis.db
 # Laptop/repo:  Synthesis/agent/data/synthesis.db  (agent writes here when run in-tree)
 _DEFAULT_SYNTHESIS_DB = Path(__file__).parent / "agent" / "data" / "synthesis.db"
-PUBLISHER_DB = Path(__file__).parent / "data" / "synth_publisher.db"
+_DEFAULT_PUBLISHER_DB = Path(__file__).parent / "data" / "synth_publisher.db"
 
 BSKY_PDS  = "https://bsky.social"
 LEXICON   = "net.cpricedomain.temp.monitor.observation"
@@ -71,9 +71,9 @@ log = logging.getLogger("atproto.synth_publisher")
 # Publisher DB
 # ---------------------------------------------------------------------------
 
-def init_publisher_db() -> sqlite3.Connection:
-    PUBLISHER_DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(PUBLISHER_DB)
+def init_publisher_db(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS published (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -223,6 +223,8 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--synthesis-db", type=Path, default=_DEFAULT_SYNTHESIS_DB,
                         help="Path to synthesis.db (default: agent/data/synthesis.db)")
+    parser.add_argument("--publisher-db", type=Path, default=_DEFAULT_PUBLISHER_DB,
+                        help="Path to synth_publisher.db (default: data/synth_publisher.db)")
     args = parser.parse_args()
 
     SYNTHESIS_DB = args.synthesis_db
@@ -241,13 +243,13 @@ def main() -> None:
         log.warning("Synthesis DB not found at %s — nothing to publish", SYNTHESIS_DB)
         return
 
-    pub_conn = init_publisher_db()
+    pub_conn = init_publisher_db(args.publisher_db)
 
     # Read unpublished synthesis observations
     conn = sqlite3.connect(SYNTHESIS_DB)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT rowid AS source_id, * FROM synthesis_observations ORDER BY rowid DESC LIMIT 20"
+        "SELECT rowid AS source_id, * FROM synthesis_observations ORDER BY rowid DESC LIMIT 1"
     ).fetchall()
     conn.close()
 

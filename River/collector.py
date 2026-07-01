@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sqlite3
 import time
@@ -30,15 +31,13 @@ from pathlib import Path
 import httpx
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration  (location-specific values come from node_config.json)
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path(__file__).parent.parent / "data" / "watershed.db"
+DB_PATH = Path(__file__).parent / "data" / "watershed.db"
 
-STATIONS = {
-    "11458000": "Napa River near Napa",
-    "11456000": "Napa River near St Helena",
-}
+_NODE_CFG = json.loads((Path(__file__).parent.parent / "node_config.json").read_text())
+STATIONS  = _NODE_CFG["watershed"]["usgs_stations"]
 
 # USGS Instantaneous Values endpoint (legacy — stable, widely used)
 USGS_IV_URL = "https://waterservices.usgs.gov/nwis/iv/"
@@ -147,7 +146,9 @@ def parse_usgs_response(data: dict) -> list[dict]:
 
         latest = values[-1]
         raw_value = latest.get("value")
-        qualifier = ",".join(q.get("qualifierCode", "") for q in latest.get("qualifiers", []))
+        # USGS qualifiers are plain strings in the IV API (e.g. ["P", "Ice"]), not dicts
+        qualifiers = latest.get("qualifiers", [])
+        qualifier = ",".join(q if isinstance(q, str) else q.get("qualifierCode", "") for q in qualifiers)
 
         # USGS uses -999999 as no-data sentinel
         value = float(raw_value) if raw_value and float(raw_value) != -999999 else None

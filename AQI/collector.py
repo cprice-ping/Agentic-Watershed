@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sqlite3
@@ -28,16 +29,16 @@ from pathlib import Path
 import httpx
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration  (location-specific values come from node_config.json)
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path(__file__).parent.parent / "data" / "aqi.db"
+DB_PATH = Path(__file__).parent / "data" / "aqi.db"
 
 AIRNOW_BASE = "https://www.airnowapi.org"
 
-# Napa, CA — city centre coordinates
-NAPA_LAT = 38.2975
-NAPA_LON = -122.2869
+_NODE_CFG    = json.loads((Path(__file__).parent.parent / "node_config.json").read_text())
+LOCATION_LAT = _NODE_CFG["aqi"]["lat"]
+LOCATION_LON = _NODE_CFG["aqi"]["lon"]
 
 # Search radius in miles — 25 miles covers the whole valley
 DISTANCE_MILES = 25
@@ -131,8 +132,8 @@ def fetch_observations(api_key: str) -> list[dict]:
     Returns a list of parameter records (one per pollutant).
     """
     params = {
-        "latitude": NAPA_LAT,
-        "longitude": NAPA_LON,
+        "latitude": LOCATION_LAT,
+        "longitude": LOCATION_LON,
         "distance": DISTANCE_MILES,
         "format": "application/json",
         "API_KEY": api_key,

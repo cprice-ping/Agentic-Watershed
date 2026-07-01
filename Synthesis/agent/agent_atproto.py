@@ -25,6 +25,7 @@ Cron:
 import argparse
 import json
 import logging
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,6 +42,18 @@ import anthropic
 # Laptop/repo: Synthesis/data/subscriber.db          (subscriber.py runs in-tree)
 _DEFAULT_SUBSCRIBER_DB = Path(__file__).parent.parent.parent / "ATProto" / "data" / "subscriber.db"
 _DEFAULT_SYNTHESIS_DB  = Path(__file__).parent / "data" / "synthesis.db"
+
+# Config resolution: prefer /data (Azure File Share mount) so the file
+# can be edited on the share without an image rebuild. Fall back to the
+# in-repo copy (Synthesis/synthesis_config.json) for local Pi / laptop use.
+_DATA_DIR       = Path(os.environ.get("DATA_DIR", "/data"))
+_SYNTH_CFG_PATH = (
+    _DATA_DIR / "synthesis_config.json"
+    if (_DATA_DIR / "synthesis_config.json").exists()
+    else Path(__file__).parent.parent / "synthesis_config.json"
+)
+_SYNTH_CFG = json.loads(_SYNTH_CFG_PATH.read_text()) if _SYNTH_CFG_PATH.exists() else {}
+REGION     = _SYNTH_CFG.get("region", "Napa Valley, California")
 
 MODELS = {
     "haiku":  "claude-haiku-4-5-20251001",
@@ -731,7 +744,7 @@ def gather_context(lookback_hours: float = 24.0,
 
     return (
         f"Synthesis run at: {now}\n"
-        f"Location: Napa Valley, California\n\n"
+        f"Region: {REGION}\n\n"
         + "\n\n".join(sections)
     )
 

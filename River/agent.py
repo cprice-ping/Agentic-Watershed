@@ -38,7 +38,9 @@ import anthropic
 # Config
 # ---------------------------------------------------------------------------
 
-MCP_SERVER_PATH = Path(__file__).parent.parent / "mcp_server" / "mcp_server.py"
+MCP_SERVER_PATH = Path(__file__).parent / "mcp_server.py"
+
+_NODE_CFG = json.loads((Path(__file__).parent.parent / "node_config.json").read_text())
 
 MODELS = {
     "haiku": "claude-haiku-4-5-20251001",
@@ -163,13 +165,10 @@ def gather_context() -> str:
     sections.append(f"=== PREVIOUS AGENT OBSERVATIONS (memory) ===\n{obs}")
 
     # Current conditions
-    log.info("  → get_station_summary (Napa)")
-    napa = call_mcp_tool("get_station_summary", {"station_id": "11458000"})
-    sections.append(f"=== STATION: NAPA RIVER NEAR NAPA (11458000) ===\n{napa}")
-
-    log.info("  → get_station_summary (St Helena)")
-    st_helena = call_mcp_tool("get_station_summary", {"station_id": "11456000"})
-    sections.append(f"=== STATION: NAPA RIVER NEAR ST HELENA (11456000) ===\n{st_helena}")
+    for station_id, station_name in _NODE_CFG["watershed"]["usgs_stations"].items():
+        log.info("  → get_station_summary (%s)", station_name)
+        data = call_mcp_tool("get_station_summary", {"station_id": station_id})
+        sections.append(f"=== STATION: {station_name.upper()} ({station_id}) ===\n{data}")
 
     # Anomaly check
     log.info("  → get_anomalies")
@@ -194,7 +193,7 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
     client = anthropic.Anthropic()
     message = client.messages.create(
         model=model_id,
-        max_tokens=1024,
+        max_tokens=2048,
         system=SYSTEM_PROMPT,
         messages=[
             {
