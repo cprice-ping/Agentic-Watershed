@@ -34,14 +34,21 @@ Node hostname: `napa-node-01.watershed-agent.dev`.
    cloudflared tunnel route dns napa-pds napa-node-01.watershed-agent.dev
    ```
 
-4. **Configure ingress** — create `~/.cloudflared/config.yml`:
+4. **Configure ingress** — create `~/.cloudflared/config.yml`, then copy it
+   (and the credentials file) under `/etc/cloudflared/`, since the systemd
+   service runs as root and won't see your user's home directory:
    ```yaml
    tunnel: napa-pds
-   credentials-file: /home/cprice/.cloudflared/<tunnel-id>.json
+   credentials-file: /etc/cloudflared/<tunnel-id>.json
    ingress:
      - hostname: napa-node-01.watershed-agent.dev
        service: http://localhost:3000
      - service: http_status:404
+   ```
+   ```bash
+   sudo mkdir -p /etc/cloudflared
+   sudo cp ~/.cloudflared/config.yml /etc/cloudflared/config.yml
+   sudo cp ~/.cloudflared/<tunnel-id>.json /etc/cloudflared/<tunnel-id>.json
    ```
 
 5. **Run the tunnel as a service** (survives reboots):
@@ -55,16 +62,21 @@ Node hostname: `napa-node-01.watershed-agent.dev`.
    ```bash
    openssl rand --hex 16   # PDS_JWT_SECRET
    openssl rand --hex 16   # PDS_ADMIN_PASSWORD
+   openssl ecparam --name secp256k1 --genkey --noout --outform DER \
+     | tail --bytes=+8 | head --bytes=32 | od -An -tx1 | tr -d ' \n'
+     # ^ PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX (needs a real secp256k1
+     #   key, not arbitrary random bytes — this derives one via openssl).
+     #   Use `xxd --plain --cols 32` in place of `od -An -tx1 | tr -d ' \n'`
+     #   if xxd is installed (sudo apt install xxd if not).
    ```
-   For the PLC rotation key, use the official install script's keygen step
-   (see the bluesky-social/pds README) rather than hand-rolling one — it
-   needs to be a valid secp256k1 private key in the format the PDS expects.
 
 7. **Copy and fill in env**:
    ```bash
    cp pds.env.example pds.env
-   # edit pds.env with the generated secrets — PDS_HOSTNAME is already set
-   # to napa-node-01.watershed-agent.dev
+   # edit pds.env with the generated secrets — PDS_HOSTNAME and
+   # PDS_SERVICE_HANDLE_DOMAINS are already set. PDS_HOSTNAME alone does NOT
+   # make the domain valid for account handles — PDS_SERVICE_HANDLE_DOMAINS
+   # is what allows it (leading dot = suffix match).
    ```
 
 8. **Create the data directory** referenced in `docker-compose.yml`
@@ -84,14 +96,20 @@ Node hostname: `napa-node-01.watershed-agent.dev`.
     curl -s https://napa-node-01.watershed-agent.dev/xrpc/_health
     ```
 
-11. **Create the node's account** (mints its did:plc):
+11. **Create the node's account** (mints its did:plc). Recent PDS images
+    don't ship `pdsadmin`/`dist/scripts` inside the container — account
+    creation is just a regular XRPC call, and works without an invite code
+    since `PDS_INVITE_REQUIRED=false`:
     ```bash
-    docker exec -it pds node dist/scripts/create-account.js \
-      --email you@example.com \
-      --handle napa-node-01.watershed-agent.dev \
-      --password <account-password>
+    curl -s -X POST https://napa-node-01.watershed-agent.dev/xrpc/com.atproto.server.createAccount \
+      -H "Content-Type: application/json" \
+      -d '{
+        "email": "you@example.com",
+        "handle": "napa-node-01.watershed-agent.dev",
+        "password": "<account-password>"
+      }'
     ```
-    Save the returned DID — that's what goes into `node_config.json` and
+    Save the returned `did` — that's what goes into `node_config.json` and
     into Synthesis's trusted-publishers list.
 
 ## Persistence
