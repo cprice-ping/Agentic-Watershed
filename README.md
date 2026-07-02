@@ -6,8 +6,8 @@ The domain is Napa Valley environmental data — watershed, weather, air quality
 That's the concrete surface. The actual subject is the architecture:
 
 - **Autonomous agents at the edge** — cron-triggered, no human in the loop, perceive → reason → publish → exit
-- **DID-based workload identity** — each node agent has an ATProto DID; the Synthesis agent verifies it before acting on any record. A spoofed or compromised node is rejected at the boundary, not silently trusted.
-- **A federated protocol as the message bus** — agents don't share filesystems or databases. They communicate via ATProto records using a custom lexicon. Any agent anywhere that knows the lexicon and trusts the DID can participate.
+- **DID-based workload identity** — each node agent has an ATProto DID, minted by its own self-hosted PDS rather than borrowed from a Bluesky account; the Synthesis agent verifies it before acting on any record. A spoofed or compromised node is rejected at the boundary, not silently trusted.
+- **A federated protocol as the message bus, not Bluesky as the destination** — agents don't share filesystems or databases. They communicate via ATProto records using a custom lexicon, published to the node's own PDS. Only the Synthesis agent — the one component with an actual human audience — posts to the public Bluesky network.
 - **Conclusions, not data** — domain agents publish what they *concluded*, not raw readings. The Synthesis agent reads their reports, not their sensors.
 
 The environmental monitoring problem is well-suited because it has real data sources, genuine multi-domain reasoning, and seasonal risk patterns worth tracking — but the patterns here (edge agent → structured record → verified identity → synthesis) apply anywhere.
@@ -29,36 +29,46 @@ The environmental monitoring problem is well-suited because it has real data sou
               [Domain Agents] (Claude Haiku)                            │
               Each reasons over its own domain,                          │
               writes structured conclusions,                             │
-              publishes to ATProto/Bluesky                              │
-              using custom lexicon + verified DID                       │
+              publishes lexicon records to the node's own                │
+              self-hosted PDS — no Bluesky app post, no                  │
+              dependency on bsky.social for identity or data             │
                     └──────────────────────┬──────────────────────────┘
-                                           │ ATProto firehose
+                                           │ com.atproto.repo.listRecords
+                                           │ (fetch mode, cron-triggered)
                     ┌──────────────────────▼──────────────────────────┐
-                    │           Synthesis Machine (separate)           │
+                    │      Synthesis Agent (Azure Container Apps Job)  │
                     │                                                   │
                     │  [Synthesis Agent] (Claude Sonnet)               │
-                    │  Subscribes to firehose                          │
+                    │  Fetches from the node's self-hosted PDS         │
                     │  Filters by custom lexicon                       │
                     │  Verifies publisher DIDs against trusted registry│
-                    │  Reasons across domains                          │
-                    │  Produces unified risk assessment                │
+                    │  Reasons across domains, tracks predictions      │
+                    │  Posts the human-facing advisory to Bluesky      │
+                    │  (napasynth01.bsky.social) — the only step a     │
+                    │  person actually sees                            │
                     └───────────────────────────────────────────────┘
 ```
 
 ### Current deployment
 
-Pi nodes (edge) → ATProto/Bluesky → Synthesis agent (Azure Container Apps Job) → Bluesky advisory.
+Pi nodes (edge) → self-hosted PDS (Cloudflare Tunnel, `watershed-agent.dev`) →
+Synthesis agent (Azure Container Apps Job) → Bluesky advisory.
 
-Domain agents publish structured lexicon records from the Pi. Synthesis subscribes via
-`com.atproto.repo.listRecords`, verifies publisher DIDs, reasons across domains with Claude Sonnet,
-and posts advisories from `napasynth01.bsky.social`. The full pipeline is live.
+Domain agents publish structured lexicon records to their own PDS on the Pi —
+not to Bluesky. Synthesis fetches via `com.atproto.repo.listRecords` against
+that PDS, verifies publisher DIDs, reasons across domains with Claude Sonnet,
+and posts advisories from `napasynth01.bsky.social`. The full pipeline is live;
+see `ATProto/pds/README.md` for the PDS setup and `CONTEXT.md` for the
+architecture decisions behind self-hosting it.
 
 ### Key design principles
 
-**ATProto as message bus** — domain agent observations are published as structured ATProto
-records using a custom lexicon (`net.cpricedomain.temp.monitor.observation`). The Synthesis agent
-is a subscriber, not a database reader. This makes the system federable and the agents
-genuinely independent.
+**ATProto as message bus, not Bluesky as destination** — domain agent observations
+are published as structured ATProto records using a custom lexicon
+(`net.cpricedomain.temp.monitor.observation`) to the node's own self-hosted PDS.
+The Synthesis agent is a subscriber, not a database reader, and the only component
+that also posts to the public Bluesky network. This makes the system federable
+and the agents genuinely independent — of each other, and of any single platform.
 
 **DID-based trust** — each publishing agent has an ATProto DID. The Synthesis agent
 verifies incoming records against a trusted DID registry before acting on them.
@@ -84,23 +94,29 @@ wait for a prompt.
 
 ```
 Agentic-Watershed/
-  watershed/
-    collector/collector.py    USGS stream gauge → SQLite
-    mcp_server/mcp_server.py  MCP tools over watershed.db
-    agent/agent.py            Domain agent (Haiku)
+  River/
+    collector.py               USGS stream gauge → SQLite
+    mcp_server.py               MCP tools over watershed.db
+    agent.py                    Domain agent (Haiku)
     README.md
-  weather/
-    collector/collector.py    NWS observations + alerts → SQLite
-    mcp_server/mcp_server.py  MCP tools over weather.db
-    agent/agent.py            Domain agent (Haiku)
+  Weather/
+    collector.py                NWS observations + alerts → SQLite
+    mcp_server.py                MCP tools over weather.db
+    agent.py                     Domain agent (Haiku)
     README.md
-  aqi/
-    collector/collector.py    AirNow PM2.5/Ozone → SQLite
-    mcp_server/mcp_server.py  MCP tools over aqi.db
-    agent/agent.py            Domain agent (Haiku)
+  AQI/
+    collector.py                 AirNow PM2.5/Ozone → SQLite
+    mcp_server.py                 MCP tools over aqi.db
+    agent.py                      Domain agent (Haiku)
     README.md
-  synthesis/
-    agent/agent.py            Cross-domain agent (Sonnet)
+  ATProto/
+    publisher.py                  Publishes domain records to the node's PDS
+    pds/                           Self-hosted PDS: docker-compose + setup docs
+  Synthesis/
+    agent/agent_atproto.py         Cross-domain agent (Sonnet)
+    subscriber.py                  Fetches records from the node's PDS
+    publisher.py                   Posts the human-facing advisory to Bluesky
+    deploy/deploy.sh               Azure Container Apps Job deployment
     README.md
 ```
 
@@ -138,15 +154,15 @@ NWS alert zones:
 Each stack has its own virtual environment:
 
 ```bash
-cd ~/Agentic/<Stack>
+cd ~/Agentic-Watershed/<Stack>
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt   # or see stack README for deps
 ```
 
 Dependencies:
-- Watershed, Weather, AQI: `anthropic httpx "mcp>=1.27,<2"`
-- Synthesis: `anthropic` only
+- River, Weather, AQI: `anthropic httpx "mcp>=1.27,<2"`
+- ATProto, Synthesis: `anthropic httpx` (no MCP — these talk ATProto, not stdio tools)
 
 ### Environment variables
 
@@ -154,6 +170,11 @@ Dependencies:
 # Add to /etc/environment on Pi (cron picks these up via `. /etc/environment`)
 ANTHROPIC_API_KEY=sk-ant-...
 AIRNOW_API_KEY=your-key
+
+# ATProto publisher — node's self-hosted PDS account (see ATProto/pds/README.md)
+BSKY_HANDLE=napa-node-01.watershed-agent.dev
+BSKY_APP_PASSWORD=...
+ATPROTO_PDS_URL=https://napa-node-01.watershed-agent.dev
 ```
 
 See `.env.example` for reference.
@@ -165,18 +186,22 @@ See `.env.example` for reference.
 ```cron
 # Source env vars for all jobs
 # === Collectors ===
-*/15 * * * * . /etc/environment && cd /home/cprice/Agentic/Watershed && .venv/bin/python collector/collector.py >> logs/collector.log 2>&1
-*/30 * * * * . /etc/environment && cd /home/cprice/Agentic/Weather && .venv/bin/python collector/collector.py >> logs/collector.log 2>&1
-*/30 * * * * . /etc/environment && cd /home/cprice/Agentic/AQI && .venv/bin/python collector/collector.py >> logs/collector.log 2>&1
+*/15 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python collector.py >> logs/collector.log 2>&1
+*/30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python collector.py >> logs/collector.log 2>&1
+*/30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python collector.py >> logs/collector.log 2>&1
 
 # === Domain Agents (staggered by 1h) ===
-0 0,6,12,18 * * * . /etc/environment && cd /home/cprice/Agentic/Watershed && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
-0 1,7,13,19 * * * . /etc/environment && cd /home/cprice/Agentic/Weather && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
-0 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic/AQI && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
+0 0,6,12,18 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 1,7,13,19 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python agent.py >> logs/agent.log 2>&1
 
-# === Synthesis Agent (twice daily, after morning/evening domain runs) ===
-0 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
+# === ATProto Publisher (15 min after the last domain agent) ===
+15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 ```
+
+The Synthesis agent does **not** run on Pi cron — it's an Azure Container Apps
+Job (`0 6,18 * * *` UTC), deployed via `Synthesis/deploy/deploy.sh`. See
+`CONTEXT.md` for the deployment details.
 
 ---
 
@@ -188,11 +213,11 @@ This keeps the architecture simple while preserving the MCP tool contract.
 
 To inspect tools interactively:
 ```bash
-python mcp_server/mcp_server.py --http --port 8000
+python mcp_server.py --http --port 8000
 # Open MCP Inspector → connect to http://localhost:8000/mcp
 ```
 
-HTTP port assignments: Watershed=8000, Weather=8001, AQI=8002.
+HTTP port assignments: River=8000, Weather=8001, AQI=8002.
 
 ---
 
@@ -215,44 +240,57 @@ Each synthesis run produces a structured observation:
 
 ---
 
-## Next: ATProto publisher (the real message bus)
+## ATProto publisher — the real message bus
 
-Domain agents will publish observations to ATProto/Bluesky using a custom lexicon:
+Domain agents publish observations as structured lexicon records to the node's
+own self-hosted PDS using a custom lexicon:
 
 ```
 net.cpricedomain.temp.monitor.observation
 ```
 
-This is not just a posting mechanism — it's how the Synthesis agent receives
-domain observations in the distributed design. Fields map directly to the
-synthesis output schema, making observations queryable and federable.
+This is not a posting mechanism — it's how the Synthesis agent receives domain
+observations in the distributed design. Fields include both the domain agent's
+prose summary and numeric readings (temperature, discharge, gage height, AQI
+values, etc.) joined from the collector DBs at publish time. ATProto records
+are DAG-CBOR, which has no float type, so numeric fields are stringified —
+worth knowing if you extend the lexicon further.
 
-The publisher is a separate process per domain stack that:
-1. Reads `agent_observations` from the local SQLite DB
-2. Posts new (unflagged-for-publish) records to ATProto as `net.cpricedomain.temp.monitor.observation`
-3. Uses the domain agent's registered DID as the author identity
+`ATProto/publisher.py` runs per node (not per domain stack) and:
+1. Reads `agent_observations` from each domain's local SQLite DB
+2. Joins numeric fields from the corresponding collector table
+3. Publishes new records to the node's PDS as `net.cpricedomain.temp.monitor.observation`
+4. Uses the node's own PDS account as the author identity — no accompanying
+   `app.bsky.feed.post`, since domain agents have no human audience
 
 ---
 
 ## Distributed identity
 
-Each node (Pi running domain agents) will have a registered ATProto DID.
-The Synthesis agent — running on a separate machine — subscribes to the firehose
-and filters for `net.cpricedomain.temp.monitor.observation` records.
+Each node (Pi running domain agents) has its own ATProto DID, minted by its
+own self-hosted PDS (`napa-node-01.watershed-agent.dev`, reachable via a
+Cloudflare Tunnel — see `ATProto/pds/README.md`) rather than borrowed from a
+Bluesky account signup. The Synthesis agent — running separately, in Azure —
+fetches from that PDS via `com.atproto.repo.listRecords` and filters for
+`net.cpricedomain.temp.monitor.observation` records.
 
-Before reasoning on any record, Synthesis verifies the author DID against a
-trusted registry. This is the workload identity boundary: a record from an
-unrecognised DID is discarded, not reasoned on.
+Before reasoning on any record, Synthesis verifies the author DID against
+`Synthesis/publishers.json`, a trusted-publisher registry. This is the
+workload identity boundary: a record from an unrecognised DID is discarded,
+not reasoned on.
 
 This surfaces interesting identity questions that connect to Ping Identity's work:
 - How does a node prove it's an authorised publisher?
-- How is the trusted DID registry maintained and updated?
+- How is the trusted DID registry maintained and updated? (Currently a hand-edited
+  JSON file — see `CONTEXT.md`'s "Agent Identity Registry" discussion for where
+  this is headed.)
 - What happens when a node's DID is revoked mid-run?
 - Can a compromised node publish plausible-looking records that fool Synthesis?
 
 The MCP servers already support HTTP mode (`--http` flag) for when domain agent
-tools need to be called across the network. Candidate workload identity approaches:
-SPIFFE/SVID per node, charter-based authorisation, PKI/X.509 certificates.
+tools need to be called across the network. Candidate workload identity approaches
+for that boundary: SPIFFE/SVID per node, charter-based authorisation, PKI/X.509
+certificates — see `CONTEXT.md` for where this is actively being worked out.
 
 ---
 
