@@ -122,14 +122,17 @@ python agent/agent_atproto.py --dry-run --verbose
 
 ## Trusted publisher registry
 
-In `subscriber.py`, the `TRUSTED_PUBLISHERS` dict maps DID → node name:
+`publishers.json` maps DID → node name:
 
-```python
-TRUSTED_PUBLISHERS = {
-    "did:plc:demqbviei2gxjjq2eqnm2rpi": "napa-node-01",
-    # "did:plc:...": "napa-node-02",
+```json
+{
+  "did:plc:ggztd5hjk3cnkhgzdk4rmqan": "napa-node-01"
 }
 ```
+
+Resolution order: `$DATA_DIR/publishers.json` (Azure File Share, editable
+without a redeploy) falling back to `Synthesis/publishers.json` (in-repo
+default). `subscriber.py` loads this at start.
 
 Adding a new node: add its DID here. The subscriber starts accepting its records
 immediately. No other configuration needed. Removing a DID: the subscriber stops

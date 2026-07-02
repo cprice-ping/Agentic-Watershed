@@ -1,6 +1,8 @@
 {
   "node_id": "napa-node-01",
   "location": "Napa Valley, California",
+  "did": "did:plc:ggztd5hjk3cnkhgzdk4rmqan",
+  "pds_url": "https://napa-node-01.watershed-agent.dev",
   "weather": {
     "observation_station": "KAPC",
     "alert_zones": ["CAZ505", "CAC055"]

@@ -65,7 +65,7 @@ _PUBLISHERS_PATH  = (
 TRUSTED_PUBLISHERS: dict[str, str] = (
     json.loads(_PUBLISHERS_PATH.read_text())
     if _PUBLISHERS_PATH.exists()
-    else {"did:plc:demqbviei2gxjjq2eqnm2rpi": "napa-node-01"}
+    else {"did:plc:ggztd5hjk3cnkhgzdk4rmqan": "napa-node-01"}
 )
 
 # PDS to fetch trusted-publisher records from. All trusted publishers are
