@@ -169,6 +169,11 @@ const LEXICON = "net.cpricedomain.temp.monitor.observation";
 const LOOKBACK_HOURS = 24; // matches Synthesis's default fetch lookback window
 const PLC_DIRECTORY = "https://plc.directory";
 
+// napa-synth-01 — the synthesis identity that publishes advisory records.
+// Only one today; hardcoded rather than a config file since (unlike node
+// publishers) there's exactly one of these by design.
+const SYNTHESIS_DID = "did:plc:clcw2dxrd6qma45gy3oozjwa";
+
 // Trusted node publishers — mirrors Synthesis/publishers.json in the repo.
 // Keep these in sync; this file has no server, so it can't read the repo's
 // copy directly.
@@ -215,6 +220,16 @@ async function listRecords(did, collection, limit = 100) {
   if (!resp.ok) throw new Error(`listRecords failed (${resp.status}) for ${did}`);
   const data = await resp.json();
   return data.records || [];
+}
+
+// listRecords returns newest-first by default (rkeys are time-sortable
+// TIDs) — same assumption Synthesis/subscriber.py relies on for its
+// early-exit-on-cutoff logic, so a small limit is enough here.
+async function getLatestSynthesisUri() {
+  const records = await listRecords(SYNTHESIS_DID, LEXICON, 5);
+  const latest = records.find(r => (r.value || {}).observationType === `${LEXICON}#synthesis`);
+  if (!latest) throw new Error("No synthesis records found yet.");
+  return latest.uri;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +297,10 @@ async function render(uri) {
   let html = "";
 
   html += `<div class="card">`;
-  html += `<h2>Synthesis Advisory</h2>`;
+  html += `<div style="display:flex; justify-content:space-between; align-items:baseline; gap:1rem;">`;
+  html += `<h2 style="margin:0;">Synthesis Advisory</h2>`;
+  html += `<button id="get-current-btn" style="margin:0; padding:0.35rem 0.75rem; font-size:0.78rem;">↻ Get Current</button>`;
+  html += `</div>`;
   if (v.flagged) {
     html += `<div class="flagged-banner">⚠ Flagged${synth.flagReason ? ": " + esc(v.flagReason || "") : ""}</div>`;
   }
@@ -302,6 +320,7 @@ async function render(uri) {
   html += `</div>`;
 
   document.getElementById("app").innerHTML = html;
+  document.getElementById("get-current-btn").addEventListener("click", goToCurrent);
 
   // Underlying domain records this synthesis run drew from — approximated by
   // matching observedAt within the same lookback window Synthesis itself
@@ -355,22 +374,44 @@ async function render(uri) {
   }
 }
 
-function renderPrompt() {
+function goToUri(uri) {
+  const url = new URL(window.location);
+  url.searchParams.set("uri", uri);
+  window.history.replaceState({}, "", url);
+  render(uri);
+}
+
+async function goToCurrent() {
+  const app = document.getElementById("app");
+  const prev = app.innerHTML;
+  app.innerHTML = '<div class="state">Fetching current advisory…</div>';
+  try {
+    const uri = await getLatestSynthesisUri();
+    goToUri(uri);
+  } catch (err) {
+    app.innerHTML = `<div class="error">Couldn't fetch the current advisory.<br>${esc(err.message)}</div>`;
+    setTimeout(() => { if (app.querySelector(".error")) app.innerHTML = prev; }, 4000);
+  }
+}
+
+function renderPrompt(autoFetchError) {
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="card">
-      <h2>Enter an observation URI</h2>
-      <p class="meta">Paste an <code>at://</code> record URI (from a Synthesis advisory post's link, or from a domain agent's lexicon record) to view the full record.</p>
+      <h2>Current Advisory</h2>
+      ${autoFetchError ? `<div class="error">${esc(autoFetchError)}</div>` : ""}
+      <button id="get-current-btn">↻ Get Current</button>
+    </div>
+    <div class="card">
+      <h2>Or enter an observation URI</h2>
+      <p class="meta">Paste an <code>at://</code> record URI (from a Synthesis advisory post's link, or from a domain agent's lexicon record) to view that specific record.</p>
       <input type="text" id="uri-input" placeholder="at://did:plc:.../net.cpricedomain.temp.monitor.observation/...">
       <br><button id="go-btn">View</button>
     </div>`;
+  document.getElementById("get-current-btn").addEventListener("click", goToCurrent);
   document.getElementById("go-btn").addEventListener("click", () => {
     const uri = document.getElementById("uri-input").value.trim();
-    if (uri) {
-      const url = new URL(window.location);
-      url.searchParams.set("uri", uri);
-      window.location = url;
-    }
+    if (uri) goToUri(uri);
   });
 }
 
@@ -384,8 +425,15 @@ async function main() {
   const uri = params.get("uri");
   if (uri) {
     render(uri);
-  } else {
-    renderPrompt();
+    return;
+  }
+
+  // Bare landing (no ?uri=) — fetch and show the current advisory automatically.
+  try {
+    const latest = await getLatestSynthesisUri();
+    goToUri(latest);
+  } catch (err) {
+    renderPrompt(`Couldn't auto-load the current advisory: ${err.message}`);
   }
 }
 
