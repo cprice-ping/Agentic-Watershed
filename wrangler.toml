@@ -1,0 +1,11 @@
+name = "watershed-viewer"
+compatibility_date = "2025-01-01"
+
+# Static-assets-only Worker — no code, just serves Viewer/ as a static site.
+# Cloudflare's "Workers & Pages" flow defaults to Wrangler-based deployment;
+# this config is what makes `npx wrangler deploy` (the default deploy
+# command in that flow) serve a static site instead of expecting a Worker
+# script.
+[assets]
+directory = "./Viewer"
+not_found_handling = "404-page"

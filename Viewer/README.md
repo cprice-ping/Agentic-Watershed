@@ -34,18 +34,28 @@ node's DID changes or a new node is added. (Small enough scale that this is
 fine; if the node count grows meaningfully, worth fetching this from a
 public URL instead of duplicating it.)
 
-## Deploying (Cloudflare Pages)
+## Deploying (Cloudflare Workers, static assets)
 
-1. In the Cloudflare dashboard: **Workers & Pages → Create → Pages →
-   Connect to Git**, pick this repo, set the build output directory to
-   `Viewer/` (no build command — it's static).
-2. **Custom domain**: add `viewer.watershed-agent.dev`, pointing at the
-   Pages project. Since `watershed-agent.dev` is already on Cloudflare
-   (registered via Cloudflare Registrar — see `ATProto/pds/README.md`),
-   this is just adding a DNS record in the same dashboard, no separate
-   tunnel needed (Pages is served directly by Cloudflare's edge, unlike
-   the PDS which needs `cloudflared` to reach the Pi).
-3. Every push to `main` that touches `Viewer/` redeploys automatically.
+Cloudflare's dashboard now funnels Git-connected deploys through **Workers &
+Pages → Create → Import a repository**, which defaults to Wrangler-based
+deployment rather than the older "Pages: build output directory" flow. This
+repo's root `wrangler.toml` configures a static-assets-only Worker (no
+code) pointing at `Viewer/` — that's what makes the default deploy command
+(`npx wrangler deploy`) work here.
+
+1. **Workers & Pages → Create → Import a repository**, pick this repo.
+   Leave **Build command** blank, leave **Deploy command** as
+   `npx wrangler deploy` — it picks up `wrangler.toml` automatically.
+2. Click **Deploy**. First deploy gives you a `*.workers.dev` URL — check
+   that the prompt view loads before wiring up the real domain.
+3. **Custom domain**: in the deployed project → **Settings → Domains &
+   Routes → Add → Custom domain** → `viewer.watershed-agent.dev`. Since
+   `watershed-agent.dev` is already on Cloudflare (registered via Cloudflare
+   Registrar — see `ATProto/pds/README.md`), this just adds a DNS record in
+   the same dashboard — no separate tunnel needed, unlike the PDS which
+   needs `cloudflared` to reach the Pi.
+4. Every push to `main` that touches `Viewer/` or `wrangler.toml`
+   redeploys automatically.
 
 ## Local testing
 
