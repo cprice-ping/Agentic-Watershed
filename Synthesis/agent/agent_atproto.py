@@ -333,20 +333,23 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
     """
 
     # (lexicon_field, display_label, unit, rise_note, fall_note)
+    # Field names match what ATProto/publisher.py actually writes — the
+    # closest single reading to observed_at, not an aggregate, despite the
+    # discharge/gage-height labels below saying "mean"/"max" for readability.
     WATERSHED_METRICS = [
-        ("dischargeMeanCfs", "River discharge (mean)", "cfs",
+        ("dischargeCfs",  "River discharge", "cfs",
          "flood risk building",    "normal summer decline / drought stress if rapid"),
-        ("gageHeightMaxFt",  "Gage height (max)",      "ft",
+        ("gageHeightFt",  "Gage height",      "ft",
          "flood risk building",    "normal"),
     ]
     WEATHER_METRICS = [
-        ("temperatureF",  "Temperature",  "°F",
+        ("temperature_f",     "Temperature",  "°F",
          "warming",                        "cooling / fire risk easing"),
-        ("humidityPct",   "Humidity",     "%",
+        ("humidity_pct",      "Humidity",     "%",
          "fire risk easing",              "⚠ fire risk building if trend continues"),
-        ("windSpeedMph",  "Wind speed",   "mph",
+        ("wind_speed_mph",    "Wind speed",   "mph",
          "increased transport of smoke/embers", "easing"),
-        ("precipMm24h",   "Precip 24h",  "mm",
+        ("precip_24h_mm",     "Precip 24h",  "mm",
          "wetting — flood risk if prolonged",   "drying"),
     ]
     AQI_METRICS = [
@@ -413,8 +416,8 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
             )
 
         # Wind direction: special-case because it's circular and Diablo-relevant
-        old_wd = oldest_raw.get("windDirectionDeg")
-        new_wd = latest_raw.get("windDirectionDeg")
+        old_wd = oldest_raw.get("wind_direction_deg")
+        new_wd = latest_raw.get("wind_direction_deg")
         if domain == "weather" and old_wd is not None and new_wd is not None:
             old_c = _deg_to_compass(float(old_wd))
             new_c = _deg_to_compass(float(new_wd))
@@ -472,17 +475,18 @@ def _ensure_predictions_table(conn: sqlite3.Connection) -> None:
 def _resolve_prediction(risk_type: str, grouped: dict[str, list[dict]]) -> Optional[str]:
     """Check whether current observations confirm a prediction.
 
-    Each risk type maps to its corresponding domain agent. Confirmation uses the
-    domain agent's top-level `flagged` field rather than specific numeric sub-fields,
-    because the ATProto publisher currently writes only summary/flagged to lexicon
-    records — numeric fields (fireRisk, gageHeightMaxFt, pm25Aqi, activeAlerts) are
-    not populated by the edge publisher. The `flagged` field IS authoritative: it is
-    the domain agent's own assessment that conditions warrant attention, which is
-    exactly what confirms a synthesis prediction.
+    Each risk type maps to its corresponding domain agent. Confirmation currently
+    uses the domain agent's top-level `flagged` field rather than specific numeric
+    sub-fields. The `flagged` field IS authoritative on its own: it is the domain
+    agent's own assessment that conditions warrant attention, which is exactly
+    what confirms a synthesis prediction.
 
-    When the publisher is extended to populate numeric fields, add specific checks
-    here using the module-level constants (FIRE_CONFIRM_LEVELS, FLOOD_ACTION_STAGE_FT,
-    AQI_USG_THRESHOLD, FIRE_CONFIRM_ALERTS).
+    The ATProto publisher now populates numeric fields (dischargeCfs, gageHeightFt,
+    temperature_f, wind_speed_mph, pm25Aqi, ozoneAqi, etc. — see
+    ATProto/publisher.py) as of the self-hosted PDS migration, so specific
+    threshold checks using the module-level constants (FIRE_CONFIRM_LEVELS,
+    FLOOD_ACTION_STAGE_FT, AQI_USG_THRESHOLD, FIRE_CONFIRM_ALERTS) are now
+    possible here — not yet wired in.
     """
     domain_map = {
         "fire":        "weather",

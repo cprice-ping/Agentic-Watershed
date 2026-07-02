@@ -1,15 +1,23 @@
 """
 ATProto Node Publisher
 ----------------------
-Publishes domain agent observations (watershed, weather, aqi) to ATProto
-as the node identity (napanode1.bsky.social / napa-node-01 DID).
+Publishes domain agent observations (watershed, weather, aqi) as structured
+ATProto lexicon records, under the node's own identity.
 
-Domain observations are machine-readable, lexicon-tagged records intended
-for other agents to consume via the firehose subscriber. They are NOT
-the human-facing advisory — that's the synthesis publisher's job.
+Domain observations are machine-readable records intended for other agents
+(Synthesis) to consume, not a human-facing feed — there is no accompanying
+app.bsky.feed.post here. That's the synthesis publisher's job, on its own
+identity, on the public Bluesky network.
+
+PDS: defaults to a self-hosted PDS (see ATProto/pds/) so the node's identity
+     doesn't depend on Bluesky-run infrastructure. Override with
+     ATPROTO_PDS_URL or "pds_url" in node_config.json; falls back to
+     bsky.social if neither is set.
 
 Identity: BSKY_HANDLE / BSKY_APP_PASSWORD → node DID (napa-node-01)
-          Set in /etc/environment on the Pi.
+          Set in /etc/environment on the Pi. Against a self-hosted PDS these
+          are the node's PDS account handle/password, not a Bluesky app
+          password.
 
 Usage:
   python publisher.py                     # publish any unpublished observations
@@ -17,7 +25,7 @@ Usage:
   python publisher.py --domain watershed  # single domain
 
 Cron (run after each agent cycle — 15 min after the last agent fires):
-  15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
+  15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 """
 
 import argparse
@@ -45,11 +53,19 @@ DB_PATHS = {
 # Track what's been published — simple SQLite alongside the publisher
 PUBLISHER_DB = Path(__file__).parent / "data" / "publisher.db"
 
-BSKY_PDS = "https://bsky.social"
-LEXICON  = "net.cpricedomain.temp.monitor.observation"
+LEXICON = "net.cpricedomain.temp.monitor.observation"
 
 _NODE_CFG = json.loads((BASE / "node_config.json").read_text())
 NODE_ID   = _NODE_CFG["node_id"]
+
+# PDS endpoint domain agents publish to. Defaults to a self-hosted PDS
+# (see ATProto/pds/) — set ATPROTO_PDS_URL or "pds_url" in node_config.json
+# to override. Falls back to bsky.social only for back-compat.
+BSKY_PDS = (
+    os.environ.get("ATPROTO_PDS_URL")
+    or _NODE_CFG.get("pds_url")
+    or "https://bsky.social"
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,47 +157,105 @@ class BlueskySession:
         resp.raise_for_status()
         return resp.json().get("uri", "")
 
-    def create_post(self, text: str, tags: list[str] = None) -> str:
-        """Create a Bluesky post (app.bsky.feed.post). Returns AT URI."""
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-        # Build facets for hashtags
-        # ATProto requires UTF-8 byte offsets, not character offsets
-        facets = []
-        full_text = text
-        if tags:
-            # Build the full text first, then calculate offsets from it
-            tag_parts = [f"#{t}" for t in tags]
-            tag_str = " " + " ".join(tag_parts)
-            full_text = text + tag_str
+# ---------------------------------------------------------------------------
+# Collector data enrichment — fetch numeric readings closest to observed_at
+# ---------------------------------------------------------------------------
 
-            # Calculate byte offsets by scanning the encoded full text
-            full_bytes = full_text.encode("utf-8")
-            for tag in tags:
-                needle = f"#{tag}".encode("utf-8")
-                idx = full_bytes.find(needle)
-                if idx == -1:
-                    continue
-                facets.append({
-                    "index": {
-                        "byteStart": idx,
-                        "byteEnd": idx + len(needle),
-                    },
-                    "features": [{
-                        "$type": "app.bsky.richtext.facet#tag",
-                        "tag": tag,
-                    }],
-                })
+def _fetch_weather_numerics(observed_at: str) -> dict:
+    db_path = DB_PATHS["weather"]
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT temperature_f, humidity_pct, wind_speed_mph,
+                   wind_direction_deg, wind_gust_mph, precip_24h_mm
+            FROM observations
+            ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
+            LIMIT 1
+            """,
+            (observed_at,),
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else {}
+    except sqlite3.Error:
+        return {}
 
-        record = {
-            "$type": "app.bsky.feed.post",
-            "text": full_text,
-            "createdAt": now,
-        }
-        if facets:
-            record["facets"] = facets
 
-        return self.create_record("app.bsky.feed.post", record)
+def _fetch_watershed_numerics(observed_at: str) -> dict:
+    db_path = DB_PATHS["watershed"]
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT parameter_code, value
+            FROM readings
+            WHERE parameter_code IN ('00060', '00065') AND value IS NOT NULL
+            ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
+            LIMIT 10
+            """,
+            (observed_at,),
+        ).fetchall()
+        conn.close()
+        result = {}
+        seen: set = set()
+        for r in rows:
+            code = r["parameter_code"]
+            if code not in seen:
+                seen.add(code)
+                if code == "00060":
+                    result["dischargeCfs"] = r["value"]
+                elif code == "00065":
+                    result["gageHeightFt"] = r["value"]
+        return result
+    except sqlite3.Error:
+        return {}
+
+
+def _fetch_aqi_numerics(observed_at: str) -> dict:
+    db_path = DB_PATHS["aqi"]
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT parameter, aqi
+            FROM observations
+            WHERE parameter IN ('PM2.5', 'OZONE') AND aqi IS NOT NULL
+            ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
+            LIMIT 10
+            """,
+            (observed_at,),
+        ).fetchall()
+        conn.close()
+        result = {}
+        seen: set = set()
+        for r in rows:
+            param = r["parameter"]
+            if param not in seen:
+                seen.add(param)
+                if param == "PM2.5":
+                    result["pm25Aqi"] = r["aqi"]
+                elif param == "OZONE":
+                    result["ozoneAqi"] = r["aqi"]
+        return result
+    except sqlite3.Error:
+        return {}
+
+
+def _atproto_safe(value):
+    """ATProto records are DAG-CBOR — no IEEE float type is valid in the
+    data model (only null/boolean/integer/string/cid/bytes/array/object).
+    Stringify floats to preserve exact values instead of lossily rounding."""
+    return str(value) if isinstance(value, float) else value
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +263,16 @@ class BlueskySession:
 # ---------------------------------------------------------------------------
 
 def build_watershed_record(row: dict, observed_at: str) -> dict:
+    numerics = _fetch_watershed_numerics(observed_at)
+    watershed_block: dict = {
+        "stationIds": [f"USGS-{sid}" for sid in _NODE_CFG["watershed"]["usgs_stations"]],
+        "sevenDayTrend": "unknown",
+    }
+    if "dischargeCfs" in numerics:
+        watershed_block["dischargeCfs"] = _atproto_safe(numerics["dischargeCfs"])
+    if "gageHeightFt" in numerics:
+        watershed_block["gageHeightFt"] = _atproto_safe(numerics["gageHeightFt"])
+
     return {
         "$type": LEXICON,
         "observedAt": observed_at,
@@ -198,14 +282,22 @@ def build_watershed_record(row: dict, observed_at: str) -> dict:
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
         "agentModel": "claude-haiku-4-5",
-        "watershed": {
-            "stationIds": [f"USGS-{sid}" for sid in _NODE_CFG["watershed"]["usgs_stations"]],
-            "sevenDayTrend": "unknown",  # could be derived from DB in future
-        },
+        "watershed": watershed_block,
     }
 
 
 def build_weather_record(row: dict, observed_at: str) -> dict:
+    numerics = _fetch_weather_numerics(observed_at)
+    weather_block: dict = {
+        "stationId": _NODE_CFG["weather"]["observation_station"],
+        "activeAlerts": [],
+    }
+    for field in ("temperature_f", "humidity_pct", "wind_speed_mph",
+                  "wind_direction_deg", "wind_gust_mph", "precip_24h_mm"):
+        val = numerics.get(field)
+        if val is not None:
+            weather_block[field] = _atproto_safe(val)
+
     return {
         "$type": LEXICON,
         "observedAt": observed_at,
@@ -215,14 +307,20 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
         "agentModel": "claude-haiku-4-5",
-        "weather": {
-            "stationId": _NODE_CFG["weather"]["observation_station"],
-            "activeAlerts": [],
-        },
+        "weather": weather_block,
     }
 
 
 def build_aqi_record(row: dict, observed_at: str) -> dict:
+    numerics = _fetch_aqi_numerics(observed_at)
+    aqi_block: dict = {
+        "reportingArea": _NODE_CFG["aqi"]["reporting_area"],
+    }
+    if "pm25Aqi" in numerics:
+        aqi_block["pm25Aqi"] = _atproto_safe(numerics["pm25Aqi"])
+    if "ozoneAqi" in numerics:
+        aqi_block["ozoneAqi"] = _atproto_safe(numerics["ozoneAqi"])
+
     return {
         "$type": LEXICON,
         "observedAt": observed_at,
@@ -232,46 +330,8 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
         "agentModel": "claude-haiku-4-5",
-        "aqi": {
-            "reportingArea": _NODE_CFG["aqi"]["reporting_area"],
-        },
+        "aqi": aqi_block,
     }
-
-
-# ---------------------------------------------------------------------------
-# Post text builders
-# ---------------------------------------------------------------------------
-
-def truncate_graphemes(text: str, limit: int) -> str:
-    """Truncate text to a grapheme limit. Uses character count as approximation
-    (close enough for ASCII-heavy environmental summaries)."""
-    if len(text) <= limit:
-        return text
-    return text[:limit - 1] + "…"
-
-
-def build_post_text(domain: str, row: dict) -> tuple[str, list[str]]:
-    """Returns (post_text, hashtags). Post text fits within Bluesky's 300 grapheme limit."""
-    summary = row.get("summary", "")
-    flagged = bool(row.get("flagged", False))
-
-    domain_labels = {
-        "watershed": "🌊 Watershed",
-        "weather":   "🌤️ Weather",
-        "aqi":       "💨 Air Quality",
-    }
-    label = domain_labels.get(domain, "📡 Monitor")
-    header = f"⚠️ {label} — conditions flagged" if flagged else f"✅ {label} — normal conditions"
-
-    tags = ["NapaValley", "WatershedMonitor"]
-    if flagged:
-        tags.append("Flagged")
-
-    tag_str = " " + " ".join(f"#{t}" for t in tags)
-    overhead = len(header) + 2 + len(tag_str)
-    summary = truncate_graphemes(summary, 300 - overhead)
-
-    return f"{header}\n\n{summary}", tags
 
 
 # ---------------------------------------------------------------------------
@@ -346,24 +406,22 @@ def publish_domain(domain: str, session: BlueskySession,
             observed_at += "Z"
 
         record = config["builder"](row, observed_at)
-        post_text, tags = build_post_text(domain, row)
         flagged = bool(row.get("flagged", False))
 
         if dry_run:
             log.info("[%s] [DRY RUN] Would publish observation %d:", domain, source_id)
-            log.info("  Post: %s", post_text[:100] + "...")
-            log.info("  Flagged: %s  Tags: %s", flagged, tags)
+            log.info("  Record: %s", json.dumps(record)[:200] + "...")
+            log.info("  Flagged: %s", flagged)
             count += 1
             continue
 
         try:
-            # Publish the structured lexicon record
+            # Publish the structured lexicon record. This PDS is the node's
+            # own — domain agents write for other agents to consume, not for
+            # a human Bluesky audience, so there's no accompanying app.bsky
+            # post here. That's Synthesis's job, on its own identity.
             record_uri = session.create_record(LEXICON, record)
             log.info("[%s] Published lexicon record: %s", domain, record_uri)
-
-            # Publish the human-readable Bluesky post
-            post_uri = session.create_post(post_text, tags)
-            log.info("[%s] Published post: %s", domain, post_uri)
 
             mark_published(pub_conn, domain, source_id, observed_at, record_uri, flagged)
             count += 1
