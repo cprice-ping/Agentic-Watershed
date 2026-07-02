@@ -47,10 +47,10 @@ CRON_EXPRESSION="${CRON_EXPRESSION:-0 6,18 * * *}"
 # Maximum seconds a single pipeline run may take before being killed.
 REPLICA_TIMEOUT="${REPLICA_TIMEOUT:-600}"
 
-# PDS the subscriber fetches domain-agent records from. Defaults to the
-# self-hosted PDS on the Pi (see ATProto/pds/). listRecords is a public,
-# unauthenticated read, so this is config, not a secret.
-ATPROTO_PDS_URL="${ATPROTO_PDS_URL:-https://napa-node-01.watershed-agent.dev}"
+# No PDS URL to configure here — subscriber.py resolves each trusted
+# publisher's PDS individually via the public PLC directory (plc.directory),
+# using the DID from publishers.json. This is what makes multi-node fetch
+# work correctly even when nodes run separate, independently-hosted PDSs.
 
 # ── Validate required secrets ──────────────────────────────────────────────
 
@@ -203,7 +203,6 @@ trap 'rm -f "${JOB_BODY_FILE}"' EXIT
 export LOCATION ENV_RESOURCE_ID FULL_IMAGE CRON_EXPRESSION REPLICA_TIMEOUT
 export ACR_LOGIN_SERVER ACR_USERNAME ACR_PASSWORD
 export ANTHROPIC_API_KEY BSKY_SYNTH_HANDLE BSKY_SYNTH_APP_PASSWORD
-export ATPROTO_PDS_URL
 
 python3 - > "${JOB_BODY_FILE}" << 'PYEOF'
 import json, os
@@ -241,8 +240,7 @@ print(json.dumps({
                 "env": [
                     {"name": "ANTHROPIC_API_KEY",       "secretRef": "anthropic-api-key"},
                     {"name": "BSKY_SYNTH_HANDLE",       "secretRef": "bsky-synth-handle"},
-                    {"name": "BSKY_SYNTH_APP_PASSWORD", "secretRef": "bsky-synth-app-password"},
-                    {"name": "ATPROTO_PDS_URL",         "value": os.environ["ATPROTO_PDS_URL"]}
+                    {"name": "BSKY_SYNTH_APP_PASSWORD", "secretRef": "bsky-synth-app-password"}
                 ],
                 "volumeMounts": [{"volumeName": "synthesis-data", "mountPath": "/data"}]
             }],
@@ -274,7 +272,7 @@ echo "  Env:       ${ENVIRONMENT}"
 echo "  Image:     ${FULL_IMAGE}"
 echo "  Schedule:  ${CRON_EXPRESSION} UTC"
 echo "  Data:      ${STORAGE_ACCOUNT}/${FILE_SHARE} → /data"
-echo "  PDS:       ${ATPROTO_PDS_URL}"
+echo "  Trusted publishers: resolved per-DID via plc.directory (see publishers.json)"
 echo "=========================================================="
 echo ""
 echo "Trigger a manual run:"

@@ -68,10 +68,31 @@ TRUSTED_PUBLISHERS: dict[str, str] = (
     else {"did:plc:ggztd5hjk3cnkhgzdk4rmqan": "napa-node-01"}
 )
 
-# PDS to fetch trusted-publisher records from. All trusted publishers are
-# expected to live on the same PDS. Override with ATPROTO_PDS_URL if the
-# node moves off bsky.social to a self-hosted PDS (see ATProto/pds/).
-PDS_HOST = os.environ.get("ATPROTO_PDS_URL", "https://bsky.social")
+# Public DID resolution directory. Each trusted publisher's DID is resolved
+# to its actual PDS individually — publishers are NOT assumed to share a
+# PDS. This matters once there's more than one node: napa-node-01 might run
+# its own self-hosted PDS while napa-node-02 runs a separate one, and a
+# single global PDS_HOST would silently miss records from whichever one
+# isn't configured. Same resolution pattern as Viewer/index.html's
+# resolvePds() — see CONTEXT.md's "DID resolution" section for the tradeoffs.
+PLC_DIRECTORY = "https://plc.directory"
+_pds_cache: dict[str, str] = {}
+
+
+def resolve_pds(did: str) -> str:
+    if did in _pds_cache:
+        return _pds_cache[did]
+    if not did.startswith("did:plc:"):
+        raise ValueError(f"Unsupported DID method: {did}")
+    resp = httpx.get(f"{PLC_DIRECTORY}/{did}", timeout=15)
+    resp.raise_for_status()
+    doc = resp.json()
+    svc = next((s for s in doc.get("service", []) if s.get("id") == "#atproto_pds"), None)
+    if not svc:
+        raise ValueError(f"No PDS service endpoint in DID document for {did}")
+    pds = svc["serviceEndpoint"]
+    _pds_cache[did] = pds
+    return pds
 
 logging.basicConfig(
     level=logging.INFO,
@@ -171,7 +192,8 @@ def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
     fetched = stored = 0
     cursor = None
 
-    log.info("Fetching records from %s (%s)...", node_id, did)
+    pds_host = resolve_pds(did)
+    log.info("Fetching records from %s (%s) via %s...", node_id, did, pds_host)
 
     with httpx.Client(timeout=30) as client:
         while True:
@@ -183,7 +205,7 @@ def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
             if cursor:
                 params["cursor"] = cursor
 
-            resp = client.get(f"{PDS_HOST}/xrpc/com.atproto.repo.listRecords",
+            resp = client.get(f"{pds_host}/xrpc/com.atproto.repo.listRecords",
                               params=params)
             resp.raise_for_status()
             data = resp.json()
