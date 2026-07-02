@@ -4,7 +4,7 @@ Living document. Update this as the project evolves so coding agents and
 collaborators can pick up where things left off without needing the full
 conversation history.
 
-Last updated: 2026-06-23
+Last updated: 2026-07-02
 
 ---
 
@@ -17,14 +17,20 @@ subject is the architecture:
 - **Edge agents with workload identity** — each node runs on a Raspberry Pi, reasons
   locally with Claude Haiku, and publishes structured records to ATProto under its own
   DID. The DID is the agent's identity, not a login credential.
-- **ATProto as message bus** — agents don't share filesystems. Records flow over a
-  federated protocol using a custom lexicon (`net.cpricedomain.temp.monitor.observation`).
-  Any agent that knows the lexicon and trusts the DID can participate, from anywhere.
+- **ATProto as message bus, not Bluesky as destination** — domain agents publish to
+  their own self-hosted PDS (`napa-node-01.watershed-agent.dev`), reachable via a
+  Cloudflare Tunnel — no dependency on `bsky.social` infrastructure for the node's
+  identity or data. Only Synthesis touches the public Bluesky network, and only for
+  the human-facing advisory. Records flow over a federated protocol using a custom
+  lexicon (`net.cpricedomain.temp.monitor.observation`). Any agent that knows the
+  lexicon and trusts the DID can participate, from anywhere.
 - **DID-based trust boundary** — the Synthesis agent verifies publisher DIDs against
-  a trusted registry before acting on any record. Unrecognised nodes are rejected, not
-  silently trusted.
-- **Synthesis at the cloud layer** — a separate agent subscribes to the ATProto firehose,
-  reasons across domains with Claude Sonnet, and publishes its own signed record.
+  a trusted registry (`publishers.json`) before acting on any record. Unrecognised
+  nodes are rejected, not silently trusted.
+- **Synthesis at the cloud layer** — a separate agent (Azure Container Apps Job)
+  fetches from the node's PDS, reasons across domains with Claude Sonnet, resolves
+  its own prediction ledger, and posts the human-facing advisory to Bluesky
+  (`napasynth01.bsky.social`) — the only step in the pipeline a person ever sees.
 
 The environmental monitoring domain is well-suited because it has real APIs, genuine
 cross-domain reasoning, and seasonal patterns worth tracking over time. The architecture
@@ -72,7 +78,7 @@ agents — is relatively unexplored. That's the generative gap.
 ## Current deployment state
 
 Running on a Raspberry Pi 5, Napa, California.
-All stacks deployed under `/home/cprice/Agentic/`.
+All stacks deployed under `/home/cprice/Agentic-Watershed/`.
 
 ### Collectors — all running via cron
 
@@ -90,14 +96,33 @@ All stacks deployed under `/home/cprice/Agentic/`.
 | Weather | 1,7,13,19h | ✅ Running, writing observations |
 | AQI | 2,8,14,20h | ✅ Running, writing observations |
 
+### Self-hosted PDS — node identity, off Bluesky infrastructure
+
+| Component | Status |
+|-----------|--------|
+| PDS (official `bluesky-social/pds`, Docker on the Pi) | ✅ Running, `napa-node-01.watershed-agent.dev` |
+| Cloudflare Tunnel (`cloudflared`, systemd service) | ✅ Live — no inbound ports opened on the Pi's router |
+| Domain: `watershed-agent.dev` | Registered + DNS-hosted directly via Cloudflare Registrar |
+| Node DID | `did:plc:ggztd5hjk3cnkhgzdk4rmqan` (replaces the old `bsky.social`-issued one) |
+
+Domain agents publish structured lexicon records to this PDS, not to Bluesky —
+`ATProto/publisher.py` no longer sends an accompanying `app.bsky.feed.post`. First
+confirmed end-to-end publish 2026-07-01. See `ATProto/pds/README.md` for the full
+setup (DNS delegation didn't work at the registrar level — see "Architecture
+decisions" below for why a dedicated domain was registered instead).
+
 ### Synthesis agent
 
 | Schedule | Status |
 |----------|--------|
 | 6h, 18h UTC | ✅ Running in Azure Container Apps Job (`synthesis-agent`, `rg-agentic-watershed`, `westus2`) |
 
-The Synthesis agent now runs in Azure, not on the laptop. Pi (edge) → ATProto → Azure (cloud) → Bluesky.
-First cloud run confirmed 2026-06-23 17:33 UTC. Advisory posts visible at `napasynth01.bsky.social`.
+The Synthesis agent runs in Azure, not on the laptop. Pi (edge) → self-hosted PDS →
+Azure (cloud, fetches via `ATPROTO_PDS_URL`) → Bluesky advisory. Redeployed
+2026-07-02 with `ATPROTO_PDS_URL` pointed at the node's PDS and `publishers.json`
+updated to the new DID — confirmed live: subscriber fetched 8 records from
+`napa-node-01.watershed-agent.dev`, resolved 2 pending predictions against real
+data, reasoned across domains, posted the advisory to `napasynth01.bsky.social`.
 
 Accumulating domain observations — first meaningful cross-domain synthesis
 expected after 2-3 days of data. Baseline established on first run (2026-06-22):
@@ -117,6 +142,12 @@ Environment variables set in /etc/environment, sourced in cron via `. /etc/envir
 Required environment variables:
 - `ANTHROPIC_API_KEY` — used by all agents
 - `AIRNOW_API_KEY` — used by AQI collector and agent
+- `BSKY_HANDLE` / `BSKY_APP_PASSWORD` (Pi) — node's self-hosted PDS account
+  credentials, e.g. `napa-node-01.watershed-agent.dev` — not a Bluesky app
+  password despite the variable names (kept for continuity with the publisher's
+  original bsky.social-based auth flow, which is unchanged, just pointed elsewhere)
+- `ATPROTO_PDS_URL` (Pi + Azure) — which PDS to publish to / fetch from. Defaults
+  to the self-hosted PDS; falls back to `bsky.social` if unset
 
 ---
 
@@ -126,6 +157,24 @@ Required environment variables:
 - USGS qualifiers are returned as plain strings not dicts — fixed in collector.py (parse_usgs_response).
 - Weather and AQI venvs needed to be created separately from Watershed — each stack is fully independent.
 - `/etc/environment` is not loaded automatically by cron — sourced explicitly with `. /etc/environment &&` prefix on each cron line.
+- **ATProto records are DAG-CBOR — no float type exists in the data model.**
+  Only `null, boolean, integer, string, cid, bytes, array, object` are valid.
+  Any numeric field pulled from a SQLite `REAL` column must be stringified before
+  going into a record, or `createRecord` rejects it with `InvalidRequest`. Fixed
+  in `publisher.py` via `_atproto_safe()`; worth remembering for any future field.
+- `PDS_HOSTNAME` alone does not authorize account handles under that domain on a
+  self-hosted PDS — `PDS_SERVICE_HANDLE_DOMAINS` (suffix match, leading dot) is
+  required too.
+- Recent `bluesky-social/pds` images don't ship `pdsadmin` or `dist/scripts/
+  create-account.js` inside the container — account creation is a plain
+  `com.atproto.server.createAccount` XRPC call instead.
+- `cloudflared`'s systemd service runs as root and doesn't see the invoking
+  user's `~/.cloudflared` — config and credentials need to live under
+  `/etc/cloudflared/`.
+- DNSimple (and most registrars) can't delegate a single subdomain's NS records
+  without moving the whole zone — Cloudflare Tunnel's cert-issuance flow needs a
+  zone already on Cloudflare's nameservers. Registering a small dedicated domain
+  directly through Cloudflare Registrar sidesteps this entirely (see below).
 
 ---
 
@@ -133,30 +182,41 @@ Required environment variables:
 
 ```cron
 # === Collectors ===
-*/15 * * * * . /etc/environment && cd /home/cprice/Agentic/Watershed && .venv/bin/python collector/collector.py >> logs/collector.log 2>&1
-*/30 * * * * . /etc/environment && cd /home/cprice/Agentic/Weather && .venv/bin/python collector/collector.py >> logs/collector.log 2>&1
-*/30 * * * * . /etc/environment && cd /home/cprice/Agentic/AQI && .venv/bin/python collector/collector.py >> logs/collector.log 2>&1
+*/15 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python collector.py >> logs/collector.log 2>&1
+*/30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python collector.py >> logs/collector.log 2>&1
+*/30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python collector.py >> logs/collector.log 2>&1
 
 # === Domain Agents ===
-0 0,6,12,18 * * * . /etc/environment && cd /home/cprice/Agentic/Watershed && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
-0 1,7,13,19 * * * . /etc/environment && cd /home/cprice/Agentic/Weather && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
-0 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic/AQI && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
+0 0,6,12,18 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 1,7,13,19 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python agent.py >> logs/agent.log 2>&1
 
-# === Synthesis Agent ===
-0 6,18 * * * . /etc/environment && cd /home/cprice/Agentic/Synthesis && .venv/bin/python agent/agent.py >> logs/agent.log 2>&1
+# === ATProto Publisher (15 min after the last domain agent — 20h) ===
+15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 ```
+
+Synthesis runs as an Azure Container Apps Job (`0 6,18 * * *` UTC), not a Pi cron
+entry — see "Synthesis agent" above.
 
 ---
 
 ## What's next
 
 ### Done
-- [x] ATProto publisher — domain observations published to Bluesky as structured lexicon records
+- [x] ATProto publisher — domain observations published as structured lexicon records
 - [x] Synthesis subscriber — fetch-mode (cron-shaped, not firehose daemon), lookback window
 - [x] Synthesis publisher — separate identity (`napasynth01.bsky.social`), advisory framing
 - [x] End-to-end pipeline confirmed: Pi nodes → ATProto → Synthesis agent → advisory post
-- [x] TRUSTED_PUBLISHERS dict in place as interim trust boundary (did:web registry replaces this)
-- [x] Synthesis agent containerised and deployable to Azure Container Apps Job
+- [x] TRUSTED_PUBLISHERS / publishers.json in place as interim trust boundary (did:web registry replaces this)
+- [x] Synthesis agent containerised and deployed to Azure Container Apps Job
+- [x] Self-hosted PDS on the Pi (`napa-node-01.watershed-agent.dev`), fronted by a
+      Cloudflare Tunnel — domain agents no longer depend on `bsky.social` for
+      their own identity or data (2026-07-02)
+- [x] Numeric fields (temperature, discharge, gage height, PM2.5/ozone AQI, etc.)
+      now populated in lexicon records, joined from collector DBs at publish time
+      (2026-07-02) — previously only `summary`/`flagged` were written
+- [x] Trend-analysis field names in `agent_atproto.py` fixed to match what the
+      publisher actually emits — was silently finding nothing (2026-07-02)
 
 ### Host Synthesis agent outside the laptop — DONE
 
@@ -231,27 +291,40 @@ is a hardcoded registry — that's the problem to solve. Options worth exploring
 - Challenge/response at first contact: new node proves DID control before being added
 - Self-describing agents: the DID document itself carries capability/scope claims
 
-**Running our own PDS** is the next infrastructure step — removes the dependency on
-`bsky.social` as host while keeping full ATProto compatibility and DID portability.
+**Running our own PDS — DONE (2026-07-02).** Removed the dependency on `bsky.social`
+as host while keeping full ATProto compatibility and DID portability. See "Current
+deployment state" above and the "Architecture decisions" section below for why.
 
 ### DID onboarding problem — and the path to did:web
 
-The current agent DIDs (`napanode1.bsky.social`, `napasynth01.bsky.social`) were
-bootstrapped through Bluesky's human signup flow. That's wrong — an agent's birthright
-identity shouldn't require a person to click through an onboarding UI.
+The node's DID is now `did:plc:ggztd5hjk3cnkhgzdk4rmqan`, minted by its own
+self-hosted PDS (`napa-node-01.watershed-agent.dev`) rather than borrowed from a
+Bluesky account signup — a real step forward, since the identity no longer depends
+on Bluesky-the-company's infrastructure. Synthesis's DID
+(`did:plc:clcw2dxrd6qma45gy3oozjwa` / `napasynth01.bsky.social`) is still
+Bluesky-issued, appropriately — it's the one identity in this system with an
+actual human-facing purpose.
 
-**These DIDs are placeholders.** The system continues to publish to Bluesky using
-them — the ATProto publishing pipeline stays intact. When the Agent Identity Registry
-is ready, the reconciliation path is:
+**The onboarding problem itself is unchanged, though.** Both DIDs were still
+bootstrapped by a person running an account-creation command by hand (`curl` to
+`com.atproto.server.createAccount`, or Bluesky's signup flow) — an agent's
+birthright identity shouldn't require a human to click through or type a command
+at all. `did:plc` is also still a step short of `did:web`: it depends on a
+third-party PLC directory (`plc.directory`, itself Bluesky-run) for resolution,
+even though it no longer depends on Bluesky for hosting or the account layer.
 
-1. Registry mints new `did:web` DIDs for `napanode01` and `napasynth01`
+**These DIDs are still effectively placeholders** for the eventual Agent Identity
+Registry — the ATProto publishing pipeline stays intact regardless of which identity
+system sits underneath. When the registry is ready, the reconciliation path is:
+
+1. Registry mints new `did:web` DIDs for `napa-node-01` and `napasynth01`
 2. Agents register their public keys and charters with the registry
-3. `TRUSTED_PUBLISHERS` in `subscriber.py` updated to the new DIDs
+3. `publishers.json` updated to the new DIDs
 4. ATProto records going forward are signed by the registry-provisioned keys
-5. Bluesky handles (`napanode1.bsky.social`, `napasynth01.bsky.social`) can remain
-   as the human-readable publishing accounts — decoupled from the identity layer
+5. The self-hosted PDS / Bluesky handle can remain the publishing transport —
+   decoupled from the identity layer
 
-The publishing target (Bluesky) doesn't change. The identity primitive underneath does.
+The publishing target doesn't change. The identity primitive underneath does.
 The Agent Identity Registry is being built in a separate repo — see that project for
 the registry design and implementation.
 
@@ -450,10 +523,12 @@ Shipped in `agent_atproto.py`:
 - `compute_trends()` function extracts numeric fields from `raw_record` JSON in
   `subscriber.db` for each domain and computes deltas across the observation window.
 
-- Metrics tracked:
-  - Watershed: `dischargeMeanCfs`, `gageHeightMaxFt`
-  - Weather: `temperatureF`, `humidityPct`, `windSpeedMph`, `precipMm24h`,
-    `windDirectionDeg` (with Diablo quadrant detection), `windPattern` (categorical change)
+- Metrics tracked (field names match `ATProto/publisher.py`'s actual output as of
+  2026-07-02 — the original field names here were speculative and never matched
+  what got published; see "Known issues"):
+  - Watershed: `dischargeCfs`, `gageHeightFt`
+  - Weather: `temperature_f`, `humidity_pct`, `wind_speed_mph`, `precip_24h_mm`,
+    `wind_direction_deg` (with Diablo quadrant detection)
   - AQI: `pm25Aqi`, `ozoneAqi`
 
 - Each metric shows: old → new value, delta, hours elapsed, direction, and a plain-language
@@ -494,13 +569,15 @@ Also fixed in this session:
 
 First real calibration test: Diablo wind season (September–November 2026).
 
-**Known limitation — confirmation signals use `flagged`, not numeric fields:**
+**Known limitation — confirmation signals still use `flagged`, not numeric fields:**
 Prediction resolution currently confirms via the domain agent's `flagged=True` field
-rather than specific numeric thresholds (`fireRisk`, `gageHeightMaxFt`, `pm25Aqi`).
-This is because the Pi-side publisher only writes `summary` and `flagged` to ATProto
-records — the numeric fields aren't populated. The constants (`FIRE_CONFIRM_LEVELS`,
-`FLOOD_ACTION_STAGE_FT`, `AQI_USG_THRESHOLD`) are retained in code for when the
-publisher is extended. This is a deferred Pi-side change, not an oversight.
+rather than specific numeric thresholds (`FIRE_CONFIRM_LEVELS`, `FLOOD_ACTION_STAGE_FT`,
+`AQI_USG_THRESHOLD`). This was originally deferred because the publisher only wrote
+`summary`/`flagged` to ATProto records — **that's no longer true as of 2026-07-02**;
+numeric fields (`temperature_f`, `dischargeCfs`, `gageHeightFt`, `pm25Aqi`, `ozoneAqi`,
+etc.) are now populated on every record. Threshold-based confirmation in
+`_resolve_prediction()` is a live option now, just not wired in yet — the constants
+are still sitting unused in code, waiting for that change.
 
 **What this project actually is:**
 Agentic-Watershed is not primarily a fire/flood prediction system — prediction
@@ -543,7 +620,36 @@ structured observations as lexicon records, Synthesis subscribes via
 `com.atproto.repo.listRecords` (fetch mode, cron-triggered), and reasons across
 whatever it finds. This also decouples the agents completely — a node can be replaced,
 moved, or added without any change to Synthesis. The subscriber verifies author DIDs
-against `TRUSTED_PUBLISHERS` (interim) before accepting records.
+against `publishers.json` (interim trust registry) before accepting records.
+
+**Why a self-hosted PDS instead of publishing to `bsky.social`?**
+The original motivation was Bluesky (a place to see posts); the actual interest is
+ATProto — portable identity, federation, data bound to the DID rather than the
+platform. Staying on `bsky.social` meant the node's identity was, in practice,
+Bluesky-the-company's to revoke or rate-limit. Running the official PDS on the Pi
+means the node's identity depends only on the protocol, not on a specific operator's
+infrastructure — closer to the "A Half-Built Garden" framing than borrowing Bluesky's
+implicit trust layer ever was. It also cleanly separates concerns: domain agents write
+structured records for other agents to consume (no `app.bsky.feed.post` needed);
+only Synthesis, which has an actual human audience, still touches the public network.
+
+**Why register a separate domain (`watershed-agent.dev`) instead of using the existing `cpricedomain.net`?**
+Cloudflare Tunnel's cert-issuance flow (`cloudflared tunnel login`) requires a zone
+already on Cloudflare's nameservers — there's no way to delegate just one subdomain's
+NS records without moving the whole zone, and DNSimple (where `cpricedomain.net`
+lives) doesn't support that either. Rather than touch a domain other things depend
+on, registering a small dedicated domain directly through Cloudflare Registrar meant
+DNS was authoritative on Cloudflare from the moment of registration — no delegation,
+no propagation wait — and it separates "Agentic Watershed infrastructure identity"
+from the personal domain, which also fits the project's own theme.
+
+**Why Cloudflare Tunnel instead of port-forwarding on the home router?**
+Residential ISPs increasingly put connections behind CGNAT, which makes inbound
+port-forwarding impossible regardless of router configuration — and even where it
+works, it means running a public TLS endpoint on a home network with no DDoS
+protection and an IP that can't be rotated without breaking the DID's service
+endpoint. A tunnel makes only an outbound connection from the Pi; no inbound ports
+are ever opened, it works regardless of CGNAT, and Cloudflare terminates TLS.
 
 **Why Sonnet for Synthesis, Haiku for domain agents?**
 Cross-domain reasoning across multiple observation sets warrants more capability.
