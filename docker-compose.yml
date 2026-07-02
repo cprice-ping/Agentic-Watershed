@@ -1,0 +1,69 @@
+# Containerized node stack: collectors, domain agents, and the ATProto
+# publisher. Deliberately excludes the PDS — that's ATProto/pds/docker-compose.yml,
+# already deployed and running; a full "transferable node" is this file PLUS
+# that one, run together.
+#
+# All services are invoked one-shot via cron, not run as long-lived daemons —
+# matches this project's "stateless, cron-triggered, run-to-completion" agent
+# design (see CONTEXT.md). Cron calls `docker compose run --rm <service> ...`
+# instead of `.venv/bin/python ...`; nothing else about the scheduling model
+# changes. See README.md's "Cron schedule" section for the actual cron lines.
+#
+# Portability: node_config.json and .env are bind-mounted, not baked into
+# the images — the same built images work for any node. To deploy a new
+# node, copy this repo, write a new node_config.json and .env, done. No
+# image rebuild required unless the code itself changes.
+
+services:
+  river:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agentic-watershed-domain:latest
+    working_dir: /app/River
+    env_file: .env
+    volumes:
+      - ./node_config.json:/app/node_config.json:ro
+      - ./River/data:/app/River/data
+    command: ["python", "collector.py"]
+
+  weather:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agentic-watershed-domain:latest
+    working_dir: /app/Weather
+    env_file: .env
+    volumes:
+      - ./node_config.json:/app/node_config.json:ro
+      - ./Weather/data:/app/Weather/data
+    command: ["python", "collector.py"]
+
+  aqi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agentic-watershed-domain:latest
+    working_dir: /app/AQI
+    env_file: .env
+    volumes:
+      - ./node_config.json:/app/node_config.json:ro
+      - ./AQI/data:/app/AQI/data
+    command: ["python", "collector.py"]
+
+  atproto-publisher:
+    build:
+      context: .
+      dockerfile: ATProto/Dockerfile
+    image: agentic-watershed-atproto:latest
+    working_dir: /app/ATProto
+    env_file: .env
+    volumes:
+      - ./node_config.json:/app/node_config.json:ro
+      # Read-only: the publisher only reads domain observations, it never
+      # writes back to a domain's DB.
+      - ./River/data:/app/River/data:ro
+      - ./Weather/data:/app/Weather/data:ro
+      - ./AQI/data:/app/AQI/data:ro
+      - ./ATProto/data:/app/ATProto/data
+    command: ["python", "publisher.py"]

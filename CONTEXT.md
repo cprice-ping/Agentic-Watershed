@@ -135,6 +135,28 @@ Accumulating domain observations — first meaningful cross-domain synthesis
 expected after 2-3 days of data. Baseline established on first run (2026-06-22):
 low fire risk, no flood risk, low AQI risk. Marine influence dominant.
 
+### Containerization — built, node-01 migration pending
+
+`docker-compose.yml` (repo root) containerizes the collectors, domain agents,
+and ATProto publisher — everything except the PDS, which already had its own
+compose file (`ATProto/pds/`). Two images: a shared one for River/Weather/AQI
+(identical deps), a lighter one for the publisher (`httpx` only, no
+`anthropic`/`mcp`). `node_config.json` and `.env` are bind-mounted rather than
+baked in, so the built images are node-agnostic — deploying node-02 is
+"clone, write new config, done," not "rebuild an image with different
+hardcoding." Cron lines change from `.venv/bin/python script.py` to
+`docker compose run --rm <service> python script.py` — same one-shot,
+run-to-completion shape as Synthesis's Azure Container Apps Job, applied
+node-side. See `DEPLOYMENT.md` for fresh-node setup and, more carefully, the
+migration path off node-01's current venv+cron setup without losing its
+existing SQLite history (the compose bind-mounts point at the same
+`<Stack>/data/` paths the venv setup already writes to — no export/import,
+just point cron at the new invocation once a manual test run confirms it
+works).
+
+Not yet cut over on node-01 — this exists as tested-but-unswapped capability,
+same posture as anything else in this doc marked "built, not yet live."
+
 ---
 
 ## Environment

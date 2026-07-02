@@ -1,0 +1,24 @@
+# Mirrors .gitignore — none of this belongs baked into an image.
+# Data must be bind-mounted at runtime, not copied in at build time,
+# or every container recreate would start from a blank/stale DB.
+**/data/
+**/*.db
+**/logs/
+*.log
+
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+.env
+.env.*
+*.env
+
+.git/
+.github/
+
+.DS_Store
+.vscode/
+.idea/
