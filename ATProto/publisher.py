@@ -251,6 +251,13 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
         return {}
 
 
+def _atproto_safe(value):
+    """ATProto records are DAG-CBOR — no IEEE float type is valid in the
+    data model (only null/boolean/integer/string/cid/bytes/array/object).
+    Stringify floats to preserve exact values instead of lossily rounding."""
+    return str(value) if isinstance(value, float) else value
+
+
 # ---------------------------------------------------------------------------
 # Observation builders — convert DB rows to lexicon records
 # ---------------------------------------------------------------------------
@@ -262,9 +269,9 @@ def build_watershed_record(row: dict, observed_at: str) -> dict:
         "sevenDayTrend": "unknown",
     }
     if "dischargeCfs" in numerics:
-        watershed_block["dischargeCfs"] = numerics["dischargeCfs"]
+        watershed_block["dischargeCfs"] = _atproto_safe(numerics["dischargeCfs"])
     if "gageHeightFt" in numerics:
-        watershed_block["gageHeightFt"] = numerics["gageHeightFt"]
+        watershed_block["gageHeightFt"] = _atproto_safe(numerics["gageHeightFt"])
 
     return {
         "$type": LEXICON,
@@ -289,7 +296,7 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
                   "wind_direction_deg", "wind_gust_mph", "precip_24h_mm"):
         val = numerics.get(field)
         if val is not None:
-            weather_block[field] = val
+            weather_block[field] = _atproto_safe(val)
 
     return {
         "$type": LEXICON,
@@ -310,9 +317,9 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         "reportingArea": _NODE_CFG["aqi"]["reporting_area"],
     }
     if "pm25Aqi" in numerics:
-        aqi_block["pm25Aqi"] = numerics["pm25Aqi"]
+        aqi_block["pm25Aqi"] = _atproto_safe(numerics["pm25Aqi"])
     if "ozoneAqi" in numerics:
-        aqi_block["ozoneAqi"] = numerics["ozoneAqi"]
+        aqi_block["ozoneAqi"] = _atproto_safe(numerics["ozoneAqi"])
 
     return {
         "$type": LEXICON,
