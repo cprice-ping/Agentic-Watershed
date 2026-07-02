@@ -118,11 +118,18 @@ decisions" below for why a dedicated domain was registered instead).
 | 6h, 18h UTC | ✅ Running in Azure Container Apps Job (`synthesis-agent`, `rg-agentic-watershed`, `westus2`) |
 
 The Synthesis agent runs in Azure, not on the laptop. Pi (edge) → self-hosted PDS →
-Azure (cloud, fetches via `ATPROTO_PDS_URL`) → Bluesky advisory. Redeployed
-2026-07-02 with `ATPROTO_PDS_URL` pointed at the node's PDS and `publishers.json`
+Azure (cloud) → Bluesky advisory. Redeployed 2026-07-02 with `publishers.json`
 updated to the new DID — confirmed live: subscriber fetched 8 records from
 `napa-node-01.watershed-agent.dev`, resolved 2 pending predictions against real
 data, reasoned across domains, posted the advisory to `napasynth01.bsky.social`.
+
+That first redeploy used a single global `ATPROTO_PDS_URL` for all fetches —
+fine with one node, but silently wrong once a second node runs its own separate
+PDS (it would only ever query the configured URL, missing the other node's
+records with no error). `subscriber.py` now resolves each trusted publisher's
+PDS individually via `plc.directory`, same pattern as `Viewer/index.html`'s
+`resolvePds()` — see "DID resolution" below. `ATPROTO_PDS_URL` is no longer
+read by the subscriber or set on the Azure job.
 
 Accumulating domain observations — first meaningful cross-domain synthesis
 expected after 2-3 days of data. Baseline established on first run (2026-06-22):
@@ -146,8 +153,10 @@ Required environment variables:
   credentials, e.g. `napa-node-01.watershed-agent.dev` — not a Bluesky app
   password despite the variable names (kept for continuity with the publisher's
   original bsky.social-based auth flow, which is unchanged, just pointed elsewhere)
-- `ATPROTO_PDS_URL` (Pi + Azure) — which PDS to publish to / fetch from. Defaults
-  to the self-hosted PDS; falls back to `bsky.social` if unset
+- `ATPROTO_PDS_URL` (Pi only) — which PDS `ATProto/publisher.py` publishes to.
+  Defaults to the self-hosted PDS; falls back to `bsky.social` if unset. Not
+  used on Azure/by the subscriber — see "Synthesis agent" above and "DID
+  resolution" below for why fetch-side PDS lookup is per-DID, not a single URL.
 
 ---
 
@@ -338,12 +347,15 @@ difference, because "distributed" in this project's framing has always meant
 
 **How `did:plc` resolution actually works.** A `did:plc:...` string is an opaque
 hash — unlike `did:web`, it does not encode where to resolve it. Every resolver
-(the Viewer's `resolvePds()`, Synthesis's subscriber, anyone else's tooling) has
-to already know which directory to ask. In this codebase that's a hardcoded
-constant:
+has to already know which directory to ask. In this codebase that's a hardcoded
+constant, duplicated in two places since the Viewer (JS) and `subscriber.py`
+(Python) share no runtime config:
 
 ```js
-const PLC_DIRECTORY = "https://plc.directory";
+const PLC_DIRECTORY = "https://plc.directory";   // Viewer/index.html
+```
+```python
+PLC_DIRECTORY = "https://plc.directory"          # Synthesis/subscriber.py
 ```
 
 Querying `https://plc.directory/{did}` returns a DID document — a `service` array
@@ -351,7 +363,11 @@ with a `serviceEndpoint` telling you the DID's current PDS. That's the entire
 mechanism: one public GET, one JSON field. It's what makes the "identity outlives
 its hosting" property real — the DID is permanent, the PDS location is a mutable
 field in a document the DID owner controls, and moving hosts requires zero
-changes to anyone else's code, only an update to that document.
+changes to anyone else's code, only an update to that document. `subscriber.py`
+resolves each trusted publisher's DID independently rather than assuming they
+share a PDS — the fix that actually makes multi-node fetch correct (see
+"Synthesis agent" above); before that, a single global `PDS_HOST`/`ATPROTO_PDS_URL`
+would have silently missed a second node's records if it ran its own PDS.
 
 **What that document's integrity rests on.** Every operation in the PLC log —
 create, rotate keys, move PDS, tombstone — is signed by the DID's own rotation

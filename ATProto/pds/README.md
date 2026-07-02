@@ -130,6 +130,8 @@ though it doesn't affect the PDS's own identity.
   (env var, or `pds_url` in `node_config.json`) instead of the `bsky.social`
   default, and use the node account's handle/password instead of the
   `napanode1.bsky.social` app password.
-- `Synthesis/subscriber.py`: set the same `ATPROTO_PDS_URL` so it fetches
-  from this PDS, and update `Synthesis/publishers.json` with the new did:plc
-  in place of the old `bsky.social`-issued one.
+- `Synthesis/subscriber.py`: update `Synthesis/publishers.json` with the new
+  did:plc in place of the old `bsky.social`-issued one — no PDS URL to set
+  here, the subscriber resolves each trusted publisher's PDS individually
+  via `plc.directory`, so it works whether every node shares this PDS or
+  each runs its own.
