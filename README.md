@@ -144,12 +144,26 @@ NWS alert zones:
 
 ### Prerequisites
 
-- Raspberry Pi 5 (or any Linux system)
-- Python 3.11+
+- Raspberry Pi 5 (or any Linux system), or any machine for a new node
+- Docker + Compose plugin (`docker compose version`) — the supported path
 - Anthropic API key
 - AirNow API key (free)
 
-### Per-stack setup
+### Docker Compose (recommended)
+
+```bash
+cp .env.example .env      # fill in real values
+docker compose build
+```
+
+Each service is invoked one-shot via cron (`docker compose run --rm <service> ...`),
+not run as a long-lived daemon — see "Cron schedule" below. `node_config.json`
+and `.env` are bind-mounted, not baked into the image, so the same build works
+for any node — just point cron at a different checkout with its own config.
+Deploying a new node, or migrating an existing venv+cron setup over without
+losing history: see `DEPLOYMENT.md`.
+
+### Without Docker (legacy / alternative)
 
 Each stack has its own virtual environment:
 
@@ -167,7 +181,8 @@ Dependencies:
 ### Environment variables
 
 ```bash
-# Add to /etc/environment on Pi (cron picks these up via `. /etc/environment`)
+# Docker: .env at repo root (see .env.example)
+# Non-Docker: /etc/environment on Pi (cron picks these up via `. /etc/environment`)
 ANTHROPIC_API_KEY=sk-ant-...
 AIRNOW_API_KEY=your-key
 
@@ -177,14 +192,30 @@ BSKY_APP_PASSWORD=...
 ATPROTO_PDS_URL=https://napa-node-01.watershed-agent.dev
 ```
 
-See `.env.example` for reference.
-
 ---
 
 ## Cron schedule
 
+Docker Compose (recommended — run from the repo root):
+
 ```cron
-# Source env vars for all jobs
+# === Collectors ===
+*/15 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm river python collector.py >> River/logs/collector.log 2>&1
+*/30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm weather python collector.py >> Weather/logs/collector.log 2>&1
+*/30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm aqi python collector.py >> AQI/logs/collector.log 2>&1
+
+# === Domain Agents (staggered by 1h) ===
+0 0,6,12,18 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm river python agent.py >> River/logs/agent.log 2>&1
+0 1,7,13,19 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm weather python agent.py >> Weather/logs/agent.log 2>&1
+0 2,8,14,20 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm aqi python agent.py >> AQI/logs/agent.log 2>&1
+
+# === ATProto Publisher (15 min after the last domain agent) ===
+15 2,8,14,20 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm atproto-publisher python publisher.py >> ATProto/logs/publisher.log 2>&1
+```
+
+Without Docker (legacy — same schedule, `.venv/bin/python` instead of `docker compose run`):
+
+```cron
 # === Collectors ===
 */15 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python collector.py >> logs/collector.log 2>&1
@@ -199,9 +230,9 @@ See `.env.example` for reference.
 15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 ```
 
-The Synthesis agent does **not** run on Pi cron — it's an Azure Container Apps
-Job (`0 6,18 * * *` UTC), deployed via `Synthesis/deploy/deploy.sh`. See
-`CONTEXT.md` for the deployment details.
+The Synthesis agent does **not** run via either of the above — it's an Azure
+Container Apps Job (`0 6,18 * * *` UTC), deployed via `Synthesis/deploy/deploy.sh`.
+See `CONTEXT.md` for the deployment details.
 
 ---
 
