@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentic Watershed — Observation Viewer</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121822;
+    --border: #232c3a;
+    --text: #e6edf5;
+    --muted: #8a96a8;
+    --accent: #4fb3ff;
+    --ok: #3fbf7f;
+    --warn: #e0a53c;
+    --bad: #e0563c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 4rem;
+  }
+  h1 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: var(--muted);
+    margin: 0 0 1.5rem;
+  }
+  h1 a { color: inherit; text-decoration: none; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.4rem;
+    margin-bottom: 1.25rem;
+  }
+  .card h2 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 0 0 0.75rem;
+  }
+  .risk-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    background: #1a2230;
+    border: 1px solid var(--border);
+  }
+  .pill.none, .pill.low   { color: var(--ok); }
+  .pill.moderate          { color: var(--warn); }
+  .pill.high, .pill.extreme { color: var(--bad); }
+  .flagged-banner {
+    background: #2a1c14;
+    border: 1px solid #4a3220;
+    color: var(--warn);
+    padding: 0.6rem 0.9rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+  }
+  .meta {
+    color: var(--muted);
+    font-size: 0.82rem;
+    margin-bottom: 0.75rem;
+  }
+  .summary {
+    font-size: 1.02rem;
+    margin-bottom: 1rem;
+  }
+  .reasoning {
+    white-space: pre-wrap;
+    font-size: 0.92rem;
+    color: #cdd8e6;
+  }
+  .domain-block {
+    border-top: 1px solid var(--border);
+    padding-top: 0.9rem;
+    margin-top: 0.9rem;
+  }
+  .domain-block:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+  .domain-label {
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 0.3rem;
+  }
+  .numeric-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin-top: 0.4rem;
+  }
+  .numeric-fields span b { color: var(--text); font-weight: 500; }
+  .at-uri {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem;
+    color: var(--muted);
+    word-break: break-all;
+    margin-top: 0.3rem;
+  }
+  a { color: var(--accent); }
+  .state {
+    color: var(--muted);
+    padding: 2rem 0;
+    text-align: center;
+  }
+  .error {
+    color: var(--bad);
+    background: #2a1414;
+    border: 1px solid #4a2020;
+    border-radius: 8px;
+    padding: 1rem;
+  }
+  input[type=text] {
+    width: 100%;
+    padding: 0.6rem 0.8rem;
+    background: #0e141c;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.85rem;
+  }
+  button {
+    margin-top: 0.6rem;
+    padding: 0.55rem 1rem;
+    background: var(--accent);
+    color: #06121e;
+    border: none;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1><a href="./">Agentic Watershed — Observation Viewer</a></h1>
+  <div id="app"><div class="state">Loading…</div></div>
+</main>
+
+<script>
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+const LEXICON = "net.cpricedomain.temp.monitor.observation";
+const LOOKBACK_HOURS = 24; // matches Synthesis's default fetch lookback window
+const PLC_DIRECTORY = "https://plc.directory";
+
+// Trusted node publishers — mirrors Synthesis/publishers.json in the repo.
+// Keep these in sync; this file has no server, so it can't read the repo's
+// copy directly.
+let TRUSTED_PUBLISHERS = { "did:plc:ggztd5hjk3cnkhgzdk4rmqan": "napa-node-01" };
+
+// ---------------------------------------------------------------------------
+// ATProto helpers — all reads are public/unauthenticated, no backend needed
+// ---------------------------------------------------------------------------
+
+function parseAtUri(uri) {
+  const m = uri.match(/^at:\/\/([^/]+)\/([^/]+)\/([^/]+)$/);
+  if (!m) throw new Error("Not a valid at:// URI: " + uri);
+  return { did: m[1], collection: m[2], rkey: m[3] };
+}
+
+const pdsCache = {};
+async function resolvePds(did) {
+  if (pdsCache[did]) return pdsCache[did];
+  if (did.startsWith("did:plc:")) {
+    const resp = await fetch(`${PLC_DIRECTORY}/${encodeURIComponent(did)}`);
+    if (!resp.ok) throw new Error(`Could not resolve DID ${did} (${resp.status})`);
+    const doc = await resp.json();
+    const svc = (doc.service || []).find(s => s.id === "#atproto_pds");
+    if (!svc) throw new Error(`No PDS service endpoint in DID document for ${did}`);
+    pdsCache[did] = svc.serviceEndpoint;
+    return svc.serviceEndpoint;
+  }
+  throw new Error(`Unsupported DID method: ${did}`);
+}
+
+async function getRecord(uri) {
+  const { did, collection, rkey } = parseAtUri(uri);
+  const pds = await resolvePds(did);
+  const url = `${pds}/xrpc/com.atproto.repo.getRecord?repo=${encodeURIComponent(did)}&collection=${encodeURIComponent(collection)}&rkey=${encodeURIComponent(rkey)}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`getRecord failed (${resp.status}) for ${uri}`);
+  return resp.json();
+}
+
+async function listRecords(did, collection, limit = 100) {
+  const pds = await resolvePds(did);
+  const url = `${pds}/xrpc/com.atproto.repo.listRecords?repo=${encodeURIComponent(did)}&collection=${encodeURIComponent(collection)}&limit=${limit}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`listRecords failed (${resp.status}) for ${did}`);
+  const data = await resp.json();
+  return data.records || [];
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s ?? "";
+  return d.innerHTML;
+}
+
+function riskPill(label, value) {
+  const v = (value || "none").toLowerCase();
+  return `<span class="pill ${esc(v)}">${esc(label)}: ${esc(v)}</span>`;
+}
+
+function fmtTime(iso) {
+  if (!iso) return "unknown time";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      weekday: "short", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+    });
+  } catch { return iso; }
+}
+
+const NUMERIC_FIELD_LABELS = {
+  temperature_f: ["Temp", "°F"], humidity_pct: ["Humidity", "%"],
+  wind_speed_mph: ["Wind", "mph"], wind_gust_mph: ["Gust", "mph"],
+  wind_direction_deg: ["Wind dir", "°"], precip_24h_mm: ["Precip 24h", "mm"],
+  dischargeCfs: ["Discharge", "cfs"], gageHeightFt: ["Gage height", "ft"],
+  pm25Aqi: ["PM2.5 AQI", ""], ozoneAqi: ["Ozone AQI", ""],
+};
+
+function renderNumericFields(block) {
+  if (!block) return "";
+  const items = Object.entries(NUMERIC_FIELD_LABELS)
+    .filter(([key]) => block[key] !== undefined && block[key] !== null)
+    .map(([key, [label, unit]]) => `<span><b>${esc(String(block[key]))}${esc(unit)}</b> ${esc(label)}</span>`);
+  return items.length ? `<div class="numeric-fields">${items.join("")}</div>` : "";
+}
+
+function domainLabel(type) {
+  const map = { watershed: "🌊 Watershed", weather: "🌤️ Weather", aqi: "💨 Air Quality" };
+  return map[type] || type;
+}
+
+async function render(uri) {
+  const app = document.getElementById("app");
+  app.innerHTML = '<div class="state">Fetching observation…</div>';
+
+  let synthRecord;
+  try {
+    synthRecord = await getRecord(uri);
+  } catch (err) {
+    app.innerHTML = `<div class="error">Couldn't load that record.<br>${esc(err.message)}</div>`;
+    return;
+  }
+
+  const v = synthRecord.value || {};
+  const synth = v.synthesis || {};
+  const observedAt = v.observedAt;
+
+  let html = "";
+
+  html += `<div class="card">`;
+  html += `<h2>Synthesis Advisory</h2>`;
+  if (v.flagged) {
+    html += `<div class="flagged-banner">⚠ Flagged${synth.flagReason ? ": " + esc(v.flagReason || "") : ""}</div>`;
+  }
+  html += `<div class="risk-row">`;
+  html += riskPill("Overall", synth.overallRisk);
+  html += riskPill("Fire", synth.fireRisk);
+  html += riskPill("Flood", synth.floodRisk);
+  html += riskPill("Air quality", synth.airQualityRisk);
+  html += `</div>`;
+  html += `<div class="meta">${esc(fmtTime(observedAt))} · ${esc(v.agentModel || "")}</div>`;
+  html += `<div class="summary">${esc(v.summary || "")}</div>`;
+  if (synth.reasoning) {
+    html += `<h2 style="margin-top:1.25rem;">Full reasoning</h2>`;
+    html += `<div class="reasoning">${esc(synth.reasoning)}</div>`;
+  }
+  html += `<div class="at-uri">${esc(uri)}</div>`;
+  html += `</div>`;
+
+  document.getElementById("app").innerHTML = html;
+
+  // Underlying domain records this synthesis run drew from — approximated by
+  // matching observedAt within the same lookback window Synthesis itself
+  // used, since individual source records aren't referenced by URI in the
+  // synthesis record.
+  const domainSection = document.createElement("div");
+  domainSection.className = "card";
+  domainSection.innerHTML = `<h2>Underlying domain observations</h2><div class="state">Fetching…</div>`;
+  document.getElementById("app").appendChild(domainSection);
+
+  try {
+    const cutoff = observedAt ? new Date(observedAt).getTime() - LOOKBACK_HOURS * 3600 * 1000 : null;
+    const upper = observedAt ? new Date(observedAt).getTime() : null;
+
+    let allDomainRecords = [];
+    for (const did of Object.keys(TRUSTED_PUBLISHERS)) {
+      const records = await listRecords(did, LEXICON);
+      allDomainRecords.push(...records.filter(r => (r.value || {}).observationType !== `${LEXICON}#synthesis`));
+    }
+
+    if (upper !== null) {
+      allDomainRecords = allDomainRecords.filter(r => {
+        const t = new Date((r.value || {}).observedAt || 0).getTime();
+        return t <= upper && t >= cutoff;
+      });
+    }
+
+    if (!allDomainRecords.length) {
+      domainSection.innerHTML = `<h2>Underlying domain observations</h2><div class="meta">No domain records found in the ${LOOKBACK_HOURS}h window before this observation (they may have aged out, or the node hadn't published yet).</div>`;
+      return;
+    }
+
+    allDomainRecords.sort((a, b) => new Date((a.value||{}).observedAt||0) - new Date((b.value||{}).observedAt||0));
+
+    let blocks = "";
+    for (const rec of allDomainRecords) {
+      const rv = rec.value || {};
+      const type = (rv.observationType || "").split("#")[1] || "unknown";
+      const domainBlock = rv[type] || {};
+      blocks += `<div class="domain-block">`;
+      blocks += `<div class="domain-label">${domainLabel(type)}${rv.flagged ? " ⚠️" : ""}</div>`;
+      blocks += `<div class="meta">${esc(fmtTime(rv.observedAt))}</div>`;
+      blocks += `<div>${esc(rv.summary || "")}</div>`;
+      blocks += renderNumericFields(domainBlock);
+      blocks += `<div class="at-uri">${esc(rec.uri)}</div>`;
+      blocks += `</div>`;
+    }
+    domainSection.innerHTML = `<h2>Underlying domain observations (±${LOOKBACK_HOURS}h)</h2>${blocks}`;
+  } catch (err) {
+    domainSection.innerHTML = `<h2>Underlying domain observations</h2><div class="error">${esc(err.message)}</div>`;
+  }
+}
+
+function renderPrompt() {
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="card">
+      <h2>Enter an observation URI</h2>
+      <p class="meta">Paste an <code>at://</code> record URI (from a Synthesis advisory post's link, or from a domain agent's lexicon record) to view the full record.</p>
+      <input type="text" id="uri-input" placeholder="at://did:plc:.../net.cpricedomain.temp.monitor.observation/...">
+      <br><button id="go-btn">View</button>
+    </div>`;
+  document.getElementById("go-btn").addEventListener("click", () => {
+    const uri = document.getElementById("uri-input").value.trim();
+    if (uri) {
+      const url = new URL(window.location);
+      url.searchParams.set("uri", uri);
+      window.location = url;
+    }
+  });
+}
+
+async function main() {
+  try {
+    const resp = await fetch("./publishers.json");
+    if (resp.ok) TRUSTED_PUBLISHERS = await resp.json();
+  } catch { /* fall back to the embedded default */ }
+
+  const params = new URLSearchParams(window.location.search);
+  const uri = params.get("uri");
+  if (uri) {
+    render(uri);
+  } else {
+    renderPrompt();
+  }
+}
+
+main();
+</script>
+</body>
+</html>

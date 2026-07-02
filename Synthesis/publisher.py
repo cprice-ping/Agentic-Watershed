@@ -43,6 +43,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 
@@ -58,6 +59,15 @@ _DEFAULT_PUBLISHER_DB = Path(__file__).parent / "data" / "synth_publisher.db"
 BSKY_PDS  = "https://bsky.social"
 LEXICON   = "net.cpricedomain.temp.monitor.observation"
 SYNTH_ID  = "napa-synth-01"
+
+# Static observation viewer (see Viewer/) — shows the full reasoning and
+# underlying domain records behind a (necessarily truncated) advisory post.
+VIEWER_BASE = os.environ.get("VIEWER_BASE_URL", "https://viewer.watershed-agent.dev")
+VIEWER_LINK_LABEL = "🔗 Full reasoning & underlying observations"
+
+
+def viewer_url(record_uri: str) -> str:
+    return f"{VIEWER_BASE}/?uri={quote(record_uri, safe='')}"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,13 +149,26 @@ class BlueskySession:
         resp.raise_for_status()
         return resp.json().get("uri", "")
 
-    def create_post(self, text: str, tags: list[str] = None) -> str:
+    def create_post(self, text: str, tags: list[str] = None,
+                    link_url: str = None, link_label: str = None) -> str:
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         facets = []
         full_text = text
+
+        if link_url and link_label:
+            full_text = full_text + "\n\n" + link_label
+            full_bytes = full_text.encode("utf-8")
+            needle = link_label.encode("utf-8")
+            idx = full_bytes.rfind(needle)
+            if idx != -1:
+                facets.append({
+                    "index": {"byteStart": idx, "byteEnd": idx + len(needle)},
+                    "features": [{"$type": "app.bsky.richtext.facet#link", "uri": link_url}],
+                })
+
         if tags:
             tag_str = " " + " ".join(f"#{t}" for t in tags)
-            full_text = text + tag_str
+            full_text = full_text + tag_str
             full_bytes = full_text.encode("utf-8")
             for tag in tags:
                 needle = f"#{tag}".encode("utf-8")
@@ -184,6 +207,10 @@ def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
             "overallRisk":     row.get("overall_risk", "none"),
             "synthesisDid":    synth_did,
             "domainsObserved": ["watershed", "weather", "aqi"],
+            # Full cross-domain reasoning, not just the public-facing summary —
+            # makes the ATProto record itself the complete, publicly auditable
+            # source of truth rather than just what fits in a Bluesky post.
+            "reasoning":       row.get("reasoning", ""),
         },
     }
 
@@ -206,7 +233,9 @@ def build_post(row: dict) -> tuple[str, list[str]]:
         tags.append("Flagged")
 
     tag_str = " " + " ".join(f"#{t}" for t in tags)
-    overhead = len(header) + 2 + len(tag_str)
+    # Reserve room for "\n\n" + the viewer link line added by create_post(),
+    # so the full post (summary + link + tags) still fits Bluesky's 300-grapheme limit.
+    overhead = len(header) + 2 + len(tag_str) + 2 + len(VIEWER_LINK_LABEL)
     max_summary = 300 - overhead
     if len(summary) > max_summary:
         summary = summary[:max_summary - 1] + "…"
@@ -289,7 +318,10 @@ def main() -> None:
             record_uri = session.create_record(LEXICON, record)
             log.info("Published lexicon record: %s", record_uri)
 
-            post_uri = session.create_post(post_text, tags)
+            post_uri = session.create_post(
+                post_text, tags,
+                link_url=viewer_url(record_uri), link_label=VIEWER_LINK_LABEL,
+            )
             log.info("Published advisory post: %s", post_uri)
 
             mark_published(pub_conn, source_id, observed_at, record_uri, overall_risk, flagged)
