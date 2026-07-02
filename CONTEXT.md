@@ -328,6 +328,77 @@ The publishing target doesn't change. The identity primitive underneath does.
 The Agent Identity Registry is being built in a separate repo — see that project for
 the registry design and implementation.
 
+### DID resolution — the plc.directory dependency we didn't remove
+
+Self-hosting the PDS (above) removed the Bluesky *hosting* dependency: the node's
+identity and data no longer live on infrastructure Bluesky operates. It did **not**
+remove the Bluesky *resolution* dependency, and it's worth being precise about the
+difference, because "distributed" in this project's framing has always meant
+"mostly" — the honest state, not the aspirational one.
+
+**How `did:plc` resolution actually works.** A `did:plc:...` string is an opaque
+hash — unlike `did:web`, it does not encode where to resolve it. Every resolver
+(the Viewer's `resolvePds()`, Synthesis's subscriber, anyone else's tooling) has
+to already know which directory to ask. In this codebase that's a hardcoded
+constant:
+
+```js
+const PLC_DIRECTORY = "https://plc.directory";
+```
+
+Querying `https://plc.directory/{did}` returns a DID document — a `service` array
+with a `serviceEndpoint` telling you the DID's current PDS. That's the entire
+mechanism: one public GET, one JSON field. It's what makes the "identity outlives
+its hosting" property real — the DID is permanent, the PDS location is a mutable
+field in a document the DID owner controls, and moving hosts requires zero
+changes to anyone else's code, only an update to that document.
+
+**What that document's integrity rests on.** Every operation in the PLC log —
+create, rotate keys, move PDS, tombstone — is signed by the DID's own rotation
+key, not merely attested to by whoever runs the directory. The server
+(`did-method-plc`) is open source and the operation log is exportable, which is
+a deliberate mitigation: the *data* isn't proprietary, so anyone holding a synced
+copy could stand up a faithful replacement and serve the exact same mappings,
+verifiable independent of who's hosting them.
+
+**What isn't mitigated: resolution continuity.** There is no discovery mechanism
+between directory instances — no DNS-style delegation, no fallback list, nothing
+in the protocol that lets a resolver try a second directory if the first is
+unreachable. In practice there is exactly one directory basically everyone in the
+ATProto ecosystem resolves against, run by Bluesky PBC. If it went dark with no
+warning:
+
+- Every `did:plc` DID in the *entire ecosystem* — not just this project — becomes
+  unresolvable for anyone without a cached copy, all at once. This is a systemic
+  ATProto risk, not something specific to Agentic Watershed.
+- Recovery depends on someone already running a synced mirror (or having exported
+  the log pre-shutdown) standing up a replacement, and then every piece of client
+  code in existence — including our one hardcoded constant — being manually
+  repointed at it. Slow, uncoordinated, ecosystem-wide, not automatic failover.
+- **New operations go dark before the mirror problem even matters.** Existing DID
+  documents stay resolvable (read-only) as long as *some* copy of the log is
+  served somewhere, but rotating keys or moving a PDS requires submitting a fresh
+  signed operation to a directory actively accepting writes. With none, every
+  `did:plc` identity is frozen at its last known state.
+
+**Where this project stands on it, deliberately.** Not treating this as urgent —
+the ATProto team is aware of this class of problem and it's a reasonable bet that
+resolution federation gets addressed at the protocol level before it's forced by
+an outage. But it's real, it's documented here rather than glossed over, and it
+sharpens something already noted above: `did:web` resolves the discovery problem
+*by construction* (the DID literally is the address — no shared directory at
+all), which is the strongest concrete argument yet for eventually moving the
+node's identity there. Two lower-effort mitigations worth doing before that, if
+this becomes a live concern:
+
+1. **Cache the last-resolved PDS URL** (Viewer, subscriber) instead of always
+   live-resolving via `plc.directory` on every call — degrades a directory outage
+   to "stale but working" instead of "broken."
+2. **Consider self-hosting a PLC directory mirror** — `pds.env.example` already
+   flags this as "possible but out of scope," which is still the right call for
+   now, but it's the concrete next step if the shared dependency ever needs
+   removing rather than just documenting.
+
 ### Watershed agent changes when the registry is ready
 
 The agents need a small Python client module for the registry — three operations:
