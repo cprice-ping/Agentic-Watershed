@@ -242,6 +242,39 @@ def gather_context(n_observations: int = 5) -> str:
 # Reasoning
 # ---------------------------------------------------------------------------
 
+def _extract_json_object(raw: str) -> str:
+    """Extract the outer {...} span from a model response, tolerating any
+    free-text preamble the model adds despite the "no extra text" system
+    prompt instruction. Depth-counts braces while respecting string
+    literals, so braces nested inside string field values (e.g. the
+    "reasoning" text) don't cause premature truncation."""
+    start = raw.find("{")
+    if start == -1:
+        return raw
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(raw)):
+        ch = raw[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return raw[start:i + 1]
+    return raw[start:]
+
+
 def reason(context: str, model_key: str, verbose: bool = False) -> dict:
     model_id = MODELS[model_key]
     log.info("Reasoning with %s (%s)...", model_key, model_id)
@@ -263,6 +296,8 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
+
+    raw = _extract_json_object(raw)
 
     try:
         return json.loads(raw)
