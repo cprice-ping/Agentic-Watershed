@@ -353,7 +353,12 @@ async function render(uri) {
       return;
     }
 
-    allDomainRecords.sort((a, b) => new Date((a.value||{}).observedAt||0) - new Date((b.value||{}).observedAt||0));
+    // Newest first — a domain agent runs every 6h, so multiple records per
+    // domain can land in the 24h window. Oldest-first buried the freshest
+    // state at the bottom of a long list, making stale data look current
+    // (the record you'd actually notice, at the top, was the stalest one
+    // still in-window). See CONTEXT.md if this surfaces again.
+    allDomainRecords.sort((a, b) => new Date((b.value||{}).observedAt||0) - new Date((a.value||{}).observedAt||0));
 
     let blocks = "";
     for (const rec of allDomainRecords) {
@@ -368,7 +373,7 @@ async function render(uri) {
       blocks += `<div class="at-uri">${esc(rec.uri)}</div>`;
       blocks += `</div>`;
     }
-    domainSection.innerHTML = `<h2>Underlying domain observations (±${LOOKBACK_HOURS}h)</h2>${blocks}`;
+    domainSection.innerHTML = `<h2>Underlying domain observations (last ${LOOKBACK_HOURS}h, newest first)</h2>${blocks}`;
   } catch (err) {
     domainSection.innerHTML = `<h2>Underlying domain observations</h2><div class="error">${esc(err.message)}</div>`;
   }
