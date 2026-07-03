@@ -185,41 +185,37 @@ def gather_context() -> str:
     return context
 
 
-def _extract_json_object(raw: str) -> str:
-    """Extract the outer {...} span from a model response, tolerating any
-    free-text preamble the model adds despite the "no extra text" system
-    prompt instruction. Depth-counts braces while respecting string
-    literals, so braces nested inside string field values (e.g. the
-    "reasoning" text) don't cause premature truncation."""
-    start = raw.find("{")
-    if start == -1:
-        return raw
-    depth = 0
-    in_string = False
-    escape = False
-    for i in range(start, len(raw)):
-        ch = raw[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return raw[start:i + 1]
-    return raw[start:]
+# Forced tool use instead of asking for free-text JSON: the API validates
+# the arguments against this schema server-side and hands back an already-
+# parsed dict via the tool_use block's .input, so there's no text response
+# to parse and no possibility of the model prepending prose before its
+# answer (the failure mode that used to require _extract_json_object()).
+_ASSESSMENT_TOOL = {
+    "name": "submit_assessment",
+    "description": "Submit the structured assessment for this monitoring run.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "1-3 sentence summary of current conditions for the next agent run to read",
+            },
+            "flagged": {
+                "type": "boolean",
+                "description": "True if conditions warrant attention or follow-up",
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "Full reasoning: what data you saw, what it means, why you flagged or didn't",
+            },
+        },
+        "required": ["summary", "flagged", "reasoning"],
+    },
+}
 
 
 def reason(context: str, model_key: str, verbose: bool = False) -> dict:
-    """Send context to Claude and parse its structured JSON response."""
+    """Send context to Claude and return its structured assessment."""
     model_id = MODELS[model_key]
     log.info("Reasoning with %s (%s)...", model_key, model_id)
 
@@ -234,32 +230,23 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
                 "content": context,
             }
         ],
+        tools=[_ASSESSMENT_TOOL],
+        tool_choice={"type": "tool", "name": "submit_assessment"},
     )
 
-    raw = message.content[0].text.strip()
-
     if verbose:
-        log.info("Raw Claude response:\n%s", raw)
+        log.info("Raw Claude response:\n%s", message.content)
 
-    # Strip markdown code fences if present
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-
-    raw = _extract_json_object(raw)
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        log.error("Failed to parse Claude response as JSON: %s", exc)
-        log.error("Raw response: %s", raw)
+    tool_use = next((b for b in message.content if b.type == "tool_use"), None)
+    if tool_use is None:
+        # Shouldn't happen with a forced tool_choice, but don't trust that blindly.
+        log.error("No tool_use block in response despite forced tool_choice: %s", message.content)
         return {
-            "summary": "Agent run failed: could not parse LLM response.",
+            "summary": "Agent run failed: model did not return a tool call.",
             "flagged": True,
-            "reasoning": f"JSON parse error: {exc}\nRaw: {raw}",
+            "reasoning": f"Raw content blocks: {message.content}",
         }
+    return tool_use.input
 
 
 def write_observation(observation: dict, dry_run: bool = False) -> None:
