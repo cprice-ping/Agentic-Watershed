@@ -1,0 +1,361 @@
+{
+  "info": {
+    "name": "Agentic Watershed — ATProto API calls",
+    "description": "Every ATProto XRPC call this project actually makes, grouped by which file makes it. Two independent PDSs are involved: the node's self-hosted PDS (domain agents' own identity) and bsky.social (Synthesis's identity, since it's the only component with a human-facing audience). See CONTEXT.md for the architecture behind why these are separate.\n\nSecurity note: leave the *_app_password variables empty here and set real values in a Postman Environment instead (Environments aren't meant to be committed to git; this collection file is). Never fill in real passwords in the collection itself.\n\nRequest chaining: the two 'Create Session' requests have test scripts that auto-populate the corresponding *_access_jwt (and *_did, if blank) collection variables from the response, so everything downstream in that PDS's folders just works once you've run Create Session once.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "node_pds_url", "value": "https://napa-node-01.watershed-agent.dev", "description": "The node's self-hosted PDS. Set via ATPROTO_PDS_URL in ATProto/publisher.py." },
+    { "key": "node_handle", "value": "napa-node-01.watershed-agent.dev", "description": "BSKY_HANDLE in ATProto/publisher.py" },
+    { "key": "node_did", "value": "did:plc:ggztd5hjk3cnkhgzdk4rmqan", "description": "Auto-filled by Create Session if left blank; hardcoded here since it's already public knowledge (see Synthesis/publishers.json)." },
+    { "key": "node_app_password", "value": "", "description": "BSKY_APP_PASSWORD — fill in via a Postman Environment, not here." },
+    { "key": "node_access_jwt", "value": "", "description": "Auto-populated by 'Create Session' (Node PDS)." },
+    { "key": "node_refresh_jwt", "value": "", "description": "Auto-populated by 'Create Session' (Node PDS). Not used anywhere in this codebase — see 'Refresh Session' request notes." },
+
+    { "key": "synth_pds_url", "value": "https://bsky.social", "description": "Synthesis's PDS. Set via BSKY_PDS in Synthesis/publisher.py — genuinely bsky.social, not self-hosted, since this is the one identity with a human audience." },
+    { "key": "synth_handle", "value": "napasynth01.bsky.social", "description": "BSKY_SYNTH_HANDLE in Synthesis/publisher.py" },
+    { "key": "synth_did", "value": "did:plc:clcw2dxrd6qma45gy3oozjwa", "description": "Auto-filled by Create Session if left blank." },
+    { "key": "synth_app_password", "value": "", "description": "BSKY_SYNTH_APP_PASSWORD — fill in via a Postman Environment, not here." },
+    { "key": "synth_access_jwt", "value": "", "description": "Auto-populated by 'Create Session' (Synthesis PDS)." },
+
+    { "key": "lexicon", "value": "net.cpricedomain.temp.monitor.observation", "description": "The custom lexicon every domain and synthesis record uses." },
+    { "key": "plc_directory", "value": "https://plc.directory", "description": "Public did:plc resolution service — see CONTEXT.md 'DID resolution' section for what this does and doesn't guarantee." },
+    { "key": "example_rkey", "value": "", "description": "Fill in after running 'List Records' once — used by 'Get Record'." }
+  ],
+  "item": [
+    {
+      "name": "Node PDS — Identity & Auth",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{node_pds_url}}/xrpc/_health",
+              "host": ["{{node_pds_url}}"],
+              "path": ["xrpc", "_health"]
+            },
+            "description": "Confirms the PDS is up. Public, unauthenticated. Used manually throughout ATProto/pds/README.md's setup verification."
+          }
+        },
+        {
+          "name": "Create Account (one-time PDS setup)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"you@example.com\",\n  \"handle\": \"{{node_handle}}\",\n  \"password\": \"{{node_app_password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{node_pds_url}}/xrpc/com.atproto.server.createAccount",
+              "host": ["{{node_pds_url}}"],
+              "path": ["xrpc", "com.atproto.server.createAccount"]
+            },
+            "description": "One-time call — mints the node's did:plc. No auth needed (works without an invite code since PDS_INVITE_REQUIRED=false). This is the curl command from ATProto/pds/README.md step 11; recent bluesky-social/pds images don't ship pdsadmin, so this plain XRPC call is the actual mechanism, not a CLI tool."
+          }
+        },
+        {
+          "name": "Create Session (ROPC login)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('node_access_jwt', data.accessJwt);",
+                  "pm.collectionVariables.set('node_refresh_jwt', data.refreshJwt);",
+                  "if (data.did) { pm.collectionVariables.set('node_did', data.did); }",
+                  "pm.test('got accessJwt', () => pm.expect(data.accessJwt).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"{{node_handle}}\",\n  \"password\": \"{{node_app_password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{node_pds_url}}/xrpc/com.atproto.server.createSession",
+              "host": ["{{node_pds_url}}"],
+              "path": ["xrpc", "com.atproto.server.createSession"]
+            },
+            "description": "This is the OAuth 2.0 Resource Owner Password Credentials (ROPC) grant, RFC 6749 §4.3 — handle + password submitted directly, no redirect. 'identifier' can be a handle or a DID; ATProto/publisher.py sends the handle. Returns accessJwt (short-lived, ~2h) and refreshJwt (long-lived) plus the account's did. The test script here auto-populates node_access_jwt/node_refresh_jwt/node_did for every request below."
+          }
+        },
+        {
+          "name": "Refresh Session (reference only — unused in this codebase)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{node_refresh_jwt}}" }
+            ],
+            "url": {
+              "raw": "{{node_pds_url}}/xrpc/com.atproto.server.refreshSession",
+              "host": ["{{node_pds_url}}"],
+              "path": ["xrpc", "com.atproto.server.refreshSession"]
+            },
+            "description": "NOT called anywhere in ATProto/publisher.py or Synthesis/publisher.py — both re-authenticate via Create Session fresh on every cron invocation instead, since each run is a short-lived process well inside the accessJwt's ~2h lifetime. Included here for reference: this is how a long-lived client would mint a new accessJwt without re-sending the password, using the refreshJwt as the Bearer token (not the accessJwt — note the different header value from every other authenticated request in this collection)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Node PDS — Writing records (ATProto/publisher.py)",
+      "item": [
+        {
+          "name": "Create Record — Watershed observation",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{node_access_jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"repo\": \"{{node_did}}\",\n  \"collection\": \"{{lexicon}}\",\n  \"record\": {\n    \"$type\": \"{{lexicon}}\",\n    \"observedAt\": \"2026-07-02T01:00:17.706920Z\",\n    \"nodeId\": \"napa-node-01\",\n    \"observationType\": \"{{lexicon}}#watershed\",\n    \"summary\": \"Both stations remain in normal early-July dry-season baseflow with continued stable conditions.\",\n    \"flagged\": false,\n    \"flagReason\": \"\",\n    \"agentModel\": \"claude-haiku-4-5\",\n    \"watershed\": {\n      \"stationIds\": [\"USGS-11458000\", \"USGS-11456000\"],\n      \"sevenDayTrend\": \"unknown\",\n      \"dischargeCfs\": \"3.85\",\n      \"gageHeightFt\": \"1.46\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{node_pds_url}}/xrpc/com.atproto.repo.createRecord",
+              "host": ["{{node_pds_url}}"],
+              "path": ["xrpc", "com.atproto.repo.createRecord"]
+            },
+            "description": "Exact shape from build_watershed_record() in ATProto/publisher.py. Note dischargeCfs/gageHeightFt are strings, not numbers — ATProto records are DAG-CBOR, which has no float type in its data model, so numeric fields pulled from SQLite REAL columns are stringified before publishing (see _atproto_safe()). The PDS enforces repo == the DID your accessJwt session belongs to — you cannot write into a repo you're not authenticated as, even with a valid session."
+          }
+        },
+        {
+          "name": "Create Record — Weather observation",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{node_access_jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"repo\": \"{{node_did}}\",\n  \"collection\": \"{{lexicon}}\",\n  \"record\": {\n    \"$type\": \"{{lexicon}}\",\n    \"observedAt\": \"2026-07-02T02:00:25.443751Z\",\n    \"nodeId\": \"napa-node-01\",\n    \"observationType\": \"{{lexicon}}#weather\",\n    \"summary\": \"Extreme wind event continues with sustained elevated winds and dry conditions.\",\n    \"flagged\": true,\n    \"flagReason\": \"\",\n    \"agentModel\": \"claude-haiku-4-5\",\n    \"weather\": {\n      \"stationId\": \"KAPC\",\n      \"activeAlerts\": [],\n      \"temperature_f\": \"62.6\",\n      \"humidity_pct\": \"72.401374699018\",\n      \"wind_gust_mph\": \"95.3\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{node_pds_url}}/xrpc/com.atproto.repo.createRecord",
+              "host": ["{{node_pds_url}}"],
+              "path": ["xrpc", "com.atproto.repo.createRecord"]
+            },
+            "description": "Exact shape from build_weather_record() in ATProto/publisher.py."
+          }
+        },
+        {
+          "name": "Create Record — AQI observation",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{node_access_jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"repo\": \"{{node_did}}\",\n  \"collection\": \"{{lexicon}}\",\n  \"record\": {\n    \"$type\": \"{{lexicon}}\",\n    \"observedAt\": \"2026-07-02T15:00:21.793917Z\",\n    \"nodeId\": \"napa-node-01\",\n    \"observationType\": \"{{lexicon}}#aqi\",\n    \"summary\": \"PM2.5 AQI is 53 (Moderate), stable. Ozone remains 23 (Good) with no rise.\",\n    \"flagged\": true,\n    \"flagReason\": \"\",\n    \"agentModel\": \"claude-haiku-4-5\",\n    \"aqi\": {\n      \"reportingArea\": \"Napa\",\n      \"pm25Aqi\": 53,\n      \"ozoneAqi\": 23\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{node_pds_url}}/xrpc/com.atproto.repo.createRecord",
+              "host": ["{{node_pds_url}}"],
+              "path": ["xrpc", "com.atproto.repo.createRecord"]
+            },
+            "description": "Exact shape from build_aqi_record() in ATProto/publisher.py. pm25Aqi/ozoneAqi are real integers here (not stringified) — they come from a SQLite INTEGER column, not REAL, so no DAG-CBOR float issue applies."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Synthesis PDS (bsky.social) — Identity & Auth",
+      "item": [
+        {
+          "name": "Create Session (synth account)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('synth_access_jwt', data.accessJwt);",
+                  "if (data.did) { pm.collectionVariables.set('synth_did', data.did); }",
+                  "pm.test('got accessJwt', () => pm.expect(data.accessJwt).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"{{synth_handle}}\",\n  \"password\": \"{{synth_app_password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{synth_pds_url}}/xrpc/com.atproto.server.createSession",
+              "host": ["{{synth_pds_url}}"],
+              "path": ["xrpc", "com.atproto.server.createSession"]
+            },
+            "description": "Same ROPC login, against bsky.social instead of the node's self-hosted PDS — Synthesis has its own separate identity/account, deliberately distinct from the node's, since it's the only component that also posts to the public Bluesky app layer for a human audience."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Synthesis PDS — Writing (Synthesis/publisher.py)",
+      "item": [
+        {
+          "name": "Create Record — Synthesis advisory (lexicon)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{synth_access_jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"repo\": \"{{synth_did}}\",\n  \"collection\": \"{{lexicon}}\",\n  \"record\": {\n    \"$type\": \"{{lexicon}}\",\n    \"observedAt\": \"2026-07-02T22:55:00Z\",\n    \"nodeId\": \"napa-synth-01\",\n    \"observationType\": \"{{lexicon}}#synthesis\",\n    \"summary\": \"Napa Valley's extreme wind event continues to show genuine moderation, with wildfire smoke persisting at Moderate PM2.5.\",\n    \"flagged\": true,\n    \"flagReason\": \"Maintaining moderate fire and air quality risk pending confirmed resolution.\",\n    \"agentModel\": \"claude-sonnet-4-6\",\n    \"synthesis\": {\n      \"fireRisk\": \"moderate\",\n      \"floodRisk\": \"none\",\n      \"airQualityRisk\": \"moderate\",\n      \"overallRisk\": \"moderate\",\n      \"synthesisDid\": \"{{synth_did}}\",\n      \"domainsObserved\": [\"watershed\", \"weather\", \"aqi\"],\n      \"reasoning\": \"Full cross-domain reasoning goes here — this is the field that made the ATProto record the complete, publicly auditable source of truth instead of just what fits in a 300-grapheme Bluesky post. See CONTEXT.md's Viewer discussion for why this was added.\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{synth_pds_url}}/xrpc/com.atproto.repo.createRecord",
+              "host": ["{{synth_pds_url}}"],
+              "path": ["xrpc", "com.atproto.repo.createRecord"]
+            },
+            "description": "Exact shape from build_synthesis_record() in Synthesis/publisher.py. Notice observationType uses #synthesis, distinguishing this from the three domain observation types even though it's the same lexicon collection — that's how subscriber.py, the Viewer, and this collection's List Records requests all filter synthesis records out of domain-record listings (and vice versa)."
+          }
+        },
+        {
+          "name": "Create Record — Advisory post (app.bsky.feed.post)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{synth_access_jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"repo\": \"{{synth_did}}\",\n  \"collection\": \"app.bsky.feed.post\",\n  \"record\": {\n    \"$type\": \"app.bsky.feed.post\",\n    \"text\": \"\\ud83d\\udfe1 Napa Valley Advisory \\u2014 MODERATE risk\\n\\nExtreme wind event continues to show genuine moderation...\\n\\n\\ud83d\\udd17 Full reasoning & underlying observations #NapaValley #NapaFire #NapaWeather\",\n    \"createdAt\": \"2026-07-02T22:56:19.000Z\",\n    \"facets\": [\n      {\n        \"index\": { \"byteStart\": 120, \"byteEnd\": 165 },\n        \"features\": [{ \"$type\": \"app.bsky.richtext.facet#link\", \"uri\": \"https://viewer.watershed-agent.dev/?uri=at://{{synth_did}}/{{lexicon}}/RKEY_GOES_HERE\" }]\n      },\n      {\n        \"index\": { \"byteStart\": 166, \"byteEnd\": 177 },\n        \"features\": [{ \"$type\": \"app.bsky.richtext.facet#tag\", \"tag\": \"NapaValley\" }]\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{synth_pds_url}}/xrpc/com.atproto.repo.createRecord",
+              "host": ["{{synth_pds_url}}"],
+              "path": ["xrpc", "com.atproto.repo.createRecord"]
+            },
+            "description": "This is the human-facing side — a completely different lexicon (app.bsky.feed.post, Bluesky's own, not our custom one) so it renders in any Bluesky client. Built by BlueskySession.create_post() in Synthesis/publisher.py, called right after the lexicon record above so the viewer link facet can point at the just-created record's URI. Byte offsets in facets are UTF-8 byte positions, not character positions — see the comment in create_post() about why. This is also the request that hits Bluesky's 300-grapheme post limit, which is what started the whole Viewer thread in this project."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reading records (public, unauthenticated)",
+      "item": [
+        {
+          "name": "List Records — Node PDS domain observations",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "if (data.records && data.records.length) {",
+                  "  const uri = data.records[0].uri;",
+                  "  const rkey = uri.split('/').pop();",
+                  "  pm.collectionVariables.set('example_rkey', rkey);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{node_pds_url}}/xrpc/com.atproto.repo.listRecords?repo={{node_did}}&collection={{lexicon}}&limit=20",
+              "host": ["{{node_pds_url}}"],
+              "path": ["xrpc", "com.atproto.repo.listRecords"],
+              "query": [
+                { "key": "repo", "value": "{{node_did}}" },
+                { "key": "collection", "value": "{{lexicon}}" },
+                { "key": "limit", "value": "20" }
+              ]
+            },
+            "description": "No Authorization header — repo data is public by protocol design, which is the whole point of 'data bound to the DID, portable, federable.' This is exactly what Synthesis/subscriber.py's fetch_from_publisher() calls, and what you ran manually via curl earlier. Response is paginated via a cursor field; add &cursor=... to page through more than one page. The test script grabs the most recent record's rkey into example_rkey for the Get Record request below."
+          }
+        },
+        {
+          "name": "Get Record — by repo + collection + rkey",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{node_pds_url}}/xrpc/com.atproto.repo.getRecord?repo={{node_did}}&collection={{lexicon}}&rkey={{example_rkey}}",
+              "host": ["{{node_pds_url}}"],
+              "path": ["xrpc", "com.atproto.repo.getRecord"],
+              "query": [
+                { "key": "repo", "value": "{{node_did}}" },
+                { "key": "collection", "value": "{{lexicon}}" },
+                { "key": "rkey", "value": "{{example_rkey}}" }
+              ]
+            },
+            "description": "Fetches exactly one record by its rkey (the last path segment of its at:// URI). This is what the Viewer's getRecord() calls to load the specific record a ?uri= link points at. Also unauthenticated."
+          }
+        },
+        {
+          "name": "List Records — Synthesis PDS advisories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{synth_pds_url}}/xrpc/com.atproto.repo.listRecords?repo={{synth_did}}&collection={{lexicon}}&limit=5",
+              "host": ["{{synth_pds_url}}"],
+              "path": ["xrpc", "com.atproto.repo.listRecords"],
+              "query": [
+                { "key": "repo", "value": "{{synth_did}}" },
+                { "key": "collection", "value": "{{lexicon}}" },
+                { "key": "limit", "value": "5" }
+              ]
+            },
+            "description": "Same call, different repo/PDS — this is what the Viewer's getLatestSynthesisUri() calls (with SYNTHESIS_DID hardcoded client-side) to auto-load the current advisory when you land on the Viewer with no ?uri= param."
+          }
+        }
+      ]
+    },
+    {
+      "name": "DID Resolution (plc.directory)",
+      "item": [
+        {
+          "name": "Resolve Node DID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{plc_directory}}/{{node_did}}",
+              "host": ["{{plc_directory}}"],
+              "path": ["{{node_did}}"]
+            },
+            "description": "Not technically an ATProto XRPC call — this is the separate did:plc directory service (operated by Bluesky PBC) that every did:plc identity depends on for resolution. Returns a DID document; look at the 'service' array's '#atproto_pds' entry for serviceEndpoint — that's how resolvePds() in Viewer/index.html and resolve_pds() in Synthesis/subscriber.py find out which PDS a given DID actually lives on, without hardcoding it. See CONTEXT.md's 'DID resolution — the plc.directory dependency we didn't remove' section for the full discussion, including what happens if this service ever goes away."
+          }
+        },
+        {
+          "name": "Resolve Synthesis DID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{plc_directory}}/{{synth_did}}",
+              "host": ["{{plc_directory}}"],
+              "path": ["{{synth_did}}"]
+            },
+            "description": "Same call for the synthesis identity — resolves to bsky.social's serviceEndpoint, since that's genuinely where this account's PDS is."
+          }
+        }
+      ]
+    }
+  ]
+}
