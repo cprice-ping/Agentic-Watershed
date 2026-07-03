@@ -757,6 +757,48 @@ def gather_context(lookback_hours: float = 24.0,
 # Reasoning and output (same as original synthesis agent)
 # ---------------------------------------------------------------------------
 
+# Forced tool use instead of asking for free-text JSON: the API validates
+# the arguments against this schema server-side and hands back an already-
+# parsed dict via the tool_use block's .input, so there's no text response
+# to parse and no possibility of the model prepending prose before its
+# answer — the failure mode hit 2026-07-02 22:56 UTC (a full page of prose,
+# then a well-formed JSON object, which the previous brace-scanning parser
+# had to work around after the fact). Forcing the tool call eliminates the
+# whole class of failure at the source instead of parsing around it.
+_RISK_ENUM = ["none", "low", "moderate", "high", "extreme"]
+
+_ASSESSMENT_TOOL = {
+    "name": "submit_assessment",
+    "description": "Submit the cross-domain risk assessment for this synthesis run.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "3-4 sentence cross-domain summary suitable for a public Bluesky post",
+            },
+            "fire_risk": {"type": "string", "enum": _RISK_ENUM},
+            "flood_risk": {"type": "string", "enum": _RISK_ENUM},
+            "air_quality_risk": {"type": "string", "enum": _RISK_ENUM},
+            "overall_risk": {"type": "string", "enum": _RISK_ENUM},
+            "flagged": {"type": "boolean"},
+            "flag_reason": {
+                "type": "string",
+                "description": "Brief reason if flagged, empty string if not",
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "Full cross-domain reasoning including trajectory assessment and seasonal context",
+            },
+        },
+        "required": [
+            "summary", "fire_risk", "flood_risk", "air_quality_risk",
+            "overall_risk", "flagged", "flag_reason", "reasoning",
+        ],
+    },
+}
+
+
 def reason(context: str, model_key: str, verbose: bool = False) -> dict:
     model_id = MODELS[model_key]
     log.info("Reasoning with %s (%s)...", model_key, model_id)
@@ -767,29 +809,24 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
         max_tokens=2048,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": context}],
+        tools=[_ASSESSMENT_TOOL],
+        tool_choice={"type": "tool", "name": "submit_assessment"},
     )
 
-    raw = message.content[0].text.strip()
     if verbose:
-        log.info("Raw Claude response:\n%s", raw)
+        log.info("Raw Claude response:\n%s", message.content)
 
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        log.error("Failed to parse response: %s", exc)
+    tool_use = next((b for b in message.content if b.type == "tool_use"), None)
+    if tool_use is None:
+        log.error("No tool_use block in response despite forced tool_choice: %s", message.content)
         return {
-            "summary": "Synthesis agent run failed: could not parse LLM response.",
+            "summary": "Synthesis agent run failed: model did not return a tool call.",
             "fire_risk": "none", "flood_risk": "none",
             "air_quality_risk": "none", "overall_risk": "none",
-            "flagged": True, "flag_reason": f"Parse error: {exc}",
-            "reasoning": raw,
+            "flagged": True, "flag_reason": "No tool_use block in response",
+            "reasoning": f"Raw content blocks: {message.content}",
         }
+    return tool_use.input
 
 
 def write_observation(obs: dict, dry_run: bool = False,

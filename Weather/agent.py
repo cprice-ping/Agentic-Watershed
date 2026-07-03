@@ -171,6 +171,35 @@ def gather_context() -> str:
     return f"Agent run at: {now}\n\n" + "\n\n".join(sections)
 
 
+# Forced tool use instead of asking for free-text JSON: the API validates
+# the arguments against this schema server-side and hands back an already-
+# parsed dict via the tool_use block's .input, so there's no text response
+# to parse and no possibility of the model prepending prose before its
+# answer (the failure mode that used to require _extract_json_object()).
+_ASSESSMENT_TOOL = {
+    "name": "submit_assessment",
+    "description": "Submit the structured assessment for this monitoring run.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "2-3 sentence summary of current conditions for the next agent run to read",
+            },
+            "flagged": {
+                "type": "boolean",
+                "description": "True if conditions warrant attention or follow-up",
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "Full reasoning: what data you saw, what thresholds were considered, why flagged or not",
+            },
+        },
+        "required": ["summary", "flagged", "reasoning"],
+    },
+}
+
+
 def reason(context: str, model_key: str, verbose: bool = False) -> dict:
     model_id = MODELS[model_key]
     log.info("Reasoning with %s (%s)...", model_key, model_id)
@@ -181,27 +210,22 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
         max_tokens=2048,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": context}],
+        tools=[_ASSESSMENT_TOOL],
+        tool_choice={"type": "tool", "name": "submit_assessment"},
     )
 
-    raw = message.content[0].text.strip()
     if verbose:
-        log.info("Raw Claude response:\n%s", raw)
+        log.info("Raw Claude response:\n%s", message.content)
 
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        log.error("Failed to parse response: %s", exc)
+    tool_use = next((b for b in message.content if b.type == "tool_use"), None)
+    if tool_use is None:
+        log.error("No tool_use block in response despite forced tool_choice: %s", message.content)
         return {
-            "summary": "Agent run failed: could not parse LLM response.",
+            "summary": "Agent run failed: model did not return a tool call.",
             "flagged": True,
-            "reasoning": f"JSON parse error: {exc}\nRaw: {raw}",
+            "reasoning": f"Raw content blocks: {message.content}",
         }
+    return tool_use.input
 
 
 def write_observation(observation: dict, dry_run: bool = False) -> None:
