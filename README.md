@@ -294,6 +294,11 @@ worth knowing if you extend the lexicon further.
 4. Uses the node's own PDS account as the author identity — no accompanying
    `app.bsky.feed.post`, since domain agents have no human audience
 
+A Postman collection covering every ATProto XRPC call this project makes —
+grouped by which file makes it, with real request/response shapes — is at
+`postman/`. Useful for seeing the raw HTTP underneath the Python without
+reading the code.
+
 ---
 
 ## Distributed identity
