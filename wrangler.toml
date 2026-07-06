@@ -1,4 +1,4 @@
-name = "agentic-watershed"
+name = "watershed-viewer"
 compatibility_date = "2025-01-01"
 
 # Static-assets-only Worker — no code, just serves Viewer/ as a static site.
