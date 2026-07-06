@@ -2,8 +2,9 @@
 
 A distributed system of autonomous agents connected by identity and a federated protocol.
 
-The domain is Napa Valley environmental data — watershed, weather, air quality.
-That's the concrete surface. The actual subject is the architecture:
+The domain is Napa Valley environmental data — watershed, weather, air quality,
+and satellite fire detection. That's the concrete surface. The actual subject
+is the architecture:
 
 - **Autonomous agents at the edge** — cron-triggered, no human in the loop, perceive → reason → publish → exit
 - **DID-based workload identity** — each node agent has an ATProto DID, minted by its own self-hosted PDS rather than borrowed from a Bluesky account; the Synthesis agent verifies it before acting on any record. A spoofed or compromised node is rejected at the boundary, not silently trusted.
@@ -22,9 +23,10 @@ The environmental monitoring problem is well-suited because it has real data sou
 [USGS API]  → [Watershed Collector] → [watershed.db]                    │
 [NWS API]   → [Weather Collector]   → [weather.db]                      │
 [AirNow API]→ [AQI Collector]       → [aqi.db]                          │
+[NASA FIRMS]→ [Fire Collector]      → [fire.db]                         │
                          ↓                                               │
               [Domain MCP Servers]                                       │
-              (watershed / weather / aqi)                                │
+              (watershed / weather / aqi / fire)                         │
                          ↓                                               │
               [Domain Agents] (Claude Haiku)                            │
               Each reasons over its own domain,                          │
@@ -109,6 +111,11 @@ Agentic-Watershed/
     mcp_server.py                 MCP tools over aqi.db
     agent.py                      Domain agent (Haiku)
     README.md
+  Fire/
+    collector.py                 NASA FIRMS satellite hotspots → SQLite
+    mcp_server.py                 MCP tools over fire.db
+    agent.py                      Domain agent (Haiku)
+    README.md
   ATProto/
     publisher.py                  Publishes domain records to the node's PDS
     pds/                           Self-hosted PDS: docker-compose + setup docs
@@ -129,6 +136,7 @@ Agentic-Watershed/
 | Watershed | [USGS Water Services](https://waterservices.usgs.gov/) | None |
 | Weather | [NWS API](https://api.weather.gov) | None (User-Agent required) |
 | AQI | [AirNow API](https://docs.airnowapi.org/) | Free API key |
+| Fire | [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) | Free API key (`MAP_KEY`) |
 
 USGS stations monitored:
 - `11458000` — Napa River near Napa
@@ -137,6 +145,11 @@ USGS stations monitored:
 NWS alert zones:
 - `CAZ505` — Napa County interior valleys (fire weather)
 - `CAC055` — Napa County general
+
+FIRMS bounding box (configured in `node_config.json`'s `"fire"` block, not
+hardcoded): `-123.3,37.7,-121.8,39.0` — roughly Napa/Sonoma/Solano/Lake
+counties, sized for regional smoke-transport awareness, not just
+county-line fires.
 
 ---
 
@@ -175,7 +188,7 @@ pip install -r requirements.txt   # or see stack README for deps
 ```
 
 Dependencies:
-- River, Weather, AQI: `anthropic httpx "mcp>=1.27,<2"`
+- River, Weather, AQI, Fire: `anthropic httpx "mcp>=1.27,<2"`
 - ATProto, Synthesis: `anthropic httpx` (no MCP — these talk ATProto, not stdio tools)
 
 ### Environment variables
@@ -185,6 +198,7 @@ Dependencies:
 # Non-Docker: /etc/environment on Pi (cron picks these up via `. /etc/environment`)
 ANTHROPIC_API_KEY=sk-ant-...
 AIRNOW_API_KEY=your-key
+FIRMS_API_KEY=your-firms-map-key   # https://firms.modaps.eosdis.nasa.gov/api/map_key/
 
 # ATProto publisher — node's self-hosted PDS account (see ATProto/pds/README.md)
 BSKY_HANDLE=napa-node-01.watershed-agent.dev
@@ -203,14 +217,16 @@ Docker Compose (recommended — run from the repo root):
 */15 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm river python collector.py >> River/logs/collector.log 2>&1
 */30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm weather python collector.py >> Weather/logs/collector.log 2>&1
 */30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm aqi python collector.py >> AQI/logs/collector.log 2>&1
+*/30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm fire python collector.py >> Fire/logs/collector.log 2>&1
 
 # === Domain Agents (staggered by 1h) ===
 0 0,6,12,18 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm river python agent.py >> River/logs/agent.log 2>&1
 0 1,7,13,19 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm weather python agent.py >> Weather/logs/agent.log 2>&1
 0 2,8,14,20 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm aqi python agent.py >> AQI/logs/agent.log 2>&1
+0 3,9,15,21 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm fire python agent.py >> Fire/logs/agent.log 2>&1
 
-# === ATProto Publisher (15 min after the last domain agent) ===
-15 2,8,14,20 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm atproto-publisher python publisher.py >> ATProto/logs/publisher.log 2>&1
+# === ATProto Publisher (15 min after the last domain agent, now Fire) ===
+15 3,9,15,21 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm atproto-publisher python publisher.py >> ATProto/logs/publisher.log 2>&1
 ```
 
 Without Docker (legacy — same schedule, `.venv/bin/python` instead of `docker compose run`):
@@ -220,14 +236,16 @@ Without Docker (legacy — same schedule, `.venv/bin/python` instead of `docker 
 */15 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python collector.py >> logs/collector.log 2>&1
+*/30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python collector.py >> logs/collector.log 2>&1
 
 # === Domain Agents (staggered by 1h) ===
 0 0,6,12,18 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1
 0 1,7,13,19 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python agent.py >> logs/agent.log 2>&1
 0 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 3,9,15,21 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python agent.py >> logs/agent.log 2>&1
 
-# === ATProto Publisher (15 min after the last domain agent) ===
-15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
+# === ATProto Publisher (15 min after the last domain agent, now Fire) ===
+15 3,9,15,21 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 ```
 
 The Synthesis agent does **not** run via either of the above — it's an Azure
@@ -248,7 +266,7 @@ python mcp_server.py --http --port 8000
 # Open MCP Inspector → connect to http://localhost:8000/mcp
 ```
 
-HTTP port assignments: River=8000, Weather=8001, AQI=8002.
+HTTP port assignments: River=8000, Weather=8001, AQI=8002, Fire=8003.
 
 ---
 

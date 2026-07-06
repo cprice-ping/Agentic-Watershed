@@ -51,6 +51,18 @@ services:
       - ./AQI/data:/app/AQI/data
     command: ["python", "collector.py"]
 
+  fire:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agentic-watershed-domain:latest
+    working_dir: /app/Fire
+    env_file: .env
+    volumes:
+      - ./node_config.json:/app/node_config.json:ro
+      - ./Fire/data:/app/Fire/data
+    command: ["python", "collector.py"]
+
   atproto-publisher:
     build:
       context: .
@@ -65,5 +77,6 @@ services:
       - ./River/data:/app/River/data:ro
       - ./Weather/data:/app/Weather/data:ro
       - ./AQI/data:/app/AQI/data:ro
+      - ./Fire/data:/app/Fire/data:ro
       - ./ATProto/data:/app/ATProto/data
     command: ["python", "publisher.py"]

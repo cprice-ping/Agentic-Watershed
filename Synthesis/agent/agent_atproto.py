@@ -91,8 +91,8 @@ SYSTEM_PROMPT = """You are a cross-domain environmental risk assessment agent fo
 You receive:
   1. A seasonal calendar showing where we are in the fire/flood year and key upcoming transitions
   2. Your own recent synthesis history (memory) — previous risk assessments to reason about trends
-  3. Current domain observations from autonomous monitoring nodes (watershed, weather, AQI)
-     published via ATProto by trusted nodes with verified DIDs
+  3. Current domain observations from autonomous monitoring nodes (watershed, weather, AQI,
+     fire) published via ATProto by trusted nodes with verified DIDs
 
 Your job is to reason ACROSS domains and ACROSS time to produce a unified risk picture.
 Don't just assess current conditions — assess trajectory. Are conditions improving or
@@ -112,6 +112,16 @@ FLOOD RISK compounds when:
 SMOKE is primarily AQI but wind direction matters:
   - NE/E winds + PM2.5 spike = smoke from interior (fire nearby), act now
   - SW winds + PM2.5 = coastal aerosol, likely transient
+
+FIRE DETECTION (satellite hotspots) directly answers what smoke alone can only imply:
+  - A hotspot within 20mi, especially high-confidence with rising FRP, confirms an active
+    fire rather than just favorable fire weather or an inferred smoke source
+  - No hotspots detected + rising PM2.5 + flat ozone = likely smoke transported from OUTSIDE
+    the monitored bounding box (a fire upwind but beyond FIRMS' bbox, or a source FIRMS'
+    satellite pass hasn't caught yet) — don't conclude "no fire" from an empty hotspot list,
+    only "no fire detected within the monitored area at this pass"
+  - Hotspot count or FRP rising across consecutive fire-agent runs = growing fire, escalate
+    even if it hasn't yet shown up as a wind/AQI signal
 
 TRAJECTORY SIGNALS to look for across your recent history:
   - Gradual drying trend in humidity over multiple days = fire risk building
@@ -726,7 +736,7 @@ def gather_context(lookback_hours: float = 24.0,
                     "flagged": bool(r["flagged"]),
                     # Domain-specific numeric/structured fields for trajectory reading
                     **{k: v for k, v in raw.items()
-                       if k in ("watershed", "weather", "aqi") and v},
+                       if k in ("watershed", "weather", "aqi", "fire") and v},
                 }, indent=2) + "\n"
 
             sections.append(section)
