@@ -206,7 +206,7 @@ def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
             "airQualityRisk":  row.get("air_quality_risk", "none"),
             "overallRisk":     row.get("overall_risk", "none"),
             "synthesisDid":    synth_did,
-            "domainsObserved": ["watershed", "weather", "aqi"],
+            "domainsObserved": ["watershed", "weather", "aqi", "fire"],
             # Full cross-domain reasoning, not just the public-facing summary —
             # makes the ATProto record itself the complete, publicly auditable
             # source of truth rather than just what fits in a Bluesky post.

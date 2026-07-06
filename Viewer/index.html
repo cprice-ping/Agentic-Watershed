@@ -263,6 +263,10 @@ const NUMERIC_FIELD_LABELS = {
   wind_direction_deg: ["Wind dir", "°"], precip_24h_mm: ["Precip 24h", "mm"],
   dischargeCfs: ["Discharge", "cfs"], gageHeightFt: ["Gage height", "ft"],
   pm25Aqi: ["PM2.5 AQI", ""], ozoneAqi: ["Ozone AQI", ""],
+  nearestHotspotDistanceMi: ["Nearest hotspot", "mi"],
+  nearestHotspotConfidence: ["Confidence", ""],
+  nearestHotspotFrpMw: ["FRP", "MW"],
+  hotspotCount: ["Hotspots (6h)", ""],
 };
 
 function renderNumericFields(block) {
@@ -274,7 +278,7 @@ function renderNumericFields(block) {
 }
 
 function domainLabel(type) {
-  const map = { watershed: "🌊 Watershed", weather: "🌤️ Weather", aqi: "💨 Air Quality" };
+  const map = { watershed: "🌊 Watershed", weather: "🌤️ Weather", aqi: "💨 Air Quality", fire: "🔥 Fire" };
   return map[type] || type;
 }
 

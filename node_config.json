@@ -17,5 +17,12 @@
     "lat": 38.2975,
     "lon": -122.2869,
     "reporting_area": "Napa"
+  },
+  "fire": {
+    "bbox": "-123.3,37.7,-121.8,39.0",
+    "source": "VIIRS_SNPP_NRT",
+    "day_range": 2,
+    "home_lat": 38.2975,
+    "home_lon": -122.2869
   }
 }

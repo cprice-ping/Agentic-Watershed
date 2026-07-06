@@ -48,6 +48,7 @@ DB_PATHS = {
     "watershed": BASE / "River"   / "data" / "watershed.db",
     "weather":   BASE / "Weather" / "data" / "weather.db",
     "aqi":       BASE / "AQI"     / "data" / "aqi.db",
+    "fire":      BASE / "Fire"    / "data" / "fire.db",
 }
 
 # Track what's been published — simple SQLite alongside the publisher
@@ -251,6 +252,44 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
         return {}
 
 
+def _fetch_fire_numerics(observed_at: str) -> dict:
+    """Return the nearest hotspot's distance/confidence/FRP closest in time
+    to observed_at — not the closest in *distance*, since the agent's own
+    reasoning already picked the relevant nearby hotspot; this just attaches
+    numeric context to whatever it reasoned about."""
+    db_path = DB_PATHS["fire"]
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT distance_mi, confidence, frp
+            FROM hotspots
+            ORDER BY distance_mi ASC,
+                     ABS(strftime('%s', collected_at) - strftime('%s', ?))
+            LIMIT 1
+            """,
+            (observed_at,),
+        ).fetchone()
+        count_row = conn.execute(
+            """
+            SELECT COUNT(*) as n
+            FROM hotspots
+            WHERE ABS(strftime('%s', collected_at) - strftime('%s', ?)) < 3600 * 6
+            """,
+            (observed_at,),
+        ).fetchone()
+        conn.close()
+        result = dict(row) if row else {}
+        if count_row:
+            result["hotspotCount"] = count_row["n"]
+        return result
+    except sqlite3.Error:
+        return {}
+
+
 def _atproto_safe(value):
     """ATProto records are DAG-CBOR — no IEEE float type is valid in the
     data model (only null/boolean/integer/string/cid/bytes/array/object).
@@ -334,6 +373,34 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
     }
 
 
+def build_fire_record(row: dict, observed_at: str) -> dict:
+    numerics = _fetch_fire_numerics(observed_at)
+    fire_block: dict = {
+        "bbox": _NODE_CFG["fire"]["bbox"],
+        "source": _NODE_CFG["fire"]["source"],
+    }
+    if "distance_mi" in numerics and numerics["distance_mi"] is not None:
+        fire_block["nearestHotspotDistanceMi"] = _atproto_safe(numerics["distance_mi"])
+    if "confidence" in numerics and numerics["confidence"] is not None:
+        fire_block["nearestHotspotConfidence"] = numerics["confidence"]
+    if "frp" in numerics and numerics["frp"] is not None:
+        fire_block["nearestHotspotFrpMw"] = _atproto_safe(numerics["frp"])
+    if "hotspotCount" in numerics:
+        fire_block["hotspotCount"] = numerics["hotspotCount"]
+
+    return {
+        "$type": LEXICON,
+        "observedAt": observed_at,
+        "nodeId": NODE_ID,
+        "observationType": f"{LEXICON}#fire",
+        "summary": row.get("summary", ""),
+        "flagged": bool(row.get("flagged", False)),
+        "flagReason": "",
+        "agentModel": "claude-haiku-4-5",
+        "fire": fire_block,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Domain publication
 # ---------------------------------------------------------------------------
@@ -353,6 +420,11 @@ DOMAIN_CONFIG = {
         "table": "agent_observations",
         "db_key": "aqi",
         "builder": build_aqi_record,
+    },
+    "fire": {
+        "table": "agent_observations",
+        "db_key": "fire",
+        "builder": build_fire_record,
     },
 }
 
@@ -443,7 +515,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="ATProto publisher")
     parser.add_argument(
         "--domain",
-        choices=["all", "watershed", "weather", "aqi"],
+        choices=["all", "watershed", "weather", "aqi", "fire"],
         default="all",
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -461,7 +533,7 @@ def main() -> None:
     pub_conn = init_publisher_db()
 
     domains = (
-        ["watershed", "weather", "aqi"]
+        ["watershed", "weather", "aqi", "fire"]
         if args.domain == "all"
         else [args.domain]
     )

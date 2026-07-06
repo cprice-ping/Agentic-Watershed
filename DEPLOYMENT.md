@@ -54,17 +54,20 @@ location.
 
 Node-01 is currently running via per-stack venvs and host cron, with real
 history in `River/data/watershed.db`, `Weather/data/weather.db`,
-`AQI/data/aqi.db`, and `ATProto/data/publisher.db`. **Don't start fresh** —
-those databases already exist on disk in exactly the paths the compose file
-bind-mounts (`./River/data`, etc.), so switching over preserves them
-automatically. No export/import step.
+`AQI/data/aqi.db`, `Fire/data/fire.db`, and `ATProto/data/publisher.db`.
+**Don't start fresh** — those databases already exist on disk in exactly the
+paths the compose file bind-mounts (`./River/data`, etc.), so switching over
+preserves them automatically. No export/import step.
 
 1. `git pull` this branch on the Pi.
 2. Copy `.env.example` to `.env` and fill in the same values currently in
-   `/etc/environment` (`ANTHROPIC_API_KEY`, `AIRNOW_API_KEY`, `BSKY_HANDLE`,
-   `BSKY_APP_PASSWORD`, `ATPROTO_PDS_URL`).
+   `/etc/environment` (`ANTHROPIC_API_KEY`, `AIRNOW_API_KEY`, `FIRMS_API_KEY`,
+   `BSKY_HANDLE`, `BSKY_APP_PASSWORD`, `ATPROTO_PDS_URL`). `FIRMS_API_KEY` is
+   new if Fire wasn't running before — register a free `MAP_KEY` at
+   https://firms.modaps.eosdis.nasa.gov/api/map_key/.
 3. `node_config.json` already exists and is already correct for node-01 —
-   nothing to change there.
+   nothing to change there (it already has a `"fire"` block if you've pulled
+   past the point Fire was added).
 4. `docker compose build`
 5. **Test one service manually before touching cron**:
    ```bash
@@ -72,7 +75,7 @@ automatically. No export/import step.
    sqlite3 River/data/watershed.db "SELECT * FROM readings ORDER BY collected_at DESC LIMIT 3;"
    ```
    Confirm it wrote a new row and didn't error. Repeat for `weather`, `aqi`,
-   and (once there's something to publish) `atproto-publisher`.
+   `fire`, and (once there's something to publish) `atproto-publisher`.
 6. **Swap the cron lines** — comment out the old `.venv/bin/python` lines,
    uncomment/add the `docker compose run --rm ...` ones (README.md has
    both, clearly marked). Don't delete the old venvs yet.

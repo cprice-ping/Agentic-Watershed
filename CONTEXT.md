@@ -87,6 +87,7 @@ All stacks deployed under `/home/cprice/Agentic-Watershed/`.
 | Watershed | every 15 min | ✅ Running, storing to `watershed.db` |
 | Weather | every 30 min | ✅ Running, storing to `weather.db` |
 | AQI | every 30 min | ✅ Running, storing to `aqi.db` |
+| Fire | every 30 min | ✅ Added 2026-07-06, storing to `fire.db` |
 
 ### Domain agents — all running via cron
 
@@ -95,6 +96,47 @@ All stacks deployed under `/home/cprice/Agentic-Watershed/`.
 | Watershed | 0,6,12,18h | ✅ Running, writing observations |
 | Weather | 1,7,13,19h | ✅ Running, writing observations |
 | AQI | 2,8,14,20h | ✅ Running, writing observations |
+| Fire | 3,9,15,21h | ✅ Added 2026-07-06, writing observations |
+
+### Fire domain — NASA FIRMS satellite hotspot detection
+
+Fourth domain, added 2026-07-06. Motivation: Synthesis's own cross-domain
+reasoning had repeatedly flagged "the upwind fire source has not been
+identified or confirmed extinguished" as an open uncertainty across
+multiple real runs — Weather covers fire *weather*, AQI covers the *smoke
+signature*, but nothing looked for an actual fire. This closes that gap
+directly: [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) satellite
+hotspot detections (VIIRS near-real-time), free public API, requires a
+free `MAP_KEY` (env var `FIRMS_API_KEY`).
+
+Deliberately does **not** attempt to attach named-incident data (e.g.
+official CAL FIRE incident names) to detected hotspots. That was considered
+and explicitly deferred — FIRMS is a clean, well-documented, versioned
+public API on par with USGS/NWS/AirNow already in this project; a
+named-incident feed (CAL FIRE or NIFC) is not documented to the same
+standard and would need a second, less reliable data source plus a real
+spatial-matching layer (nearest named incident within some distance of a
+hotspot). Worth doing as a fast-follow once FIRMS itself is proven in
+production, not as part of the first pass.
+
+Same architecture pattern as every other domain: `Fire/collector.py` (FIRMS
+Area API → `hotspots` table, deduped on lat/lon/acq_date/acq_time/satellite,
+haversine distance from Napa center precomputed and stored) →
+`Fire/mcp_server.py` (MCP tools, port 8003) → `Fire/agent.py` (Haiku, forced
+tool-use from the start — built after the tool-use fix, so it never had the
+free-text JSON parsing bug the other four agents needed fixing). Wired into
+`ATProto/publisher.py` (`build_fire_record()`, `_fetch_fire_numerics()` —
+nearest hotspot's distance/confidence/FRP plus a 6h hotspot count, same
+DAG-CBOR string-not-float handling as the other domains) and into
+Synthesis's reasoning (`agent_atproto.py`'s domain filter and system prompt
+both updated — see "FIRE DETECTION" section of the system prompt for the
+specific guidance: an empty hotspot list means "nothing detected in the
+monitored bounding box," not "no fire," since a fire could be upwind but
+outside the bbox or not yet caught by a satellite pass).
+
+Bounding box (`node_config.json`'s `"fire"` block, not hardcoded):
+`-123.3,37.7,-121.8,39.0`, roughly Napa/Sonoma/Solano/Lake counties — sized
+for regional smoke-transport awareness, not just fires within county lines.
 
 ### Self-hosted PDS — node identity, off Bluesky infrastructure
 
@@ -171,6 +213,8 @@ Environment variables set in /etc/environment, sourced in cron via `. /etc/envir
 Required environment variables:
 - `ANTHROPIC_API_KEY` — used by all agents
 - `AIRNOW_API_KEY` — used by AQI collector and agent
+- `FIRMS_API_KEY` — used by Fire collector (NASA FIRMS `MAP_KEY`, free registration
+  at https://firms.modaps.eosdis.nasa.gov/api/map_key/)
 - `BSKY_HANDLE` / `BSKY_APP_PASSWORD` (Pi) — node's self-hosted PDS account
   credentials, e.g. `napa-node-01.watershed-agent.dev` — not a Bluesky app
   password despite the variable names (kept for continuity with the publisher's
@@ -216,14 +260,16 @@ Required environment variables:
 */15 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python collector.py >> logs/collector.log 2>&1
+*/30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python collector.py >> logs/collector.log 2>&1
 
 # === Domain Agents ===
 0 0,6,12,18 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1
 0 1,7,13,19 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python agent.py >> logs/agent.log 2>&1
 0 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 3,9,15,21 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python agent.py >> logs/agent.log 2>&1
 
-# === ATProto Publisher (15 min after the last domain agent — 20h) ===
-15 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
+# === ATProto Publisher (15 min after the last domain agent — now Fire, 21h) ===
+15 3,9,15,21 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 ```
 
 Synthesis runs as an Azure Container Apps Job (`0 6,18 * * *` UTC), not a Pi cron
@@ -248,6 +294,11 @@ entry — see "Synthesis agent" above.
       (2026-07-02) — previously only `summary`/`flagged` were written
 - [x] Trend-analysis field names in `agent_atproto.py` fixed to match what the
       publisher actually emits — was silently finding nothing (2026-07-02)
+- [x] Containerization (docker-compose) for the domain stacks — built, node-01
+      migration not yet cut over (2026-07-03)
+- [x] Fourth domain added: Fire (NASA FIRMS satellite hotspot detection) —
+      closes the "unidentified upwind fire source" gap Synthesis's own
+      reasoning had repeatedly flagged (2026-07-06)
 
 ### Host Synthesis agent outside the laptop — DONE
 
