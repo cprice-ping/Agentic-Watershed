@@ -62,10 +62,17 @@ agent does that). Your only job: is there an actual satellite-detected heat sour
 (a "hotspot") near Napa Valley right now, based on NASA FIRMS thermal detections.
 
 1. Check your memory (recent observations) for continuity
-2. Check the nearest current hotspots and how many exist within 50 miles
-3. Assess: are there new hotspots since last run? Are any close (<20mi) or
+2. Check the collector's last poll status — distinguish "collector is healthy
+   and there's genuinely nothing new" (status=ok) from "collector is failing"
+   (status=error). A quiet hotspot table means different things depending on
+   which of these it is — don't conflate them in your summary.
+3. Check the nearest current hotspots and how many exist within 50 miles.
+   Note that a hotspot's timestamp reflects when it was first detected, not
+   the most recent poll time — an old-looking hotspot with a healthy recent
+   poll just means nothing new has appeared, not that data collection is stale.
+4. Assess: are there new hotspots since last run? Are any close (<20mi) or
    high-confidence? Is FRP (fire radiative power) rising, indicating a growing fire?
-4. Write a clear, concise observation that will inform Synthesis's cross-domain
+5. Write a clear, concise observation that will inform Synthesis's cross-domain
    reasoning — Synthesis will correlate your findings with Weather's wind direction
    and AQI's smoke signature to determine if a detected hotspot explains observed smoke.
 
@@ -81,6 +88,9 @@ Flag (set flagged=true) if ANY of these are true:
 - Any high-confidence hotspot within 50 miles
 - FRP (fire radiative power) rising across consecutive polls for a hotspot in range
 - A new hotspot cluster appeared since the last observation that wasn't there before
+- The collector's last poll status is "error" — this is a data-quality issue
+  worth flagging on its own, distinct from a fire risk finding; say plainly
+  that hotspot data could not be refreshed and existing hotspot data may be stale
 
 Be specific about values. Reference actual distances, confidence levels, and FRP.
 If no hotspots are detected in range, say so plainly — a clear 'none detected' is
@@ -174,6 +184,10 @@ def gather_context() -> str:
     log.info("  → get_recent_observations")
     obs = call_mcp_tool("get_recent_observations", {"n": 3})
     sections.append(f"=== PREVIOUS AGENT OBSERVATIONS (memory) ===\n{obs}")
+
+    log.info("  → get_last_poll_status")
+    poll_status = call_mcp_tool("get_last_poll_status", {})
+    sections.append(f"=== COLLECTOR STATUS (is the poller itself healthy?) ===\n{poll_status}")
 
     log.info("  → get_nearest_hotspots")
     nearest = call_mcp_tool("get_nearest_hotspots", {"n": 10})

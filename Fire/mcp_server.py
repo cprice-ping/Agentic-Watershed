@@ -118,38 +118,69 @@ def get_hotspots_since(hours_ago: float = 48.0) -> str:
 @mcp.tool()
 def get_nearest_hotspots(n: int = 10) -> str:
     """
-    Return the N hotspots closest to home_lat/home_lon (Napa Valley center),
-    from the most recent poll. This is the primary "is there a fire near us"
-    check — call this first.
+    Return the N hotspots currently known, closest to home_lat/home_lon
+    (Napa Valley center) first. This is the primary "is there a fire near
+    us" check — call this first.
+
+    Note: a hotspot's own row doesn't get touched by polls that re-detect
+    it (dedup), so "currently known" isn't the same as "seen on the latest
+    poll" — call get_last_poll_status separately to check whether the
+    collector itself is running and succeeding.
 
     Args:
         n: Number of nearest hotspots to return (default 10)
     """
     with _db() as conn:
-        latest_poll = conn.execute(
-            "SELECT MAX(collected_at) AS t FROM hotspots"
-        ).fetchone()["t"]
-        if not latest_poll:
-            return "No hotspots in database yet. Run the collector first."
+        last_poll = conn.execute(
+            "SELECT polled_at, status, error_message FROM polls ORDER BY polled_at DESC LIMIT 1"
+        ).fetchone()
 
         rows = conn.execute(
             """
             SELECT latitude, longitude, acq_date, acq_time, satellite,
                    confidence, frp, daynight, distance_mi
             FROM hotspots
-            WHERE collected_at = ?
             ORDER BY distance_mi ASC
             LIMIT ?
             """,
-            (latest_poll, n),
+            (n,),
         ).fetchall()
 
+    result = {
+        "last_poll_at": last_poll["polled_at"] if last_poll else None,
+        "last_poll_status": last_poll["status"] if last_poll else "never_polled",
+    }
+    if last_poll and last_poll["status"] == "error":
+        result["last_poll_error"] = last_poll["error_message"]
+
     if not rows:
-        return "No hotspots detected in the bounding box on the most recent poll."
-    return json.dumps({
-        "as_of_poll": latest_poll,
-        "nearest_hotspots": _rows_to_dicts(rows),
-    }, indent=2)
+        result["nearest_hotspots"] = []
+        result["note"] = "No hotspots detected in the bounding box."
+    else:
+        result["nearest_hotspots"] = _rows_to_dicts(rows)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def get_last_poll_status() -> str:
+    """
+    Return the outcome of the most recent collector run: whether it
+    succeeded, when it ran, and how many hotspots it fetched/inserted.
+    Use this to distinguish "collector is healthy, genuinely no fires" from
+    "collector is failing" — a quiet hotspot table can mean either.
+    """
+    with _db() as conn:
+        row = conn.execute(
+            """
+            SELECT polled_at, status, hotspots_fetched, hotspots_new, error_message
+            FROM polls
+            ORDER BY polled_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    if not row:
+        return json.dumps({"status": "never_polled"})
+    return json.dumps(dict(row), indent=2)
 
 
 @mcp.tool()
