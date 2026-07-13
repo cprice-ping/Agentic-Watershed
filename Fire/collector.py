@@ -103,6 +103,22 @@ def init_db(conn: sqlite3.Connection) -> None:
             reasoning       TEXT,
             raw_context     TEXT                         -- JSON snapshot agent used
         );
+
+        -- One row per collector run, written unconditionally (success or
+        -- failure). hotspots.collected_at freezes at first-seen time for a
+        -- given hotspot (INSERT OR IGNORE dedup), so it can't answer "did we
+        -- poll recently" once a hotspot goes quiet — this table can.
+        CREATE TABLE IF NOT EXISTS polls (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            polled_at           TEXT NOT NULL,          -- ISO8601 UTC
+            status              TEXT NOT NULL,          -- 'ok' or 'error'
+            hotspots_fetched    INTEGER,                -- rows in the CSV response
+            hotspots_new        INTEGER,                -- rows actually inserted
+            error_message       TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_polls_time
+            ON polls (polled_at DESC);
     """)
     conn.commit()
     log.info("Database initialised at %s", DB_PATH)
@@ -192,6 +208,21 @@ def store_hotspots(conn: sqlite3.Connection, rows: list[dict]) -> int:
     return cur.rowcount
 
 
+def record_poll(conn: sqlite3.Connection, status: str, hotspots_fetched: int = None,
+                 hotspots_new: int = None, error_message: str = None) -> None:
+    """Log the outcome of a collector run, independent of whether any
+    hotspot rows were new — this is what "did the collector run" means,
+    as distinct from "did anything change"."""
+    conn.execute(
+        """
+        INSERT INTO polls (polled_at, status, hotspots_fetched, hotspots_new, error_message)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (datetime.now(timezone.utc).isoformat(), status, hotspots_fetched, hotspots_new, error_message),
+    )
+    conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Poll cycle
 # ---------------------------------------------------------------------------
@@ -202,12 +233,14 @@ def poll(conn: sqlite3.Connection) -> None:
         text = fetch_firms()
     except (httpx.HTTPError, RuntimeError) as exc:
         log.error("FIRMS fetch failed: %s", exc)
+        record_poll(conn, status="error", error_message=str(exc))
         return
 
     rows = parse_firms_csv(text)
     new_count = store_hotspots(conn, rows)
     log.info("Fetched %d hotspot(s) in window, %d new (deduped by lat/lon/acq time)",
              len(rows), new_count)
+    record_poll(conn, status="ok", hotspots_fetched=len(rows), hotspots_new=new_count)
 
     nearby = sorted((r for r in rows if r["distance_mi"] <= 50), key=lambda r: r["distance_mi"])
     for r in nearby[:5]:
