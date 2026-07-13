@@ -32,6 +32,16 @@ from mcp.server.fastmcp import FastMCP
 
 DB_PATH = Path(__file__).parent / "data" / "fire.db"
 
+_NODE_CFG_PATH = Path(__file__).parent.parent / "node_config.json"
+_DAY_RANGE = json.loads(_NODE_CFG_PATH.read_text())["fire"]["day_range"]
+
+# FIRMS itself is only ever queried for the last day_range days (collector.py),
+# but the hotspots table keeps every row forever — without a matching recency
+# window here, a single old detection with nothing closer since would stay
+# "nearest" indefinitely and read as an ongoing current signal long after it's
+# aged out of what FIRMS would even still report.
+NEAREST_HOTSPOT_MAX_AGE_HOURS = _DAY_RANGE * 24 + 24  # + 1 day buffer for poll timing
+
 mcp = FastMCP(
     "fire",
     instructions=(
@@ -118,18 +128,23 @@ def get_hotspots_since(hours_ago: float = 48.0) -> str:
 @mcp.tool()
 def get_nearest_hotspots(n: int = 10) -> str:
     """
-    Return the N hotspots currently known, closest to home_lat/home_lon
-    (Napa Valley center) first. This is the primary "is there a fire near
-    us" check — call this first.
+    Return the N *currently relevant* hotspots (detected within the last
+    ~day_range+1 days, matching how far back FIRMS itself is queried),
+    closest to home_lat/home_lon (Napa Valley center) first. This is the
+    primary "is there a fire near us right now" check — call this first.
 
-    Note: a hotspot's own row doesn't get touched by polls that re-detect
-    it (dedup), so "currently known" isn't the same as "seen on the latest
-    poll" — call get_last_poll_status separately to check whether the
-    collector itself is running and succeeding.
+    A hotspot older than this window is excluded even if nothing closer has
+    been detected since — an old single detection with no fresher activity
+    means "nothing current nearby," not "this old one is still the nearest
+    current threat." Use get_hotspots_since for a longer historical view.
+
+    Call get_last_poll_status separately to check whether the collector
+    itself is running and succeeding.
 
     Args:
         n: Number of nearest hotspots to return (default 10)
     """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=NEAREST_HOTSPOT_MAX_AGE_HOURS)).isoformat()
     with _db() as conn:
         last_poll = conn.execute(
             "SELECT polled_at, status, error_message FROM polls ORDER BY polled_at DESC LIMIT 1"
@@ -140,22 +155,27 @@ def get_nearest_hotspots(n: int = 10) -> str:
             SELECT latitude, longitude, acq_date, acq_time, satellite,
                    confidence, frp, daynight, distance_mi
             FROM hotspots
+            WHERE collected_at >= ?
             ORDER BY distance_mi ASC
             LIMIT ?
             """,
-            (n,),
+            (cutoff, n),
         ).fetchall()
 
     result = {
         "last_poll_at": last_poll["polled_at"] if last_poll else None,
         "last_poll_status": last_poll["status"] if last_poll else "never_polled",
+        "currency_window_hours": NEAREST_HOTSPOT_MAX_AGE_HOURS,
     }
     if last_poll and last_poll["status"] == "error":
         result["last_poll_error"] = last_poll["error_message"]
 
     if not rows:
         result["nearest_hotspots"] = []
-        result["note"] = "No hotspots detected in the bounding box."
+        result["note"] = (
+            f"No hotspots detected within {NEAREST_HOTSPOT_MAX_AGE_HOURS}h in the bounding box "
+            "— this means nothing current, not that older historical hotspots don't exist."
+        )
     else:
         result["nearest_hotspots"] = _rows_to_dicts(rows)
     return json.dumps(result, indent=2)

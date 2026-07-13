@@ -67,9 +67,11 @@ agent does that). Your only job: is there an actual satellite-detected heat sour
    (status=error). A quiet hotspot table means different things depending on
    which of these it is — don't conflate them in your summary.
 3. Check the nearest current hotspots and how many exist within 50 miles.
-   Note that a hotspot's timestamp reflects when it was first detected, not
-   the most recent poll time — an old-looking hotspot with a healthy recent
-   poll just means nothing new has appeared, not that data collection is stale.
+   get_nearest_hotspots only returns hotspots within its currency window
+   (matching how far back FIRMS itself is queried) — an empty or short list
+   there means nothing current nearby, full stop. Don't describe the feed
+   itself as "frozen" or "stale" based on hotspot ages; that's answered by
+   get_last_poll_status, not by how old the nearest hotspot is.
 4. Assess: are there new hotspots since last run? Are any close (<20mi) or
    high-confidence? Is FRP (fire radiative power) rising, indicating a growing fire?
 5. Write a clear, concise observation that will inform Synthesis's cross-domain
