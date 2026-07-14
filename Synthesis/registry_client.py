@@ -84,9 +84,20 @@ def resolve_agent(did: str) -> dict | None:
 
     try:
         resp = httpx.get(f"{REGISTRY_URL}/resolve", params={"subject": did}, timeout=10)
-        resp.raise_for_status()
-        attrs = _parse_attributes(resp.json())
+        if resp.status_code == 400:
+            # Confirmed live behavior: 400 with {"detail": "...not an agent DID
+            # of this registry..."} for a DID the registry has never heard of.
+            # This is a definitive "no", not an unknown — must not be treated
+            # as fail-open-eligible, or an unenrolled/bogus DID would be
+            # trusted by default whenever FAIL_CLOSED is off.
+            log.warning("Registry has no charter for %s: %s", did, resp.json().get("detail", ""))
+            attrs = {"valid": False, "capabilities": [], "status": "not_found"}
+        else:
+            resp.raise_for_status()
+            attrs = _parse_attributes(resp.json())
     except (httpx.HTTPError, ValueError) as exc:
+        # Anything else (timeout, connection error, 5xx, malformed body) is a
+        # genuinely ambiguous "don't know" — FAIL_CLOSED policy applies.
         log.warning("Registry lookup failed for %s: %s", did, exc)
         attrs = None
 
