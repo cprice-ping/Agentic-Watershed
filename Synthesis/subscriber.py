@@ -45,6 +45,8 @@ from pathlib import Path
 
 import httpx
 
+import registry_client
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -123,7 +125,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             flagged         INTEGER DEFAULT 0,
             flag_reason     TEXT,
             agent_model     TEXT,
-            raw_record      TEXT
+            raw_record      TEXT,
+            agent_did       TEXT,
+            charter_ok      INTEGER
         );
 
         CREATE INDEX IF NOT EXISTS idx_obs_type_time
@@ -133,14 +137,41 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             ON observations (publisher_did, received_at DESC);
     """)
     conn.commit()
+
+    # Migration for DBs created before agent_did/charter_ok existed.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(observations)")}
+    for col, decl in (("agent_did", "TEXT"), ("charter_ok", "INTEGER")):
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE observations ADD COLUMN {col} {decl}")
+    conn.commit()
+
     return conn
 
 
 def store_observation(conn: sqlite3.Connection, at_uri: str,
                       publisher_did: str, record: dict) -> bool:
-    """Store a received observation. Returns True if newly inserted."""
+    """Store a received observation. Returns True if newly inserted.
+
+    Trust here is two-layered: publisher_did is already known-trusted (only
+    called for DIDs in TRUSTED_PUBLISHERS — the node-level check). This adds
+    a second, agent-level check: if the record names an agentDid (the
+    specific domain agent that produced it, per its Agent Identity Registry
+    charter — separate from the node's own PDS identity), verify that
+    agent's charter is valid and declares the 'observe' capability before
+    marking it trustworthy. Records with no agentDid (nothing enrolled with
+    the registry yet) are stored with charter_ok left NULL — unattributed,
+    not rejected. Rejected records are still stored (for audit/debugging)
+    but excluded from what Synthesis reasons over — see agent_atproto.py's
+    read_recent_observations().
+    """
     now = datetime.now(timezone.utc).isoformat()
     node_id = TRUSTED_PUBLISHERS.get(publisher_did, "unknown")
+
+    agent_did = record.get("agentDid")
+    charter_ok = registry_client.has_capability(agent_did) if agent_did else None
+    if agent_did and not charter_ok:
+        log.warning("Record %s claims agentDid %s but charter check failed — "
+                    "storing but excluding from synthesis", at_uri, agent_did)
 
     try:
         conn.execute(
@@ -148,8 +179,8 @@ def store_observation(conn: sqlite3.Connection, at_uri: str,
             INSERT OR IGNORE INTO observations (
                 received_at, at_uri, publisher_did, node_id,
                 observed_at, observation_type, summary, flagged,
-                flag_reason, agent_model, raw_record
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                flag_reason, agent_model, raw_record, agent_did, charter_ok
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 now, at_uri, publisher_did, node_id,
@@ -160,6 +191,8 @@ def store_observation(conn: sqlite3.Connection, at_uri: str,
                 record.get("flagReason", ""),
                 record.get("agentModel"),
                 json.dumps(record),
+                agent_did,
+                None if charter_ok is None else int(charter_ok),
             ),
         )
         conn.commit()

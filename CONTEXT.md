@@ -410,6 +410,52 @@ The publishing target doesn't change. The identity primitive underneath does.
 The Agent Identity Registry is being built in a separate repo — see that project for
 the registry design and implementation.
 
+**Revision, once the registry actually existed** (github.com/cprice-ping/Agentic-DID-Registry,
+deployed at registry.cpricedomain.net): the plan above assumed the registry's
+DIDs would *replace* the node's PDS identity. That's wrong — ATProto repos are
+inherently one-signer-per-account, so the node DID (`napa-node-01`, holding
+the actual PDS session that signs `createRecord` calls) can't go away without
+giving every domain agent its own PDS account, which is a much bigger change
+than warranted. The node DID answers "which repo is this stored in, who has
+custody" — the charter answers "which specific agent produced this claim, and
+what is it authorised to assert." Those are different questions, so the
+charter is **additive**, not a replacement:
+
+- Each domain agent (River, Weather, AQI, Fire — and Synthesis) gets its own
+  charter from the registry, independent of the node's PDS DID.
+- `ATProto/publisher.py` stamps an optional `agentDid` field on each record
+  (read from `node_config.json`'s per-domain `"charter_did"` key — absent
+  until that domain's agent is actually enrolled, so nothing changes for
+  unenrolled domains).
+- `Synthesis/subscriber.py` now does two layers of trust instead of one:
+  layer 1 (unchanged) is `TRUSTED_PUBLISHERS` — is this node's DID one we
+  fetch from at all. Layer 2 (new) is per-record: if a record names an
+  `agentDid`, `Synthesis/registry_client.py` checks that agent's charter is
+  valid and declares `observe` via the registry's PIP endpoint
+  (`GET /resolve?subject={did}`), cached with a TTL
+  (`AGENT_REGISTRY_CACHE_TTL_SECONDS`, default 15 min). Records with no
+  `agentDid` are stored with `charter_ok` left `NULL` — unattributed, not
+  rejected, since nothing's enrolled with the registry yet. Records whose
+  charter check fails are still stored (audit trail) but excluded from what
+  `agent_atproto.py` feeds Synthesis's reasoning
+  (`WHERE charter_ok IS NULL OR charter_ok = 1`).
+- Registry unreachable → fail-open by default (`AGENT_REGISTRY_FAIL_CLOSED=false`),
+  logged loudly. Flip to fail-closed once there's actual confidence in the
+  registry's uptime; fail-open was the safer default for a first rollout
+  where a registry hiccup shouldn't silently blank out Synthesis.
+
+**Response schema caveat**: `registry_client.py`'s `_parse_attributes()` is a
+best-effort match against the registry's documented behavior — the README
+shows `/verify` returning `{valid, claims, status, ...}` but doesn't publish
+an exact schema for `/resolve`. Test against the live registry and fix field
+names there first if anything looks wrong; nothing else should need to change.
+
+**Not yet built**: the write-side of this (an agent using its charter to get
+a DPoP-bound, PDS-scoped session token, replacing `BSKY_APP_PASSWORD` ROPC
+entirely) — see the OAuth Token Exchange / `getServiceAuth` discussion below.
+That's a separate, larger piece of work than the read-side capability check
+above.
+
 ### DID resolution — the plc.directory dependency we didn't remove
 
 Self-hosting the PDS (above) removed the Bluesky *hosting* dependency: the node's

@@ -28,6 +28,7 @@
               "net.cpricedomain.temp.monitor.observation#watershed",
               "net.cpricedomain.temp.monitor.observation#weather",
               "net.cpricedomain.temp.monitor.observation#aqi",
+              "net.cpricedomain.temp.monitor.observation#fire",
               "net.cpricedomain.temp.monitor.observation#synthesis"
             ],
             "description": "The domain of this observation. Synthesis agents filter the firehose by this value. Nodes publish only the types they have data for."
@@ -53,6 +54,11 @@
           "agentModel": {
             "type": "string",
             "description": "The LLM or SLM used to produce this observation. e.g. 'claude-haiku-4-5', 'phi-4-mini', 'qwen2.5-3b'. Allows synthesis agents to weight observations by model capability if desired."
+          },
+
+          "agentDid": {
+            "type": "string",
+            "description": "DID of the specific domain agent that produced this observation, from its Agent Identity Registry charter — independent of and in addition to the record's publisher DID (the node's own PDS identity, which signs the record itself). Optional: absent until that domain's agent is enrolled with the registry. Lets a consumer check the producing agent's charter (capabilities, validity) separately from trusting the node it was published through."
           },
 
           "watershed": {
