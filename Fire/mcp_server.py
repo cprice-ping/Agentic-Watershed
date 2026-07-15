@@ -271,13 +271,19 @@ def get_recent_observations(n: int = 5) -> str:
     Call this at the start of each run for continuity — this is your memory
     of what previous runs concluded.
 
+    Deliberately excludes the full `reasoning` column — summary is what a
+    prior run wrote specifically to be read back as memory (see
+    write_agent_observation's docstring); reasoning is the audit trail and
+    is large enough that echoing it back every run materially inflates
+    token cost for no continuity benefit summary doesn't already provide.
+
     Args:
         n: Number of past observations to retrieve (default 5)
     """
     with _db() as conn:
         rows = conn.execute(
             """
-            SELECT observed_at, summary, flagged, reasoning
+            SELECT observed_at, summary, flagged
             FROM agent_observations
             ORDER BY observed_at DESC
             LIMIT ?
