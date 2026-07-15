@@ -138,6 +138,28 @@ Bounding box (`node_config.json`'s `"fire"` block, not hardcoded):
 `-123.3,37.7,-121.8,39.0`, roughly Napa/Sonoma/Solano/Lake counties — sized
 for regional smoke-transport awareness, not just fires within county lines.
 
+**Multi-source polling (2026-07-15).** Originally polled `VIIRS_SNPP_NRT`
+only. Caught a real gap during an active Watch Duty-tracked fire: SNPP
+reported zero hotspots in the bbox for the better part of a week while
+`VIIRS_NOAA20_NRT` and `VIIRS_NOAA21_NRT` both had current detections the
+whole time, including one 18mi from Napa center with FRP climbing from 5.9
+to 23.0 MW between passes — inside the alert threshold, missed entirely.
+Each VIIRS satellite has its own ~12h-offset overpass schedule; querying
+one is querying a third of the available coverage. `fire.source` (string)
+is now `fire.sources` (list) in `node_config.json`, defaulting to all
+three platforms. `collector.py` polls each and merges — the existing
+dedup key already includes `satellite`, so this needed no schema change,
+just a loop. Confirmed live the same day: the missed hotspot showed up on
+the next manual collector run and the Fire agent flagged it correctly.
+
+Also that week: `get_recent_observations` in River and Fire was reading
+back the full `reasoning` column as memory instead of just `summary` —
+`write_agent_observation`'s own docstring already says summary is what
+future runs should see, so this was drift, not a design choice. Fixed
+after the daily token-cost graph showed Haiku (the domain agents) costing
+more than Sonnet (Synthesis) by 4-5x, which is backwards from what the
+per-token pricing would suggest and pointed straight at prompt size.
+
 ### Self-hosted PDS — node identity, off Bluesky infrastructure
 
 | Component | Status |
@@ -299,6 +321,10 @@ entry — see "Synthesis agent" above.
 - [x] Fourth domain added: Fire (NASA FIRMS satellite hotspot detection) —
       closes the "unidentified upwind fire source" gap Synthesis's own
       reasoning had repeatedly flagged (2026-07-06)
+- [x] Fire collector polls all three VIIRS satellites instead of one —
+      SNPP-only was missing real detections during a live event (2026-07-15)
+- [x] River/Fire memory readback trimmed to summary only, not full reasoning
+      text — was a real driver of Haiku token cost (2026-07-15)
 
 ### Host Synthesis agent outside the laptop — DONE
 

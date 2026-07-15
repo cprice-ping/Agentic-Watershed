@@ -38,9 +38,14 @@ Resource Management System) — near-real-time satellite hotspot detections
 2. Set `FIRMS_API_KEY` in your environment (same var name pattern as
    `AIRNOW_API_KEY` for the AQI stack)
 
-Bounding box, satellite source, and day-range are configured in
+Bounding box, satellite sources, and day-range are configured in
 `node_config.json`'s `"fire"` block — not hardcoded here, same pattern as
-every other domain's location config.
+every other domain's location config. `fire.sources` is a list; the
+collector polls each one and merges results. Default is all three current
+VIIRS platforms (SNPP, NOAA-20, NOAA-21) — each has its own overpass
+schedule, so querying only one misses whatever the others caught. This
+isn't hypothetical: SNPP alone reported zero hotspots in the bbox for days
+during a real, active fire that NOAA-20 and NOAA-21 both had.
 
 ## Setup
 
@@ -85,7 +90,7 @@ from `fire.db` into the published lexicon record's `fire` block (see
 - Confidence field format differs by source: VIIRS uses `l`/`n`/`h`
   (low/nominal/high), MODIS uses a 0-100 numeric scale. The agent's system
   prompt doesn't currently normalize between the two — worth revisiting if
-  `node_config.json`'s `fire.source` is ever changed from the VIIRS default.
+  `node_config.json`'s `fire.sources` is ever changed to include MODIS.
 - This domain has no equivalent of "named incident" data (e.g. official
   CAL FIRE incident names) — deliberately deferred, see `CONTEXT.md` for
   why (a named-incident feed is a second, less reliably-documented public
