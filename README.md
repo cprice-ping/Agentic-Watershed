@@ -149,7 +149,10 @@ NWS alert zones:
 FIRMS bounding box (configured in `node_config.json`'s `"fire"` block, not
 hardcoded): `-123.3,37.7,-121.8,39.0` — roughly Napa/Sonoma/Solano/Lake
 counties, sized for regional smoke-transport awareness, not just
-county-line fires.
+county-line fires. Polls all three current VIIRS satellites (SNPP, NOAA-20,
+NOAA-21), not just one — each has its own overpass schedule, and
+single-source polling missed a real, active fire for days before this
+was caught.
 
 ---
 
