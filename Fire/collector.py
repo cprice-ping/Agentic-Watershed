@@ -46,7 +46,11 @@ DB_PATH = Path(__file__).parent / "data" / "fire.db"
 _NODE_CFG = json.loads((Path(__file__).parent.parent / "node_config.json").read_text())
 FIRE_CFG = _NODE_CFG["fire"]
 BBOX = FIRE_CFG["bbox"]                # "west,south,east,north"
-SOURCE = FIRE_CFG["source"]            # e.g. "VIIRS_SNPP_NRT"
+# Each VIIRS satellite (SNPP, NOAA-20, NOAA-21) has its own ~12h-offset
+# overpass schedule — polling only one source means missing whatever the
+# other two satellites caught in between. "sources" (list) is preferred;
+# "source" (single string) still works for backward compat.
+SOURCES = FIRE_CFG.get("sources") or [FIRE_CFG["source"]]
 DAY_RANGE = FIRE_CFG["day_range"]      # 1-10
 HOME_LAT = FIRE_CFG["home_lat"]
 HOME_LON = FIRE_CFG["home_lon"]
@@ -142,12 +146,12 @@ def haversine_mi(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 # FIRMS fetch
 # ---------------------------------------------------------------------------
 
-def fetch_firms() -> str:
-    """Call the FIRMS Area API and return the raw CSV text."""
+def fetch_firms(source: str) -> str:
+    """Call the FIRMS Area API for a single source and return the raw CSV text."""
     if not FIRMS_API_KEY:
         raise RuntimeError("FIRMS_API_KEY is not set — register at "
                            "https://firms.modaps.eosdis.nasa.gov/api/map_key/")
-    url = f"{FIRMS_BASE_URL}/{FIRMS_API_KEY}/{SOURCE}/{BBOX}/{DAY_RANGE}"
+    url = f"{FIRMS_BASE_URL}/{FIRMS_API_KEY}/{source}/{BBOX}/{DAY_RANGE}"
     resp = httpx.get(url, timeout=30)
     resp.raise_for_status()
     return resp.text
@@ -228,24 +232,39 @@ def record_poll(conn: sqlite3.Connection, status: str, hotspots_fetched: int = N
 # ---------------------------------------------------------------------------
 
 def poll(conn: sqlite3.Connection) -> None:
-    log.info("Polling FIRMS (%s) for bbox %s, last %d day(s)...", SOURCE, BBOX, DAY_RANGE)
-    try:
-        text = fetch_firms()
-    except (httpx.HTTPError, RuntimeError) as exc:
-        log.error("FIRMS fetch failed: %s", exc)
-        record_poll(conn, status="error", error_message=str(exc))
+    log.info("Polling FIRMS (%s) for bbox %s, last %d day(s)...", ", ".join(SOURCES), BBOX, DAY_RANGE)
+
+    all_rows = []
+    failed_sources = []
+    for source in SOURCES:
+        try:
+            text = fetch_firms(source)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            log.error("FIRMS fetch failed for %s: %s", source, exc)
+            failed_sources.append(f"{source}: {exc}")
+            continue
+        source_rows = parse_firms_csv(text)
+        log.info("  %s: fetched %d hotspot(s) in window", source, len(source_rows))
+        all_rows.extend(source_rows)
+
+    if failed_sources and len(failed_sources) == len(SOURCES):
+        # Every source failed — this is a genuine collector failure, not a
+        # quiet poll. Distinct from a partial failure (some sources ok).
+        record_poll(conn, status="error", error_message="; ".join(failed_sources))
         return
 
-    rows = parse_firms_csv(text)
-    new_count = store_hotspots(conn, rows)
-    log.info("Fetched %d hotspot(s) in window, %d new (deduped by lat/lon/acq time)",
-             len(rows), new_count)
-    record_poll(conn, status="ok", hotspots_fetched=len(rows), hotspots_new=new_count)
+    new_count = store_hotspots(conn, all_rows)
+    log.info("Fetched %d hotspot(s) total across %d source(s), %d new (deduped by lat/lon/acq time/satellite)",
+             len(all_rows), len(SOURCES) - len(failed_sources), new_count)
+    record_poll(
+        conn, status="ok", hotspots_fetched=len(all_rows), hotspots_new=new_count,
+        error_message="; ".join(failed_sources) if failed_sources else None,
+    )
 
-    nearby = sorted((r for r in rows if r["distance_mi"] <= 50), key=lambda r: r["distance_mi"])
+    nearby = sorted((r for r in all_rows if r["distance_mi"] <= 50), key=lambda r: r["distance_mi"])
     for r in nearby[:5]:
-        log.info("  %.1fmi away | confidence=%s | frp=%s MW | %s %s",
-                  r["distance_mi"], r["confidence"], r["frp"], r["acq_date"], r["acq_time"])
+        log.info("  %.1fmi away | %s | confidence=%s | frp=%s MW | %s %s",
+                  r["distance_mi"], r["satellite"], r["confidence"], r["frp"], r["acq_date"], r["acq_time"])
 
 
 # ---------------------------------------------------------------------------

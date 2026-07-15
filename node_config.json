@@ -20,7 +20,7 @@
   },
   "fire": {
     "bbox": "-123.3,37.7,-121.8,39.0",
-    "source": "VIIRS_SNPP_NRT",
+    "sources": ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT"],
     "day_range": 2,
     "home_lat": 38.2975,
     "home_lon": -122.2869
