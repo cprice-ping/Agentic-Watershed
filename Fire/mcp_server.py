@@ -167,7 +167,10 @@ def get_nearest_hotspots(n: int = 10) -> str:
         "last_poll_status": last_poll["status"] if last_poll else "never_polled",
         "currency_window_hours": NEAREST_HOTSPOT_MAX_AGE_HOURS,
     }
-    if last_poll and last_poll["status"] == "error":
+    if last_poll and last_poll["error_message"]:
+        # Set on status="error" (every source failed) and also on a partial
+        # failure (status stays "ok" if at least one source succeeded, but
+        # error_message notes which source(s) didn't).
         result["last_poll_error"] = last_poll["error_message"]
 
     if not rows:
