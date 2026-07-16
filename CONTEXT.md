@@ -272,6 +272,39 @@ Required environment variables:
   without moving the whole zone — Cloudflare Tunnel's cert-issuance flow needs a
   zone already on Cloudflare's nameservers. Registering a small dedicated domain
   directly through Cloudflare Registrar sidesteps this entirely (see below).
+- **Local SLMs (Ollama) tried for the domain agents, 2026-07-16 — not viable yet,
+  keep Haiku.** Motivated by the token-cost review showing Haiku (domain agents)
+  costing more than Sonnet (Synthesis) by 4-5x — see the memory-readback fix
+  above for the real driver of that. Tested on an RPi5 8GB: `qwen2.5:3b-instruct-q4_K_M`
+  and `qwen3.5:4b` (Ollama's `format` JSON-schema constraint, not prompt-only
+  "respond in JSON," and `think=False` — `think=True` bypasses the schema
+  constraint entirely, writing the full answer as free text into a separate
+  `thinking` field and leaving `response` empty). RAM and latency were fine
+  (~2-3GB resident, 15-270s per run depending on model/context size — all well
+  within the 6h cron cadence). Correctness wasn't:
+  - `qwen2.5:3b` on real Fire data: called two hotspots "high-confidence" when
+    neither was (VIIRS confidence was `n`/`l`, never `h`), and its own summary
+    contradicted itself — "unchanged, no significant changes" followed two
+    sentences later by "a recent detection... new hotspots."
+  - `qwen3.5:4b` on the same Fire data (`think=False`) fixed both of those, but
+    with `think=True` it flipped to `flagged: false` by misreading the flag
+    rule's `within 20mi OR high-confidence within 50mi` as `within 20mi AND
+    high-confidence` — would have suppressed a real alert.
+  - `qwen3.5:4b` on real Weather data (`think=False`) was worse, not better,
+    despite Weather's rules being simple numeric thresholds — flagged `true`
+    against current conditions that met none of the actual criteria (temp
+    60.8°F, humidity 72.2%, no active alerts), justifying it with a "historical
+    peak" / "compound risk factors" rationale that isn't part of the system
+    prompt's rules at all. Worse result on the domain expected to be the
+    easiest case, which is the actual finding here — not "Fire is too hard,"
+    but "the failure mode doesn't clearly correlate with task difficulty,"
+    which is a worse signal for trusting it unsupervised on any domain.
+  Conclusion: the schema-constrained plumbing works reliably; the reasoning
+  quality is the blocker, and it's not obviously fixable with prompt tuning —
+  Weather's failure was a fabricated rule, not an ambiguous one. Revisit with
+  a materially larger local model (9B+) or a different model family, not more
+  tuning of these two. Pilot scripts (`Fire/ollama_pilot_test.py`,
+  `Weather/ollama_pilot_test.py`) are throwaway, not wired into any agent.
 
 ---
 
