@@ -97,7 +97,9 @@ def main() -> None:
     }
 
     start = time.monotonic()
-    resp = httpx.post(OLLAMA_URL, json=payload, timeout=180)
+    # Generous timeout — the point right now is finding out the real number,
+    # not enforcing a limit. Tighten once there's an actual baseline.
+    resp = httpx.post(OLLAMA_URL, json=payload, timeout=600)
     resp.raise_for_status()
     elapsed = time.monotonic() - start
 
