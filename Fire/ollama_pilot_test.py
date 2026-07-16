@@ -8,6 +8,7 @@ Usage (on the Pi, after `ollama pull qwen2.5:3b-instruct-q4_K_M`):
   python3 ollama_pilot_test.py
 """
 
+import argparse
 import json
 import sqlite3
 import time
@@ -17,7 +18,7 @@ import httpx
 
 DB_PATH = Path(__file__).parent / "data" / "fire.db"
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "qwen2.5:3b-instruct-q4_K_M"
+DEFAULT_MODEL = "qwen2.5:3b-instruct-q4_K_M"
 
 SYSTEM_PROMPT = """You are a fire-detection monitoring agent for Napa Valley. You are NOT
 assessing fire weather or smoke — only satellite-detected heat sources (hotspots).
@@ -74,11 +75,16 @@ def gather_real_context() -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default=DEFAULT_MODEL,
+                        help=f"Ollama model tag to test (default: {DEFAULT_MODEL})")
+    args = parser.parse_args()
+
     context = gather_real_context()
-    print(f"--- Context size: {len(context)} chars ---\n")
+    print(f"--- Model: {args.model}  |  Context size: {len(context)} chars ---\n")
 
     payload = {
-        "model": MODEL,
+        "model": args.model,
         "system": SYSTEM_PROMPT,
         "prompt": context,
         "format": RESPONSE_SCHEMA,
