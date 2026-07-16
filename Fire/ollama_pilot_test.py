@@ -78,10 +78,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help=f"Ollama model tag to test (default: {DEFAULT_MODEL})")
+    parser.add_argument("--think", action="store_true",
+                        help="Allow reasoning-capable models to emit a thinking trace "
+                             "(off by default — a short structured verdict doesn't need one, "
+                             "and it can eat the generation budget before the real answer)")
     args = parser.parse_args()
 
     context = gather_real_context()
-    print(f"--- Model: {args.model}  |  Context size: {len(context)} chars ---\n")
+    print(f"--- Model: {args.model}  |  think={args.think}  |  Context size: {len(context)} chars ---\n")
 
     payload = {
         "model": args.model,
@@ -89,6 +93,7 @@ def main() -> None:
         "prompt": context,
         "format": RESPONSE_SCHEMA,
         "stream": False,
+        "think": args.think,
     }
 
     start = time.monotonic()
@@ -97,7 +102,10 @@ def main() -> None:
     elapsed = time.monotonic() - start
 
     result = resp.json()
-    print(f"--- Response ({elapsed:.1f}s) ---")
+    print(f"--- Raw response object ({elapsed:.1f}s) ---")
+    print(json.dumps(result, indent=2)[:3000])
+
+    print(f"\n--- response field ---")
     print(result.get("response", "<no response field>"))
 
     try:
