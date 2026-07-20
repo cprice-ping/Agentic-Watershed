@@ -222,13 +222,23 @@ Docker Compose (recommended — run from the repo root):
 */30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm aqi python collector.py >> AQI/logs/collector.log 2>&1
 */30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm fire python collector.py >> Fire/logs/collector.log 2>&1
 
-# === Domain Agents (staggered by 1h) ===
-0 0,6,12,18 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm river python agent.py >> River/logs/agent.log 2>&1
-0 1,7,13,19 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm weather python agent.py >> Weather/logs/agent.log 2>&1
+# === Domain Agents ===
+# River, Weather, Fire dropped from 4x/day to 2x/day (2026-07-20) — Haiku's
+# aggregate cost across 16 agent runs/day was the dominant driver in the
+# token-cost review, well ahead of Synthesis on Sonnet at 2x/day. Latency
+# stays well inside the "up to a day" tolerance the detection pipeline is
+# built around (see CONTEXT.md). AQI stays at 4x/day — PM2.5 is the fastest-
+# moving signal in the system and the one Synthesis's own reasoning leans on
+# as an early smoke/fire indicator, so it's worth the extra runs. The
+# publisher's existing 4x/day schedule was always sized around AQI's cadence,
+# not a symmetric one-per-domain design, so it still covers every agent's
+# output within a few hours without needing its own adjustment.
+0 0,12 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm river python agent.py >> River/logs/agent.log 2>&1
+0 1,13 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm weather python agent.py >> Weather/logs/agent.log 2>&1
 0 2,8,14,20 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm aqi python agent.py >> AQI/logs/agent.log 2>&1
-0 3,9,15,21 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm fire python agent.py >> Fire/logs/agent.log 2>&1
+0 3,15 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm fire python agent.py >> Fire/logs/agent.log 2>&1
 
-# === ATProto Publisher (15 min after the last domain agent, now Fire) ===
+# === ATProto Publisher ===
 15 3,9,15,21 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm atproto-publisher python publisher.py >> ATProto/logs/publisher.log 2>&1
 ```
 
@@ -241,13 +251,13 @@ Without Docker (legacy — same schedule, `.venv/bin/python` instead of `docker 
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python collector.py >> logs/collector.log 2>&1
 
-# === Domain Agents (staggered by 1h) ===
-0 0,6,12,18 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1
-0 1,7,13,19 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python agent.py >> logs/agent.log 2>&1
+# === Domain Agents (River/Weather/Fire 2x/day, AQI 4x/day — see note above) ===
+0 0,12 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 1,13 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python agent.py >> logs/agent.log 2>&1
 0 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python agent.py >> logs/agent.log 2>&1
-0 3,9,15,21 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 3,15 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python agent.py >> logs/agent.log 2>&1
 
-# === ATProto Publisher (15 min after the last domain agent, now Fire) ===
+# === ATProto Publisher ===
 15 3,9,15,21 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 ```
 

@@ -93,10 +93,10 @@ All stacks deployed under `/home/cprice/Agentic-Watershed/`.
 
 | Stack | Schedule | Status |
 |-------|----------|--------|
-| Watershed | 0,6,12,18h | ✅ Running, writing observations |
-| Weather | 1,7,13,19h | ✅ Running, writing observations |
-| AQI | 2,8,14,20h | ✅ Running, writing observations |
-| Fire | 3,9,15,21h | ✅ Added 2026-07-06, writing observations |
+| Watershed | 0,12h | ✅ Running, writing observations (cut from 0,6,12,18h 2026-07-20 — cost) |
+| Weather | 1,13h | ✅ Running, writing observations (cut from 1,7,13,19h 2026-07-20 — cost) |
+| AQI | 2,8,14,20h | ✅ Running, writing observations — kept at 4x/day, fastest-moving signal |
+| Fire | 3,15h | ✅ Added 2026-07-06, writing observations (cut from 3,9,15,21h 2026-07-20 — cost) |
 
 ### Fire domain — NASA FIRMS satellite hotspot detection
 
@@ -317,15 +317,25 @@ Required environment variables:
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python collector.py >> logs/collector.log 2>&1
 
-# === Domain Agents ===
-0 0,6,12,18 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1
-0 1,7,13,19 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python agent.py >> logs/agent.log 2>&1
+# === Domain Agents (River/Weather/Fire 2x/day, AQI 4x/day) ===
+0 0,12 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 1,13 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python agent.py >> logs/agent.log 2>&1
 0 2,8,14,20 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python agent.py >> logs/agent.log 2>&1
-0 3,9,15,21 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python agent.py >> logs/agent.log 2>&1
+0 3,15 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python agent.py >> logs/agent.log 2>&1
 
-# === ATProto Publisher (15 min after the last domain agent — now Fire, 21h) ===
+# === ATProto Publisher ===
 15 3,9,15,21 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/ATProto && .venv/bin/python publisher.py >> logs/publisher.log 2>&1
 ```
+
+River/Weather/Fire dropped from 4x/day to 2x/day on 2026-07-20 — Haiku's
+aggregate cost across 16 agent runs/day was the dominant driver in the daily
+token-cost review, well ahead of Synthesis on Sonnet at 2x/day (see the
+memory-readback fix above for the other half of that cost story). AQI stays
+at 4x/day since PM2.5 is the fastest-moving signal in the system. The
+publisher's `3,9,15,21` schedule didn't need to change — it was always sized
+around AQI's cadence, not a symmetric one-slot-per-domain design, so it still
+picks up every agent's output within at most ~3h15m (worked out by hand
+against the new schedule, not just assumed).
 
 Synthesis runs as an Azure Container Apps Job (`0 6,18 * * *` UTC), not a Pi cron
 entry — see "Synthesis agent" above.
