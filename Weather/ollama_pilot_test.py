@@ -1,19 +1,26 @@
 """
 Throwaway pilot script — NOT wired into agent.py.
-Same purpose as Fire/ollama_pilot_test.py: test whether a local Ollama
-model can do the Weather agent's actual job against real data, via a
-real schema-constrained call. Weather's flag logic is closer to threshold
+Same purpose as Fire/ollama_pilot_test.py: test whether a smaller/cheaper
+model can do the Weather agent's actual job against real data, via a real
+schema-constrained call. Weather's flag logic is closer to threshold
 classification than Fire's open-ended correlation, so this is the fairer
 test case for whether local models suit the "simpler" domain agents.
 
-Usage (on the Pi):
+Two backends, same real data, same real schema — for a direct comparison:
+  --backend ollama      Local model via Ollama (default)
+  --backend openrouter  Hosted model via OpenRouter (needs OPENROUTER_API_KEY)
+
+Usage:
   python3 ollama_pilot_test.py
   python3 ollama_pilot_test.py --model qwen3.5:4b
   python3 ollama_pilot_test.py --model qwen3.5:4b --think
+  python3 ollama_pilot_test.py --backend openrouter
+  python3 ollama_pilot_test.py --backend openrouter --model qwen/qwen3.5-9b
 """
 
 import argparse
 import json
+import os
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -23,7 +30,11 @@ import httpx
 
 DB_PATH = Path(__file__).parent / "data" / "weather.db"
 OLLAMA_URL = "http://localhost:11434/api/generate"
-DEFAULT_MODEL = "qwen2.5:3b-instruct-q4_K_M"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_MODEL = {
+    "ollama": "qwen2.5:3b-instruct-q4_K_M",
+    "openrouter": "qwen/qwen3.5-9b",
+}
 
 # Same criteria as Weather/agent.py's real SYSTEM_PROMPT
 SYSTEM_PROMPT = """You are an autonomous weather monitoring agent for Napa County, California.
@@ -119,44 +130,96 @@ def gather_real_context() -> str:
     return "\n\n".join(sections)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=DEFAULT_MODEL,
-                        help=f"Ollama model tag to test (default: {DEFAULT_MODEL})")
-    parser.add_argument("--think", action="store_true",
-                        help="Allow reasoning-capable models to emit a thinking trace (off by default)")
-    args = parser.parse_args()
-
-    context = gather_real_context()
-    print(f"--- Model: {args.model}  |  think={args.think}  |  Context size: {len(context)} chars ---\n")
-
+def call_ollama(model: str, context: str, think: bool) -> tuple[dict, float]:
     payload = {
-        "model": args.model,
+        "model": model,
         "system": SYSTEM_PROMPT,
         "prompt": context,
         "format": RESPONSE_SCHEMA,
         "stream": False,
-        "think": args.think,
+        "think": think,
     }
-
     start = time.monotonic()
     resp = httpx.post(OLLAMA_URL, json=payload, timeout=600)
     resp.raise_for_status()
     elapsed = time.monotonic() - start
+    return resp.json(), elapsed
 
-    result = resp.json()
+
+def call_openrouter(model: str, context: str) -> tuple[dict, float]:
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set — get one at https://openrouter.ai/keys")
+
+    # Standard OpenAI-style structured-output request. Whether this is
+    # actually *enforced* depends on which upstream provider OpenRouter
+    # routes this model to — that reliability is exactly what this script
+    # is here to check, not something to assume works like Ollama's local
+    # `format` constraint does.
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": context},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "assessment", "strict": True, "schema": RESPONSE_SCHEMA},
+        },
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    start = time.monotonic()
+    resp = httpx.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+    resp.raise_for_status()
+    elapsed = time.monotonic() - start
+    return resp.json(), elapsed
+
+
+def extract_response_text(backend: str, result: dict) -> str | None:
+    """Both backends' raw response shapes differ — normalise to the raw
+    text the model produced, or None if it's not where expected."""
+    if backend == "ollama":
+        return result.get("response")
+    # OpenRouter/OpenAI chat completions shape
+    try:
+        return result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--backend", choices=["ollama", "openrouter"], default="ollama")
+    parser.add_argument("--model", default=None,
+                        help="Model tag/id to test (default depends on --backend)")
+    parser.add_argument("--think", action="store_true",
+                        help="[ollama only] Allow reasoning-capable models to emit a thinking "
+                             "trace (off by default)")
+    args = parser.parse_args()
+    model = args.model or DEFAULT_MODEL[args.backend]
+
+    context = gather_real_context()
+    print(f"--- Backend: {args.backend}  |  Model: {model}  |  Context size: {len(context)} chars ---\n")
+
+    if args.backend == "ollama":
+        result, elapsed = call_ollama(model, context, args.think)
+    else:
+        result, elapsed = call_openrouter(model, context)
+
     print(f"--- Raw response object ({elapsed:.1f}s) ---")
     print(json.dumps(result, indent=2)[:3000])
 
-    print(f"\n--- response field ---")
-    print(result.get("response", "<no response field>"))
+    response_text = extract_response_text(args.backend, result)
+    print(f"\n--- response text ---")
+    print(response_text if response_text is not None else "<not found in expected location>")
 
     try:
-        parsed = json.loads(result["response"])
+        parsed = json.loads(response_text)
         print("\n--- Parsed OK ---")
         print(f"flagged: {parsed.get('flagged')}")
         print(f"summary: {parsed.get('summary')}")
-    except (json.JSONDecodeError, KeyError) as exc:
+    except (json.JSONDecodeError, TypeError) as exc:
         print(f"\n--- FAILED TO PARSE: {exc} ---")
 
 
