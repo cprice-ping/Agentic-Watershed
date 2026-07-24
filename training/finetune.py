@@ -3,40 +3,44 @@ LoRA fine-tune experiment — distills a domain agent's real Haiku history
 into a small local model, using the training_examples.jsonl produced by
 extract_training_data.py.
 
-DOES NOT RUN ON THE PI. This needs a GPU — Colab, RunPod, Vast.ai, or a
-local GPU box. Copy this file (and the domain's training_examples.jsonl)
-to wherever that is.
+Runs on Apple Silicon (MLX), not the Pi. Tested-shape for a 64GB M-series
+Mac — a 3-4B model in bf16 (no quantization needed at that memory size)
+is ~6-8GB, comfortable headroom for LoRA on top.
 
-Setup on the training machine:
-  pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-  pip install trl datasets
+Setup on the Mac:
+  pip install mlx-lm
 
-  Unsloth's exact API moves fast — if something below doesn't match
-  current unsloth/trl versions, check https://github.com/unslothai/unsloth
-  for the current FastLanguageModel / SFTTrainer usage and adjust; the
-  overall shape (load 4bit -> add LoRA -> SFTTrainer -> save_pretrained_gguf)
-  should still hold.
+  mlx-lm's exact CLI flags move with the library — this script prepares
+  the data and prints the recommended `mlx_lm.lora` command by default;
+  pass --run to have it attempt the subprocess call directly. If --run's
+  flags don't match your installed version, check `mlx_lm.lora --help`
+  and adjust — the printed command is the reference either way.
 
 Usage:
   python3 finetune.py --domain weather --data training_examples.jsonl
-  python3 finetune.py --domain weather --data training_examples.jsonl --base-model unsloth/Qwen2.5-3B-Instruct-bnb-4bit
+  python3 finetune.py --domain weather --data training_examples.jsonl --run
 
 Output:
-  <domain>-lora-adapter/      LoRA adapter weights
-  <domain>-merged-gguf/       Merged model, GGUF format — `ollama create` this
-  <domain>-holdout.jsonl      The held-out 20%, NOT trained on — copy back to
-                               the Pi and run through ollama_pilot_test.py-style
-                               comparison against the base (untrained) model.
+  <domain>-mlx-data/            train.jsonl / valid.jsonl in MLX's chat format
+  <domain>-lora-adapter/        LoRA adapter weights (after training)
+  <domain>-holdout.jsonl        Held-out 20%, NOT trained on — for the
+                                 before/after comparison against the base model
+
+Evaluating the result (directly on the Mac, no Ollama/GGUF round-trip needed
+for this experimental phase):
+  mlx_lm.generate --model <base-model> --adapter-path <domain>-lora-adapter \
+      --prompt "<context from a held-out example>"
+  # compare against the same prompt without --adapter-path (base model)
 """
 
 import argparse
 import json
-import random
+import subprocess
 from pathlib import Path
 
 # Same system prompts as the real agents / pilot scripts — kept as literal
 # constants here since this script may run in a completely separate
-# environment (GPU rental box) that doesn't have the rest of the repo.
+# environment (a different machine) that doesn't have the rest of the repo.
 
 SYSTEM_PROMPTS = {
     "weather": """You are an autonomous weather monitoring agent for Napa County, California.
@@ -105,8 +109,8 @@ def temporal_split(examples: list[dict], holdout_frac: float = 0.2) -> tuple[lis
 
 
 def to_chat_example(example: dict, domain: str) -> dict:
-    """One example -> a chat-formatted training row: system + user (context)
-    + assistant (the real historical response, as the target completion)."""
+    """One example -> MLX-LM's chat training format: {"messages": [...]}.
+    mlx_lm.lora applies the model's chat template to this automatically."""
     system_prompt = SYSTEM_PROMPTS[domain] + "\n\n" + RESPONSE_SCHEMA_HINT
     assistant_content = json.dumps(example["response"])
     return {
@@ -119,22 +123,25 @@ def to_chat_example(example: dict, domain: str) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="LoRA fine-tune a domain agent's local model")
+    parser = argparse.ArgumentParser(description="LoRA fine-tune a domain agent's local model (MLX / Apple Silicon)")
     parser.add_argument("--domain", required=True, choices=list(SYSTEM_PROMPTS.keys()))
     parser.add_argument("--data", required=True, type=Path, help="Path to training_examples.jsonl")
-    parser.add_argument("--base-model", default="unsloth/Qwen2.5-3B-Instruct-bnb-4bit",
-                        help="HF model id (4bit-quantized Unsloth variant recommended)")
+    parser.add_argument("--base-model", default="mlx-community/Qwen2.5-3B-Instruct-bf16",
+                        help="MLX-format HF repo id. Check https://huggingface.co/mlx-community "
+                             "for the current exact name — if it's not there, `mlx_lm.convert "
+                             "--hf-path Qwen/Qwen2.5-3B-Instruct` converts the original repo locally.")
     parser.add_argument("--holdout-frac", type=float, default=0.2)
-    parser.add_argument("--lora-r", type=int, default=8, help="Low rank — small dataset, don't overparameterize")
-    parser.add_argument("--lora-alpha", type=int, default=16)
-    parser.add_argument("--epochs", type=int, default=3,
-                        help="Small dataset (~100 examples) — watch held-out eval, not just loss, "
-                             "for overfitting before increasing this")
+    parser.add_argument("--lora-layers", type=int, default=8,
+                        help="Number of layers to apply LoRA to — mlx_lm default is fine for a "
+                             "small dataset like this; raise only if you have more examples")
+    parser.add_argument("--iters", type=int, default=200,
+                        help="Small dataset (~100 examples) — watch validation loss / held-out "
+                             "eval for overfitting before raising this")
     parser.add_argument("--output-dir", type=Path, default=Path("."))
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--run", action="store_true",
+                         help="Actually shell out to mlx_lm.lora. Without this flag, only "
+                              "prepares data and prints the command.")
     args = parser.parse_args()
-
-    random.seed(args.seed)
 
     examples = load_examples(args.data)
     print(f"Loaded {len(examples)} examples for domain={args.domain}")
@@ -146,80 +153,56 @@ def main() -> None:
     with open(holdout_path, "w") as f:
         for ex in holdout_examples:
             f.write(json.dumps(ex) + "\n")
-    print(f"Held-out set written to {holdout_path} — copy this back to the Pi for eval, "
-          f"do not train on it.")
+    print(f"Held-out set written to {holdout_path} — for before/after eval, not for training.")
 
-    train_chat = [to_chat_example(ex, args.domain) for ex in train_examples]
+    # mlx_lm.lora expects a directory containing train.jsonl and valid.jsonl
+    # in its chat format. We don't have a separate validation split beyond
+    # the holdout — carve a small slice off the *training* set for that
+    # (still never touching holdout), since mlx_lm.lora wants one to report
+    # validation loss during training.
+    n_valid = max(1, int(len(train_examples) * 0.1))
+    valid_examples = train_examples[-n_valid:]
+    fit_examples = train_examples[:-n_valid]
 
-    # --- Unsloth / trl training ---
-    # Imported here, not at module level, so --data/--domain validation and
-    # the holdout split above still work without a GPU environment present
-    # (useful for a quick dry-run of the data pipeline before committing to
-    # a GPU rental session).
-    from datasets import Dataset
-    from unsloth import FastLanguageModel
-    from trl import SFTTrainer, SFTConfig
-
-    print(f"\nLoading base model: {args.base_model}")
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.base_model,
-        max_seq_length=4096,  # contexts run a few KB — see extract_training_data.py output
-        load_in_4bit=True,
-    )
-
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        random_state=args.seed,
-    )
-
-    def format_row(row):
-        return {"text": tokenizer.apply_chat_template(row["messages"], tokenize=False, add_generation_prompt=False)}
-
-    dataset = Dataset.from_list(train_chat).map(format_row)
-
-    trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=4096,
-        args=SFTConfig(
-            per_device_train_batch_size=2,
-            gradient_accumulation_steps=4,
-            num_train_epochs=args.epochs,
-            learning_rate=2e-4,
-            warmup_ratio=0.1,
-            logging_steps=5,
-            output_dir=str(args.output_dir / f"{args.domain}-training-run"),
-            seed=args.seed,
-        ),
-    )
-
-    print("\nTraining...")
-    trainer.train()
+    data_dir = args.output_dir / f"{args.domain}-mlx-data"
+    data_dir.mkdir(exist_ok=True)
+    with open(data_dir / "train.jsonl", "w") as f:
+        for ex in fit_examples:
+            f.write(json.dumps(to_chat_example(ex, args.domain)) + "\n")
+    with open(data_dir / "valid.jsonl", "w") as f:
+        for ex in valid_examples:
+            f.write(json.dumps(to_chat_example(ex, args.domain)) + "\n")
+    print(f"MLX training data written to {data_dir} "
+          f"(fit={len(fit_examples)}, valid={len(valid_examples)})")
 
     adapter_dir = args.output_dir / f"{args.domain}-lora-adapter"
-    model.save_pretrained(str(adapter_dir))
-    tokenizer.save_pretrained(str(adapter_dir))
-    print(f"LoRA adapter saved to {adapter_dir}")
+    cmd = [
+        "mlx_lm.lora",
+        "--model", args.base_model,
+        "--train",
+        "--data", str(data_dir),
+        "--adapter-path", str(adapter_dir),
+        "--num-layers", str(args.lora_layers),
+        "--iters", str(args.iters),
+        "--batch-size", "1",  # small dataset, small contexts vary in length — keep this simple
+    ]
+    print("\nCommand:\n  " + " ".join(cmd))
 
-    gguf_dir = args.output_dir / f"{args.domain}-merged-gguf"
-    print(f"\nExporting merged GGUF to {gguf_dir} (q4_k_m, matches the quantization already "
-          f"benchmarked in the base-model pilot tests)...")
-    model.save_pretrained_gguf(str(gguf_dir), tokenizer, quantization_method="q4_k_m")
-
-    print(f"""
-Done. Next steps:
-  1. Copy {gguf_dir}/*.gguf and {holdout_path} back to the Pi.
-  2. ollama create {args.domain}-finetuned -f Modelfile   (point the Modelfile FROM at the .gguf)
-  3. Run the held-out examples through {args.domain}/ollama_pilot_test.py-style comparison
-     against both the base model and {args.domain}-finetuned — same real inputs, diff the outputs.
+    if args.run:
+        print("\nRunning...")
+        subprocess.run(cmd, check=True)
+        print(f"""
+Done. Adapter saved to {adapter_dir}. Next steps:
+  1. Compare base vs fine-tuned on the held-out set:
+       mlx_lm.generate --model {args.base_model} --prompt "<context from {holdout_path}>"
+       mlx_lm.generate --model {args.base_model} --adapter-path {adapter_dir} --prompt "<same context>"
+  2. If it looks good and you want it on the Pi: fuse the adapter
+     (mlx_lm.fuse) and convert to GGUF via llama.cpp's convert script —
+     a manual, later step, only worth doing once the eval above looks right.
 """)
+    else:
+        print("\n(--run not passed — data prepared, training not started. "
+              "Re-run with --run to actually train, or copy the command above.)")
 
 
 if __name__ == "__main__":
