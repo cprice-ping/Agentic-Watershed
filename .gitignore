@@ -16,6 +16,10 @@ env/
 **/logs/
 *.log
 
+# Node / Cloudflare Workers
+node_modules/
+.wrangler/
+
 # Environment / secrets
 .env
 .env.*

@@ -1,0 +1,34 @@
+name = "onlypans-images"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Caching image proxy for OnlyPans photos. Unlike the watershed Viewer's
+# static-assets-only config at the repo root, this one is a real Worker script.
+#
+# Deploy:
+#   cd OnlyPans/worker && npx wrangler deploy
+#
+# Create the bindings first (IDs go below):
+#   npx wrangler kv namespace create onlypans-blobs
+#   npx wrangler r2 bucket create onlypans-photos
+
+# Blob allowlist, written by OnlyPans/ingest/consumer.py. Also holds the
+# DID -> PDS resolution cache under a "pds:" key prefix.
+[[kv_namespaces]]
+binding = "BLOBS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Durable copy of every photo the site has served. Cache API entries are
+# per-datacenter and evictable; R2 means a cold edge doesn't hit a
+# contributor's PDS again. R2 has no egress fees, which is what makes
+# serving images this way sane on a hobby budget.
+[[r2_buckets]]
+binding = "PANS"
+bucket_name = "onlypans-photos"
+
+# Uncomment once the domain is set up. Image Resizing must be enabled on the
+# zone for /img/ to actually resize — without it those routes still work, they
+# just return the original bytes.
+# [[routes]]
+# pattern = "img.onlypans.app/*"
+# zone_name = "onlypans.app"

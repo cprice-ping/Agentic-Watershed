@@ -1,0 +1,177 @@
+{
+  "lexicon": 1,
+  "id": "net.cpricedomain.onlypans.pan",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A single piece of copper cookware in someone's collection. Written to the author's own repo — the PDS is whatever their identity already uses (bsky.social for most people), so no account migration is needed to participate. Only 'title' and 'createdAt' are required; a phone photo and a name is a valid post, and every descriptive field is optional so nobody is blocked on knowing their pan's gauge.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["title", "createdAt"],
+        "properties": {
+
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "maxGraphemes": 100,
+            "description": "What the owner calls it. e.g. '3.5mm Dehillerin rondeau' or 'flea market mystery saucepan'."
+          },
+
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When this record was written. Not when the pan was made — see 'era' for that."
+          },
+
+          "notes": {
+            "type": "string",
+            "maxLength": 6000,
+            "maxGraphemes": 2000,
+            "description": "Free text. The story, the find, what it cooks well, what's wrong with it."
+          },
+
+          "photos": {
+            "type": "array",
+            "maxLength": 8,
+            "items": { "type": "ref", "ref": "#photo" },
+            "description": "Photos of the pan. Blobs live in the author's own repo; the app view proxies and caches them for display."
+          },
+
+          "maker": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Marked maker or retailer. e.g. 'Mauviel', 'Falk', 'E. Dehillerin', 'Duparquet', 'Waldow'. Free text rather than an enum — the long tail of unmarked and obscure French and American makers is most of the interesting material."
+          },
+
+          "material": {
+            "type": "string",
+            "knownValues": ["copper", "brass", "bronze", "unknown"],
+            "description": "Base metal of the body."
+          },
+
+          "lining": {
+            "type": "string",
+            "knownValues": ["tin", "silver", "stainless", "nickel", "unlined", "unknown"],
+            "description": "Interior lining. Tin is traditional and wears out; stainless is modern and doesn't. Unlined is correct for sugar and jam work."
+          },
+
+          "form": {
+            "type": "string",
+            "knownValues": [
+              "saucepan", "saucier", "sauteuse", "saute", "skillet", "rondeau",
+              "windsor", "bain-marie", "jam-pan", "fish-kettle", "stockpot",
+              "gratin", "roasting-pan", "egg-bowl", "mold", "other"
+            ],
+            "description": "Vessel form. Uses the names the collecting community actually uses rather than retail marketing terms."
+          },
+
+          "diameterMm": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2000,
+            "description": "Rim diameter in millimetres. The primary size figure for copper — collections are usually described in mm even in the US."
+          },
+
+          "heightMm": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2000,
+            "description": "Wall height in millimetres, excluding handle."
+          },
+
+          "thicknessMm": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 20,
+            "description": "Wall gauge in millimetres. The number collectors care about most: under 1.5mm is decorative, 2.5mm is a working standard, 3mm+ is professional weight."
+          },
+
+          "weightG": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Total weight in grams. A useful cross-check on stated gauge."
+          },
+
+          "handleMaterial": {
+            "type": "string",
+            "knownValues": ["cast-iron", "brass", "bronze", "stainless", "wood", "copper", "other", "unknown"],
+            "description": "Handle metal. Often the best dating evidence on an unmarked piece — cast iron reads older and French, brass reads earlier still."
+          },
+
+          "era": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "Approximate period, as loose text rather than a date. e.g. 'late 19th c.', '1950s', 'modern production'. Deliberately not a datetime — almost nobody knows the real year, and a fake-precise field invites fake-precise answers."
+          },
+
+          "condition": {
+            "type": "string",
+            "knownValues": [
+              "unrestored", "needs-retinning", "retinned", "restored",
+              "working", "display-only"
+            ],
+            "description": "Current state."
+          },
+
+          "restoration": {
+            "type": "string",
+            "maxLength": 3000,
+            "maxGraphemes": 1000,
+            "description": "What's been done to it and by whom. Retinner, date, cost, how it turned out."
+          },
+
+          "provenance": {
+            "type": "string",
+            "maxLength": 1000,
+            "maxGraphemes": 300,
+            "description": "Where it came from. Estate sale, inherited, a specific dealer, a flea market in a specific town."
+          },
+
+          "acquiredAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When the current owner got it, if they want to record that."
+          },
+
+          "tags": {
+            "type": "array",
+            "maxLength": 10,
+            "items": { "type": "string", "maxLength": 80, "maxGraphemes": 40 },
+            "description": "Owner-chosen labels. Intentionally free-form — the app view aggregates these rather than dictating them."
+          }
+        }
+      }
+    },
+
+    "photo": {
+      "type": "object",
+      "required": ["image", "alt"],
+      "description": "One photo. Mirrors the shape of app.bsky.embed.images#image so anyone who has worked with Bluesky embeds already knows this structure.",
+      "properties": {
+        "image": {
+          "type": "blob",
+          "accept": ["image/jpeg", "image/png", "image/webp"],
+          "maxSize": 2000000,
+          "description": "The image blob, stored in the author's own repo. 2MB ceiling — clients should resize before upload rather than relying on this to reject."
+        },
+        "alt": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Alt text. Required rather than optional, deliberately: this is a small community site and there is no reason to make accessibility opt-in."
+        },
+        "aspectRatio": { "type": "ref", "ref": "#aspectRatio" }
+      }
+    },
+
+    "aspectRatio": {
+      "type": "object",
+      "description": "Pixel dimensions of the source image, used to reserve layout space before the image loads. Ratio only — not a promise about the served resolution.",
+      "required": ["width", "height"],
+      "properties": {
+        "width":  { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

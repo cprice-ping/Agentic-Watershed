@@ -1,0 +1,12 @@
+{
+  "name": "onlypans-images",
+  "private": true,
+  "description": "Caching image proxy for OnlyPans photos stored as ATProto blobs",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.114.0"
+  }
+}
