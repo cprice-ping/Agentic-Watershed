@@ -57,13 +57,19 @@ You must respond in this exact JSON format (no markdown, no extra text):
   "reasoning": "Full reasoning: what data you saw, what thresholds were considered, why flagged or not"
 }
 
-Fire weather flag criteria (flag if ANY are true):
+Fire weather flag criteria — these apply if met at ANY point in the current
+reading OR the 48-hour trend data, not only the current instantaneous
+reading. A calm current moment during an ongoing extreme-weather event
+(e.g. a lull in sustained high winds) still warrants a flag if the 48h
+trend shows the threshold was crossed — conditions don't stop being
+dangerous just because this exact instant is quieter than the last few
+hours (flag if ANY are true):
 - Active Red Flag Warning or Fire Weather Watch
 - Temperature ≥ 90°F AND humidity ≤ 25% AND wind ≥ 15 mph
 - Humidity ≤ 15% regardless of other factors
 - Wind gusts ≥ 45 mph
 
-Flood flag criteria:
+Flood flag criteria (also current-or-48h-trend, same reasoning as above):
 - Active Flood Watch or Warning
 - Precipitation > 25mm in 1 hour
 - Precipitation > 50mm in 24 hours
