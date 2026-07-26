@@ -124,18 +124,28 @@ def call_openrouter(model: str, context: str) -> tuple[dict, float]:
             "type": "json_schema",
             "json_schema": {"name": "assessment", "strict": True, "schema": RESPONSE_SCHEMA},
         },
-        # Some models (Qwen3.5 included) emit a separate, often verbose
-        # `reasoning` field before `content`. Without a generous ceiling
-        # here, that reasoning can consume the whole budget and leave
-        # `content` truncated to an empty string — seen in practice, not
-        # hypothetical. 4096 is deliberately generous for a task whose
-        # actual answer is a few sentences.
-        "max_tokens": 4096,
+        # Confirmed in practice: qwen/qwen3.5-9b via OpenRouter always emits
+        # a long `reasoning` trace before `content`, and 4096 total tokens
+        # wasn't enough for the reasoning pass alone — content came back
+        # null with finish_reason="length" on every run, not just some.
+        # effort="none" asks OpenRouter to skip the reasoning pass entirely
+        # (not just hide it — "exclude": true would still generate it and
+        # burn the budget, which doesn't fix this). Some models reject a
+        # request to disable mandatory reasoning; if that happens here,
+        # max_tokens is still raised well above 4096 as a fallback so a
+        # shortened reasoning pass has room to leave content non-empty.
+        "reasoning": {"effort": "none"},
+        "max_tokens": 8192,
     }
     headers = {"Authorization": f"Bearer {api_key}"}
 
     start = time.monotonic()
     resp = httpx.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+    if resp.status_code >= 400:
+        # A model that requires mandatory reasoning may reject this
+        # outright (seen in the wild for some OpenRouter-routed models) —
+        # surface the actual error body instead of a bare traceback.
+        print(f"!!! OpenRouter returned {resp.status_code}: {resp.text[:1000]}")
     resp.raise_for_status()
     elapsed = time.monotonic() - start
     return resp.json(), elapsed
