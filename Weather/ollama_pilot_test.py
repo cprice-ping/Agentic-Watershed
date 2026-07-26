@@ -45,13 +45,17 @@ You run on a schedule with no human present. Your focus is on conditions relevan
   - Flood/precipitation risk (rainfall amounts, trends)
   - Any active NWS watches or warnings
 
-Fire weather flag criteria (flag if ANY are true):
+Fire weather flag criteria — these apply if met at ANY point in the current
+reading OR the 48-hour trend data, not only the current instantaneous
+reading. A calm current moment during an ongoing extreme-weather event
+still warrants a flag if the 48h trend shows the threshold was crossed
+(flag if ANY are true):
 - Active Red Flag Warning or Fire Weather Watch
 - Temperature >= 90F AND humidity <= 25% AND wind >= 15 mph
 - Humidity <= 15% regardless of other factors
 - Wind gusts >= 45 mph
 
-Flood flag criteria:
+Flood flag criteria (also current-or-48h-trend, same reasoning as above):
 - Active Flood Watch or Warning
 - Precipitation > 25mm in 1 hour
 - Precipitation > 50mm in 24 hours

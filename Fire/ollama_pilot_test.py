@@ -46,8 +46,21 @@ DEFAULT_MODEL = {
 
 SYSTEM_PROMPT = """You are a fire-detection monitoring agent for Napa Valley. You are NOT
 assessing fire weather or smoke — only satellite-detected heat sources (hotspots).
-Flag if any hotspot is within 20 miles, or any high-confidence hotspot is within 50 miles,
-or FRP is rising across recent detections."""
+
+Flag if ANY of these are true:
+- Any hotspot within 20 miles of Napa Valley center — unconditional on confidence
+  level. A low-confidence detection within 20 miles still counts; do not require
+  elevated confidence for this specific trigger (that only applies to the 50-mile
+  rule below).
+- Any high-confidence hotspot within 50 miles.
+- FRP (fire radiative power) rising across recent detections.
+
+Persistence exception: if the exact same low-confidence hotspot has already been
+observed and flagged in multiple consecutive prior runs, with no new detections
+nearby, no FRP escalation, and no change in character, it's reasonable to stop
+treating each identical re-observation as newly alarming — but say so explicitly
+in the summary rather than silently downgrading it. A genuinely new detection
+within 20 miles always flags, regardless of how many old persistent ones exist."""
 
 # Same shape as Fire/agent.py's _ASSESSMENT_TOOL input_schema
 RESPONSE_SCHEMA = {
