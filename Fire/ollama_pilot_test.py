@@ -124,6 +124,13 @@ def call_openrouter(model: str, context: str) -> tuple[dict, float]:
             "type": "json_schema",
             "json_schema": {"name": "assessment", "strict": True, "schema": RESPONSE_SCHEMA},
         },
+        # Some models (Qwen3.5 included) emit a separate, often verbose
+        # `reasoning` field before `content`. Without a generous ceiling
+        # here, that reasoning can consume the whole budget and leave
+        # `content` truncated to an empty string — seen in practice, not
+        # hypothetical. 4096 is deliberately generous for a task whose
+        # actual answer is a few sentences.
+        "max_tokens": 4096,
     }
     headers = {"Authorization": f"Bearer {api_key}"}
 
@@ -144,6 +151,24 @@ def extract_response_text(backend: str, result: dict) -> str | None:
         return result["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return None
+
+
+def check_finish_reason(backend: str, result: dict) -> None:
+    """Surface truncation explicitly instead of leaving 'empty response' to
+    be diagnosed by eye from the raw dump — this is exactly what caused the
+    long-reasoning-eats-the-budget failure seen in practice."""
+    if backend == "ollama":
+        done_reason = result.get("done_reason")
+        if done_reason and done_reason != "stop":
+            print(f"!!! done_reason='{done_reason}' — response likely truncated, not a clean finish")
+        return
+    try:
+        finish_reason = result["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError):
+        return
+    if finish_reason and finish_reason != "stop":
+        print(f"!!! finish_reason='{finish_reason}' — response likely truncated (e.g. hit max_tokens), "
+              f"not a clean finish. If this is 'length', raise max_tokens further.")
 
 
 def main() -> None:
@@ -168,6 +193,8 @@ def main() -> None:
 
     print(f"--- Raw response object ({elapsed:.1f}s) ---")
     print(json.dumps(result, indent=2)[:3000])
+
+    check_finish_reason(args.backend, result)
 
     response_text = extract_response_text(args.backend, result)
     print(f"\n--- response text ---")
