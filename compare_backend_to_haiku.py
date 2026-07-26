@@ -75,6 +75,11 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=8, help="Number of historical examples to test")
     parser.add_argument("--backend", choices=["ollama", "openrouter"], default="openrouter")
     parser.add_argument("--model", default=None)
+    parser.add_argument("--after", default=None,
+                         help="ISO date/datetime — exclude examples with observed_at before this. "
+                              "Use to skip history from before a since-fixed bug so its stale "
+                              "ground truth doesn't get counted as a model disagreement. e.g. "
+                              "--after 2026-07-15 to exclude pre-multi-source-fix Fire history.")
     args = parser.parse_args()
 
     data_path = args.data or DOMAIN_DATA[args.domain]
@@ -86,6 +91,16 @@ def main() -> None:
     model = args.model or mod.DEFAULT_MODEL[args.backend]
 
     examples = load_examples(data_path)
+    if args.after:
+        before_count = len(examples)
+        examples = [e for e in examples if e["observed_at"] >= args.after]
+        excluded = before_count - len(examples)
+        if excluded:
+            print(f"Excluded {excluded} example(s) before {args.after}")
+        if not examples:
+            print(f"No examples remain after filtering to --after {args.after}")
+            sys.exit(1)
+
     sample = spread_sample(examples, args.n)
     print(f"Testing {len(sample)} of {len(examples)} real historical examples "
           f"(evenly spread across {sample[0]['observed_at']} to {sample[-1]['observed_at']})\n")
