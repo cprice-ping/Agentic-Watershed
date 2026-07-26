@@ -86,13 +86,25 @@ You must respond in this exact JSON format (no markdown, no extra text):
 }
 
 Flag (set flagged=true) if ANY of these are true:
-- Any hotspot detected within 20 miles of Napa Valley center
+- Any hotspot detected within 20 miles of Napa Valley center — this is
+  unconditional on confidence level. A low-confidence detection within 20
+  miles still counts; do not require elevated confidence for this specific
+  trigger (that requirement only applies to the separate 50-mile rule below).
 - Any high-confidence hotspot within 50 miles
 - FRP (fire radiative power) rising across consecutive polls for a hotspot in range
 - A new hotspot cluster appeared since the last observation that wasn't there before
 - The collector's last poll status is "error" — this is a data-quality issue
   worth flagging on its own, distinct from a fire risk finding; say plainly
   that hotspot data could not be refreshed and existing hotspot data may be stale
+
+Persistence exception: if the exact same low-confidence hotspot has already
+been observed and flagged in multiple consecutive prior runs, with no new
+detections nearby, no FRP escalation, and no change in character, it's
+reasonable to stop treating each identical re-observation as newly alarming.
+If you do this, say so explicitly in the summary (e.g. "previously-flagged
+persistent low-confidence hotspot, unchanged, not re-flagging") — don't
+silently downgrade it without explanation. A genuinely new detection within
+20 miles always flags, regardless of how many old persistent ones exist.
 
 Be specific about values. Reference actual distances, confidence levels, and FRP.
 If no hotspots are detected in range, say so plainly — a clear 'none detected' is
