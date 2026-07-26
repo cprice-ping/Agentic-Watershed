@@ -31,9 +31,11 @@ import httpx
 DB_PATH = Path(__file__).parent / "data" / "weather.db"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+TOGETHER_URL = "https://api.together.xyz/v1/chat/completions"
 DEFAULT_MODEL = {
     "ollama": "qwen2.5:3b-instruct-q4_K_M",
     "openrouter": "qwen/qwen3.5-9b",
+    "together": "Qwen/Qwen3.5-9B",
 }
 
 # Same criteria as Weather/agent.py's real SYSTEM_PROMPT
@@ -193,12 +195,48 @@ def call_openrouter(model: str, context: str) -> tuple[dict, float]:
     return resp.json(), elapsed
 
 
+def call_together(model: str, context: str) -> tuple[dict, float]:
+    api_key = os.environ.get("TOGETHER_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("TOGETHER_API_KEY is not set — get one at https://api.together.ai/settings/api-keys")
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": context},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "assessment", "strict": True, "schema": RESPONSE_SCHEMA},
+        },
+        # Qwen3.5's own native thinking-mode toggle, set via the chat
+        # template rather than a cross-provider translated parameter —
+        # this is what OpenRouter's `reasoning.effort` gets (inconsistently)
+        # translated into depending on which upstream it routes to. Calling
+        # Together directly means this is the real mechanism, not a guess
+        # at how faithfully OpenRouter forwarded it.
+        "chat_template_kwargs": {"enable_thinking": False},
+        "max_tokens": 8192,
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    start = time.monotonic()
+    resp = httpx.post(TOGETHER_URL, json=payload, headers=headers, timeout=120)
+    if resp.status_code >= 400:
+        print(f"!!! Together returned {resp.status_code}: {resp.text[:1000]}")
+    resp.raise_for_status()
+    elapsed = time.monotonic() - start
+    return resp.json(), elapsed
+
+
 def extract_response_text(backend: str, result: dict) -> str | None:
-    """Both backends' raw response shapes differ — normalise to the raw
-    text the model produced, or None if it's not where expected."""
+    """Ollama's raw response shape differs from the others — normalise to
+    the raw text the model produced, or None if it's not where expected."""
     if backend == "ollama":
         return result.get("response")
-    # OpenRouter/OpenAI chat completions shape
+    # OpenRouter and Together both use the same OpenAI-compatible
+    # chat-completions shape
     try:
         return result["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
@@ -225,7 +263,7 @@ def check_finish_reason(backend: str, result: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", choices=["ollama", "openrouter"], default="ollama")
+    parser.add_argument("--backend", choices=["ollama", "openrouter", "together"], default="ollama")
     parser.add_argument("--model", default=None,
                         help="Model tag/id to test (default depends on --backend)")
     parser.add_argument("--think", action="store_true",
@@ -239,8 +277,10 @@ def main() -> None:
 
     if args.backend == "ollama":
         result, elapsed = call_ollama(model, context, args.think)
-    else:
+    elif args.backend == "openrouter":
         result, elapsed = call_openrouter(model, context)
+    else:
+        result, elapsed = call_together(model, context)
 
     print(f"--- Raw response object ({elapsed:.1f}s) ---")
     print(json.dumps(result, indent=2)[:3000])
