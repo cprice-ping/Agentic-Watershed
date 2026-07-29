@@ -375,9 +375,15 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
 
 def build_fire_record(row: dict, observed_at: str) -> dict:
     numerics = _fetch_fire_numerics(observed_at)
+    # node_config.json's fire.source (single string) became fire.sources
+    # (a list) when multi-satellite VIIRS polling was added — this crashed
+    # every fire publish attempt with a KeyError until caught, since this
+    # line was never updated to match. Joined into a single string here to
+    # avoid also changing the lexicon field's type from string to array.
+    sources = _NODE_CFG["fire"].get("sources") or [_NODE_CFG["fire"].get("source", "unknown")]
     fire_block: dict = {
         "bbox": _NODE_CFG["fire"]["bbox"],
-        "source": _NODE_CFG["fire"]["source"],
+        "source": ",".join(sources),
     }
     if "distance_mi" in numerics and numerics["distance_mi"] is not None:
         fire_block["nearestHotspotDistanceMi"] = _atproto_safe(numerics["distance_mi"])

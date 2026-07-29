@@ -73,6 +73,12 @@
             "description": "Present when observationType is aqi."
           },
 
+          "fire": {
+            "type": "ref",
+            "ref": "#fireData",
+            "description": "Present when observationType is fire."
+          },
+
           "synthesis": {
             "type": "ref",
             "ref": "#synthesisData",
@@ -209,6 +215,37 @@
         "reportingArea": {
           "type": "string",
           "description": "AirNow reporting area name. e.g. 'Napa'."
+        }
+      }
+    },
+
+    "fireData": {
+      "type": "object",
+      "description": "Fire-specific observation fields (NASA FIRMS satellite hotspot detection). All optional.",
+      "properties": {
+        "bbox": {
+          "type": "string",
+          "description": "Bounding box polled, \"west,south,east,north\"."
+        },
+        "source": {
+          "type": "string",
+          "description": "VIIRS satellite source(s) polled, comma-separated if more than one. e.g. 'VIIRS_SNPP_NRT,VIIRS_NOAA20_NRT,VIIRS_NOAA21_NRT'."
+        },
+        "nearestHotspotDistanceMi": {
+          "type": "string",
+          "description": "Distance in miles from home coordinates to the nearest hotspot used in this observation. Stringified — DAG-CBOR has no float type."
+        },
+        "nearestHotspotConfidence": {
+          "type": "string",
+          "description": "FIRMS confidence for the nearest hotspot: VIIRS uses l/n/h (low/nominal/high)."
+        },
+        "nearestHotspotFrpMw": {
+          "type": "string",
+          "description": "Fire Radiative Power (MW) for the nearest hotspot. Stringified — DAG-CBOR has no float type."
+        },
+        "hotspotCount": {
+          "type": "integer",
+          "description": "Count of hotspots within the 6-hour window around observedAt."
         }
       }
     },
