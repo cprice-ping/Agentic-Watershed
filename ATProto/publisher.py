@@ -446,8 +446,20 @@ def get_unpublished(domain: str, pub_conn: sqlite3.Connection) -> list[dict]:
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        # No LIMIT here on purpose. This used to cap at the 20 most recent
+        # rows by rowid — invisible under normal operation (each run only
+        # ever has 1-2 new rows to publish), but it's not a sliding cursor:
+        # once a real backlog exceeds 20 (a publish-side bug going unnoticed
+        # for a while, say), anything older than the newest 20 falls
+        # permanently outside the window and never gets picked up by any
+        # future run, even after the underlying bug is fixed. Confirmed in
+        # practice — 37 unpublished Fire rows piled up behind a publisher
+        # crash; only the newest 20 of them would ever have been recovered
+        # under the old query. A sane upper bound (10000) guards against a
+        # truly pathological runaway backlog without reintroducing the same
+        # silent-data-loss shape at a higher threshold.
         rows = conn.execute(
-            f"SELECT rowid AS source_id, * FROM {config['table']} ORDER BY rowid DESC LIMIT 20"
+            f"SELECT rowid AS source_id, * FROM {config['table']} ORDER BY rowid DESC LIMIT 10000"
         ).fetchall()
         conn.close()
     except sqlite3.Error as exc:
