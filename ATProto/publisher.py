@@ -375,9 +375,15 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
 
 def build_fire_record(row: dict, observed_at: str) -> dict:
     numerics = _fetch_fire_numerics(observed_at)
+    # node_config.json's fire.source (single string) became fire.sources
+    # (a list) when multi-satellite VIIRS polling was added — this crashed
+    # every fire publish attempt with a KeyError until caught, since this
+    # line was never updated to match. Joined into a single string here to
+    # avoid also changing the lexicon field's type from string to array.
+    sources = _NODE_CFG["fire"].get("sources") or [_NODE_CFG["fire"].get("source", "unknown")]
     fire_block: dict = {
         "bbox": _NODE_CFG["fire"]["bbox"],
-        "source": _NODE_CFG["fire"]["source"],
+        "source": ",".join(sources),
     }
     if "distance_mi" in numerics and numerics["distance_mi"] is not None:
         fire_block["nearestHotspotDistanceMi"] = _atproto_safe(numerics["distance_mi"])
@@ -440,8 +446,20 @@ def get_unpublished(domain: str, pub_conn: sqlite3.Connection) -> list[dict]:
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        # No LIMIT here on purpose. This used to cap at the 20 most recent
+        # rows by rowid — invisible under normal operation (each run only
+        # ever has 1-2 new rows to publish), but it's not a sliding cursor:
+        # once a real backlog exceeds 20 (a publish-side bug going unnoticed
+        # for a while, say), anything older than the newest 20 falls
+        # permanently outside the window and never gets picked up by any
+        # future run, even after the underlying bug is fixed. Confirmed in
+        # practice — 37 unpublished Fire rows piled up behind a publisher
+        # crash; only the newest 20 of them would ever have been recovered
+        # under the old query. A sane upper bound (10000) guards against a
+        # truly pathological runaway backlog without reintroducing the same
+        # silent-data-loss shape at a higher threshold.
         rows = conn.execute(
-            f"SELECT rowid AS source_id, * FROM {config['table']} ORDER BY rowid DESC LIMIT 20"
+            f"SELECT rowid AS source_id, * FROM {config['table']} ORDER BY rowid DESC LIMIT 10000"
         ).fetchall()
         conn.close()
     except sqlite3.Error as exc:
