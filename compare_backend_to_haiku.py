@@ -74,7 +74,7 @@ def main() -> None:
     parser.add_argument("--data", type=Path, default=None,
                         help="Path to training_examples.jsonl (default: <Domain>/data/training_examples.jsonl)")
     parser.add_argument("--n", type=int, default=8, help="Number of historical examples to test")
-    parser.add_argument("--backend", choices=["ollama", "openrouter", "together"], default="openrouter")
+    parser.add_argument("--backend", choices=["ollama", "openrouter", "together", "lmstudio"], default="openrouter")
     parser.add_argument("--model", default=None)
     parser.add_argument("--after", default=None,
                          help="ISO date/datetime — exclude examples with observed_at before this. "
@@ -122,6 +122,8 @@ def main() -> None:
                 result, elapsed = mod.call_ollama(model, context, think=False)
             elif args.backend == "openrouter":
                 result, elapsed = mod.call_openrouter(model, context)
+            elif args.backend == "lmstudio":
+                result, elapsed = mod.call_lmstudio(model, context)
             else:
                 result, elapsed = mod.call_together(model, context)
         except Exception as exc:

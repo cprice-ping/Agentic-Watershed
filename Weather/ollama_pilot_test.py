@@ -32,10 +32,16 @@ DB_PATH = Path(__file__).parent / "data" / "weather.db"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 TOGETHER_URL = "https://api.together.xyz/v1/chat/completions"
+# LM Studio's OpenAI-compatible local server. Override with LMSTUDIO_HOST env
+# var when running this script on a different machine than the one serving
+# the model (e.g. this on the Pi, LM Studio on a Mac on the same LAN) —
+# LMSTUDIO_HOST=192.168.1.50:1234
+LMSTUDIO_URL = f"http://{os.environ.get('LMSTUDIO_HOST', 'localhost:1234')}/v1/chat/completions"
 DEFAULT_MODEL = {
     "ollama": "qwen2.5:3b-instruct-q4_K_M",
     "openrouter": "qwen/qwen3.5-9b",
     "together": "Qwen/Qwen3.5-9B",
+    "lmstudio": "google/gemma-4-31b-it",
 }
 
 # Same criteria as Weather/agent.py's real SYSTEM_PROMPT
@@ -244,6 +250,29 @@ def call_together(model: str, context: str) -> tuple[dict, float]:
     return resp.json(), elapsed
 
 
+def call_lmstudio(model: str, context: str) -> tuple[dict, float]:
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": context},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "assessment", "strict": True, "schema": RESPONSE_SCHEMA},
+        },
+        "max_tokens": 8192,
+    }
+
+    start = time.monotonic()
+    resp = httpx.post(LMSTUDIO_URL, json=payload, timeout=300)
+    if resp.status_code >= 400:
+        print(f"!!! LM Studio returned {resp.status_code}: {resp.text[:1000]}")
+    resp.raise_for_status()
+    elapsed = time.monotonic() - start
+    return resp.json(), elapsed
+
+
 def extract_response_text(backend: str, result: dict) -> str | None:
     """Ollama's raw response shape differs from the others — normalise to
     the raw text the model produced, or None if it's not where expected."""
@@ -277,7 +306,7 @@ def check_finish_reason(backend: str, result: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", choices=["ollama", "openrouter", "together"], default="ollama")
+    parser.add_argument("--backend", choices=["ollama", "openrouter", "together", "lmstudio"], default="ollama")
     parser.add_argument("--model", default=None,
                         help="Model tag/id to test (default depends on --backend)")
     parser.add_argument("--think", action="store_true",
@@ -293,6 +322,8 @@ def main() -> None:
         result, elapsed = call_ollama(model, context, args.think)
     elif args.backend == "openrouter":
         result, elapsed = call_openrouter(model, context)
+    elif args.backend == "lmstudio":
+        result, elapsed = call_lmstudio(model, context)
     else:
         result, elapsed = call_together(model, context)
 
