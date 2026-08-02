@@ -227,7 +227,7 @@ def call_lmstudio(model: str, context: str) -> tuple[dict, float]:
     }
 
     start = time.monotonic()
-    resp = httpx.post(LMSTUDIO_URL, json=payload, timeout=300)
+    resp = httpx.post(LMSTUDIO_URL, json=payload, timeout=900)
     if resp.status_code >= 400:
         print(f"!!! LM Studio returned {resp.status_code}: {resp.text[:1000]}")
     resp.raise_for_status()
