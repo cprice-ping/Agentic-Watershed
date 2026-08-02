@@ -190,7 +190,7 @@ def call_together(model: str, context: str) -> tuple[dict, float]:
     headers = {"Authorization": f"Bearer {api_key}"}
 
     start = time.monotonic()
-    resp = httpx.post(TOGETHER_URL, json=payload, headers=headers, timeout=120)
+    resp = httpx.post(TOGETHER_URL, json=payload, headers=headers, timeout=300)
     if resp.status_code >= 400:
         print(f"!!! Together returned {resp.status_code}: {resp.text[:1000]}")
     resp.raise_for_status()
