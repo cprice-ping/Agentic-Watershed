@@ -21,6 +21,7 @@ import argparse
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 
 BASE = Path(__file__).parent
@@ -112,6 +113,9 @@ def main() -> None:
     for i, example in enumerate(sample, 1):
         context = example["context"]
         real = example["response"]
+
+        if i > 1 and args.backend == "together":
+            time.sleep(3)
 
         try:
             if args.backend == "ollama":
