@@ -81,6 +81,11 @@ def main() -> None:
                               "Use to skip history from before a since-fixed bug so its stale "
                               "ground truth doesn't get counted as a model disagreement. e.g. "
                               "--after 2026-07-15 to exclude pre-multi-source-fix Fire history.")
+    parser.add_argument("--flagged", choices=["true", "false"], default=None,
+                         help="Only test examples where Haiku's real ground-truth 'flagged' value "
+                              "matches this. Use --flagged false to specifically probe the "
+                              "not-flagged/discrimination case, which an evenly-spread sample can "
+                              "under-represent if it happens to land during a sustained event.")
     args = parser.parse_args()
 
     data_path = args.data or DOMAIN_DATA[args.domain]
@@ -100,6 +105,17 @@ def main() -> None:
             print(f"Excluded {excluded} example(s) before {args.after}")
         if not examples:
             print(f"No examples remain after filtering to --after {args.after}")
+            sys.exit(1)
+
+    if args.flagged is not None:
+        want = args.flagged == "true"
+        before_count = len(examples)
+        examples = [e for e in examples if bool(e["response"]["flagged"]) == want]
+        excluded = before_count - len(examples)
+        if excluded:
+            print(f"Excluded {excluded} example(s) with flagged != {want}")
+        if not examples:
+            print(f"No examples remain with flagged == {want}")
             sys.exit(1)
 
     sample = spread_sample(examples, args.n)
