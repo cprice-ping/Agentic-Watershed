@@ -20,17 +20,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-# (backend, model) — kept deliberately small and reasoning-oriented, since
-# the question being asked is "does this model infer the unwritten intent
-# of an ambiguous rule," not "can it follow an explicit one." Some of these
-# are too large for local LM Studio at reasonable speed and go via Together
-# instead — the together backend already has 429 retry/backoff wired in.
+# (backend, model, think) — kept deliberately small and reasoning-oriented,
+# since the question being asked is "does this model infer the unwritten
+# intent of an ambiguous rule," not "can it follow an explicit one." Some of
+# these are too large for local LM Studio at reasonable speed and go via
+# Together instead — the together backend already has 429 retry/backoff
+# wired in.
+#
+# think=True is essential for QwQ/R1-distill/"-Thinking" models — forcing
+# their reasoning off either gets silently ignored or defeats the entire
+# point of testing them (see call_together's docstring). think is ignored
+# for non-together backends.
 CANDIDATES = [
-    ("lmstudio", "google/gemma-4-31b-qat"),   # already-tested baseline, for a like-for-like anchor
-    ("together", "Qwen/QwQ-32B"),
-    ("together", "Qwen/Qwen3-Next-80B-A3B-Thinking"),
-    ("together", "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"),
-    ("together", "meta-llama/Llama-4-Scout-17B-16E-Instruct"),
+    ("lmstudio", "google/gemma-4-31b-qat", False),   # already-tested baseline, for a like-for-like anchor
+    ("together", "Qwen/QwQ-32B", True),
+    ("together", "Qwen/Qwen3-Next-80B-A3B-Thinking", True),
+    ("together", "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", True),
+    ("together", "meta-llama/Llama-4-Scout-17B-16E-Instruct", False),
 ]
 
 BASE = Path(__file__).parent
@@ -48,9 +54,10 @@ def main() -> None:
     results_dir = BASE / "sweep_results"
     results_dir.mkdir(exist_ok=True)
 
-    for backend, model in CANDIDATES:
+    for backend, model, think in CANDIDATES:
         safe_model = model.replace("/", "_")
-        log_path = results_dir / f"{args.domain}_{backend}_{safe_model}.log"
+        suffix = "_think" if think else ""
+        log_path = results_dir / f"{args.domain}_{backend}_{safe_model}{suffix}.log"
 
         cmd = [
             sys.executable, str(COMPARE_SCRIPT),
@@ -63,6 +70,8 @@ def main() -> None:
             cmd += ["--after", args.after]
         if args.flagged:
             cmd += ["--flagged", args.flagged]
+        if think and backend == "together":
+            cmd += ["--think"]
 
         print(f"\n{'=' * 70}")
         print(f"Running: {backend} / {model}")

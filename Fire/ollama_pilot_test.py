@@ -169,7 +169,7 @@ def call_openrouter(model: str, context: str) -> tuple[dict, float]:
     return resp.json(), elapsed
 
 
-def call_together(model: str, context: str) -> tuple[dict, float]:
+def call_together(model: str, context: str, think: bool = False) -> tuple[dict, float]:
     api_key = os.environ.get("TOGETHER_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("TOGETHER_API_KEY is not set — get one at https://api.together.ai/settings/api-keys")
@@ -184,15 +184,19 @@ def call_together(model: str, context: str) -> tuple[dict, float]:
             "type": "json_schema",
             "json_schema": {"name": "assessment", "strict": True, "schema": RESPONSE_SCHEMA},
         },
+        # Off by default (see Weather/ollama_pilot_test.py's call_together for
+        # the full rationale) — reasoning-first models should pass think=True
+        # with a bigger token budget instead of having it silently forced off.
+        "max_tokens": 24000 if think else 8192,
+    }
+    if not think:
         # Qwen3.5's own native thinking-mode toggle, set via the chat
         # template rather than a cross-provider translated parameter —
         # this is what OpenRouter's `reasoning.effort` gets (inconsistently)
         # translated into depending on which upstream it routes to. Calling
         # Together directly means this is the real mechanism, not a guess
         # at how faithfully OpenRouter forwarded it.
-        "chat_template_kwargs": {"enable_thinking": False},
-        "max_tokens": 8192,
-    }
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     headers = {"Authorization": f"Bearer {api_key}"}
 
     start = time.monotonic()

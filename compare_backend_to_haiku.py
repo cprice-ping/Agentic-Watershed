@@ -86,6 +86,12 @@ def main() -> None:
                               "matches this. Use --flagged false to specifically probe the "
                               "not-flagged/discrimination case, which an evenly-spread sample can "
                               "under-represent if it happens to land during a sustained event.")
+    parser.add_argument("--think", action="store_true",
+                         help="[together only] Let a reasoning-first model (QwQ, R1-distill, "
+                              "'-Thinking' variants) actually think, with a bigger max_tokens "
+                              "budget. Off by default to avoid the reasoning-eats-the-budget "
+                              "truncation seen with Qwen3.5-9B — but forcing it off for a model "
+                              "whose whole point is reasoning defeats the comparison.")
     args = parser.parse_args()
 
     data_path = args.data or DOMAIN_DATA[args.domain]
@@ -141,7 +147,7 @@ def main() -> None:
             elif args.backend == "lmstudio":
                 result, elapsed = mod.call_lmstudio(model, context)
             else:
-                result, elapsed = mod.call_together(model, context)
+                result, elapsed = mod.call_together(model, context, think=args.think)
         except Exception as exc:
             print(f"[{i}/{len(sample)}] {example['observed_at']}: REQUEST FAILED — {exc}")
             failed += 1
