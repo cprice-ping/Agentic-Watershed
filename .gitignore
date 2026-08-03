@@ -32,3 +32,4 @@ env/
 .idea/
 *.swp
 *.swo
+sweep_results/
