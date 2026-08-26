@@ -78,6 +78,12 @@ TRUSTED_PUBLISHERS: dict[str, str] = (
 PLC_DIRECTORY = "https://plc.directory"
 _pds_cache: dict[str, str] = {}
 
+# Upper bound on listRecords pages walked per publisher, at 100 records a
+# page. Guards against a full history scan on every run once a node's repo
+# is large; see the note in fetch_from_publisher() for why stopping here
+# cannot drop a record that is still inside the lookback window.
+MAX_PAGES = 50
+
 
 def resolve_pds(did: str) -> str:
     if did in _pds_cache:
@@ -189,8 +195,9 @@ def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
     Returns (fetched, stored) counts.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    fetched = stored = 0
+    fetched = stored = skipped = 0
     cursor = None
+    pages = 0
 
     pds_host = resolve_pds(did)
     log.info("Fetching records from %s (%s) via %s...", node_id, did, pds_host)
@@ -218,7 +225,22 @@ def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
                 record = item.get("value", {})
                 at_uri = item.get("uri", "")
 
-                # Stop if we've gone past the lookback window
+                # Skip records outside the lookback window — but keep going.
+                #
+                # This used to `return` on the first out-of-window record, as
+                # an early exit that assumed listRecords' newest-first rkey
+                # order matches observedAt order. That holds only while every
+                # record is published shortly after it is observed. A backfill
+                # breaks it: records published late carry the newest rkeys in
+                # the repo but old observedAt values, so the first page is old
+                # observations sitting in front of genuinely recent ones.
+                #
+                # When that happened (46 Fire records republished at once
+                # after the #44 publisher crash was fixed), the early exit
+                # would have returned on the first backfilled record and
+                # starved the run of every watershed/weather/aqi record
+                # published in the window — a Synthesis pass over almost no
+                # input, posted to Bluesky. Filter instead of truncate.
                 observed_at_str = record.get("observedAt", "")
                 if observed_at_str:
                     try:
@@ -226,7 +248,8 @@ def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
                             observed_at_str.replace("Z", "+00:00")
                         )
                         if observed_at < cutoff:
-                            return fetched, stored
+                            skipped += 1
+                            continue
                     except ValueError:
                         pass
 
@@ -236,9 +259,27 @@ def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
                     stored += 1
                     log_record(record, node_id, is_new=True)
 
+            pages += 1
             cursor = data.get("cursor")
             if not cursor:
                 break
+
+            # Bound the walk so a large repo can't turn every run into a full
+            # history scan. Safe to stop here: observedAt is never later than
+            # the moment a record was created, and pages arrive newest-created
+            # first, so anything still inside the window is among the newest
+            # records — never thousands back.
+            if pages >= MAX_PAGES:
+                log.warning(
+                    "%s: stopped after %d pages (%d records) — increase "
+                    "MAX_PAGES if this node's repo has grown past it",
+                    node_id, pages, pages * 100,
+                )
+                break
+
+    if skipped:
+        log.info("%s: skipped %d record(s) outside the %.0fh window",
+                 node_id, skipped, lookback_hours)
 
     return fetched, stored
 
