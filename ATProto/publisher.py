@@ -573,6 +573,14 @@ def main() -> None:
     # Fire is last here, which is the only reason the fire.source KeyError
     # (fixed in #44) cost just fire and not weather and aqi too. Ordering
     # shouldn't be what protects the other domains.
+    # The per-domain and summary counts have to say which mode produced
+    # them. They read "Published N record(s)" in dry-run too, since the
+    # count is incremented either way and main() never checked the flag —
+    # so a dry run of the Fire backlog reported "Published 46 record(s)"
+    # having published nothing at all. Misreporting a no-op as a write is
+    # the opposite of what a dry run is for.
+    verb = "Would publish" if args.dry_run else "Published"
+
     total = 0
     failed: list[str] = []
     for domain in domains:
@@ -585,18 +593,22 @@ def main() -> None:
             log.exception("[%s] Unhandled error — skipping domain", domain)
             failed.append(domain)
             continue
-        log.info("[%s] Published %d record(s)", domain, count)
+        log.info("[%s] %s %d record(s)", domain, verb, count)
         total += count
+
+    label   = "Dry run" if args.dry_run else "Publisher"
+    outcome = (f"would publish {total} record(s), nothing written"
+               if args.dry_run else f"{total} total records published")
 
     if failed:
         # Still exit non-zero. Isolating the failure must not turn a broken
         # run into a silent success for cron — this bug ran twice a day for
         # a month and was caught by a gap in the Viewer, not by an alarm.
-        log.error("=== Publisher finished with errors — %d record(s) published, "
-                  "failed domains: %s ===", total, ", ".join(failed))
+        log.error("=== %s finished with errors — %s, failed domains: %s ===",
+                  label, outcome, ", ".join(failed))
         sys.exit(1)
 
-    log.info("=== Publisher complete — %d total records published ===", total)
+    log.info("=== %s complete — %s ===", label, outcome)
 
 
 if __name__ == "__main__":
