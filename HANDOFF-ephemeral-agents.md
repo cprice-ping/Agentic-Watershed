@@ -1,4 +1,17 @@
-# Ephemeral investigator agents — starting point for a new session
+# Ephemeral investigator agents — shelved
+
+> **Status (2026-08-26): not being built.** The design below still reads as
+> sound, and the "honest framing of the motivation" section is why it was
+> shelved rather than scheduled — Napa does not need this, and the case for
+> building it was always about demonstrating identity mechanics rather than
+> producing better advisories. The likeliest future home is as part of the
+> multi-model thinking work, where a second model's disagreement is a
+> plausible trigger for "this needs investigating" — a better motivation
+> than any cross-domain rule enumerated here.
+>
+> Kept because the analysis is reusable, not as queued work. Two things in
+> it are live regardless of spawning and are called out under
+> **Findings that outlive the shelving** at the bottom.
 
 ## Context
 
@@ -197,3 +210,71 @@ Read alongside:
 
 Resolve open question #2 (charter lifetime vs. identifier lifetime) before starting
 step 2 — it constrains the registry's data model rather than merely configuring it.
+
+---
+
+## Findings that outlive the shelving
+
+Verified against both repos on 2026-08-26. Spawning is shelved; these are not.
+
+### 1. Nothing binds a registry `did:web` to an ATProto `did:plc` — this blocks Step 1
+
+Step 1 (provision Synthesis against the Registry) is independently valuable and
+still on the table. But it cannot be done as written:
+
+> *"Replace the static `TRUSTED_PUBLISHERS` lookup in `subscriber.py` with
+> `RegistryClient.verify(did)` ... identity layer only."*
+
+The registry mints `did:web` **exclusively** (`app/did.py`) and has no concept of
+ATProto at all — grepping `Agentic-DID-Registry` for `did:plc`, `atproto`, or
+`plc.directory` returns nothing across every `.py` and `.md` file. Meanwhile every
+DID on the bus is a `did:plc`, and `Synthesis/subscriber.py:85` hard-rejects
+anything else:
+
+```python
+if not did.startswith("did:plc:"):
+    raise ValueError(f"Unsupported DID method: {did}")
+```
+
+So `verify(did)` would be handed a `did:plc` the registry has never heard of. Each
+agent ends up with **two identifiers and nothing connecting them.**
+
+This is sharper than a type mismatch. `ATProto/pds/README.md:101` notes the PDS runs
+with `PDS_INVITE_REQUIRED=false`, so *anyone* can mint a `did:plc` on it. A `did:plc`
+is therefore not evidence of anything on its own — the hardcoded `TRUSTED_PUBLISHERS`
+allowlist is currently the only thing compensating for that. Any move to registry
+verification has to route trust through the `did:web` charter, not the `did:plc`.
+
+Consequence for scope: Step 1's *"ATProto record structure, lexicon ... stay
+unchanged"* does not hold. `registry_client.sign(record, did)` appends a `proof`
+property, and the lexicon declares neither `proof` nor any agent-DID field (its
+properties are `observedAt, nodeId, observationType, summary, flagged, flagReason,
+agentModel, watershed, weather, aqi, fire, synthesis`). Binding the two identities
+requires a lexicon change **in Step 1**, not Step 3.
+
+Sketch of the likely shape, not yet decided: the charter carries the agent's
+`did:plc` as a claim; records carry the `did:web` plus a proof; `subscriber.py`
+verifies the proof, resolves the charter, and confirms the charter's bound `did:plc`
+matches the repo the record actually arrived from. That makes the open PDS harmless —
+an unauthorised `did:plc` has no charter binding it.
+
+This should be treated as **open question #0** for `HANDOFF-watershed-registry.md`,
+ahead of its Step 1.
+
+### 2. The registry already anticipates agent-issued vouchers
+
+Step 2 is smaller than even this doc claims. `app/voucher.py:29-31` designs the seam
+in explicitly:
+
+> *"issuer set. Today that set is operator keys. Additional trusted issuers (a
+> SPIFFE/SPIRE trust domain, a cloud workload-OIDC issuer, GitHub OIDC, a TPM
+> attestation service, ...) can be added later as a JWKS + issuer-allowlist change"*
+
+Recorded so that whoever revisits this doesn't re-derive it.
+
+### 3. Filing correction
+
+`provision_watershed.py` and `registry_client.py` are referenced bare above, which
+reads as if they live here. They are both in **`Agentic-DID-Registry`**, not in this
+repo. The `AGENTS` list in `provision_watershed.py:38` does have exactly the four
+domain agents and no Synthesis entry, as claimed.
