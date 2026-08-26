@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -565,11 +566,35 @@ def main() -> None:
     else:
         session = None
 
+    # Each domain is published independently. An unexpected error in one
+    # domain's builder used to abort the whole run, so every domain after
+    # it in the list silently published nothing — the failure looked like a
+    # single-domain problem in the log while actually costing all of them.
+    # Fire is last here, which is the only reason the fire.source KeyError
+    # (fixed in #44) cost just fire and not weather and aqi too. Ordering
+    # shouldn't be what protects the other domains.
     total = 0
+    failed: list[str] = []
     for domain in domains:
-        count = publish_domain(domain, session, pub_conn, dry_run=args.dry_run)
+        try:
+            count = publish_domain(domain, session, pub_conn, dry_run=args.dry_run)
+        except Exception:
+            # log.exception keeps the traceback in publisher.log — that
+            # traceback is how #44 was diagnosed, so isolation must not
+            # come at the cost of losing it.
+            log.exception("[%s] Unhandled error — skipping domain", domain)
+            failed.append(domain)
+            continue
         log.info("[%s] Published %d record(s)", domain, count)
         total += count
+
+    if failed:
+        # Still exit non-zero. Isolating the failure must not turn a broken
+        # run into a silent success for cron — this bug ran twice a day for
+        # a month and was caught by a gap in the Viewer, not by an alarm.
+        log.error("=== Publisher finished with errors — %d record(s) published, "
+                  "failed domains: %s ===", total, ", ".join(failed))
+        sys.exit(1)
 
     log.info("=== Publisher complete — %d total records published ===", total)
 
