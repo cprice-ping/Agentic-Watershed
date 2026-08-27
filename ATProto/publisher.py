@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +76,36 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
 log = logging.getLogger("atproto.publisher")
+
+
+def _git_version() -> str:
+    """Branch and commit of the checkout this run came from, e.g. "main @ 42c0edd".
+
+    Deploy drift is invisible otherwise. The #44 Fire crash sat fixed in
+    main for four weeks while the Pi ran a pre-fix checkout, and nothing in
+    publisher.log said which code produced any given run — it was found by
+    noticing a hole in the Viewer. Branch is included because that was the
+    actual fault: cron runs whatever publisher.py is in the tree and does
+    not care which branch it belongs to.
+
+    Best-effort by design. Returns "unknown" when the answer can't be had —
+    no git binary, or the Docker image, which has no .git.
+    """
+    def _git(*args: str) -> str:
+        try:
+            out = subprocess.run(
+                ("git", "-C", str(BASE), *args),
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            return out.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    revision = _git("describe", "--always", "--dirty", "--abbrev=7")
+    if not revision:
+        return "unknown"
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    return f"{branch} @ {revision}" if branch else revision
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +589,7 @@ def main() -> None:
     )
 
     log.info("=== ATProto Publisher starting ===")
+    log.info("Code version: %s", _git_version())
     log.info("Domains: %s  |  Dry run: %s", domains, args.dry_run)
 
     if not args.dry_run:
