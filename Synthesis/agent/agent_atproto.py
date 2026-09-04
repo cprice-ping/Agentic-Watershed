@@ -840,7 +840,8 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
 
 
 def write_observation(obs: dict, dry_run: bool = False,
-                      synthesis_db: Path = _DEFAULT_SYNTHESIS_DB) -> None:
+                      synthesis_db: Path = _DEFAULT_SYNTHESIS_DB,
+                      model: str | None = None) -> None:
     if dry_run:
         log.info("[DRY RUN] Would write synthesis observation:")
         log.info("  Summary:      %s", obs.get("summary", ""))
@@ -858,23 +859,27 @@ def write_observation(obs: dict, dry_run: bool = False,
             fire_risk TEXT, flood_risk TEXT,
             air_quality_risk TEXT, overall_risk TEXT,
             flagged INTEGER NOT NULL DEFAULT 0,
-            flag_reason TEXT, reasoning TEXT
+            flag_reason TEXT, reasoning TEXT,
+            model TEXT
         )
     """)
+    # Older synthesis.db files predate the model column.
+    if "model" not in {r[1] for r in conn.execute("PRAGMA table_info(synthesis_observations)")}:
+        conn.execute("ALTER TABLE synthesis_observations ADD COLUMN model TEXT")
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """
         INSERT INTO synthesis_observations (
             observed_at, summary, fire_risk, flood_risk,
-            air_quality_risk, overall_risk, flagged, flag_reason, reasoning
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            air_quality_risk, overall_risk, flagged, flag_reason, reasoning, model
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             now, obs.get("summary", ""),
             obs.get("fire_risk", "none"), obs.get("flood_risk", "none"),
             obs.get("air_quality_risk", "none"), obs.get("overall_risk", "none"),
             int(obs.get("flagged", False)),
-            obs.get("flag_reason", ""), obs.get("reasoning", ""),
+            obs.get("flag_reason", ""), obs.get("reasoning", ""), model,
         ),
     )
     conn.commit()
@@ -929,7 +934,8 @@ def main() -> None:
     # Write predictions BEFORE the synthesis observation — the ledger is updated
     # even if the container is interrupted before publisher.py runs.
     write_predictions(observation, synthesis_db=synthesis_db, dry_run=args.dry_run)
-    write_observation(observation, dry_run=args.dry_run, synthesis_db=synthesis_db)
+    write_observation(observation, dry_run=args.dry_run, synthesis_db=synthesis_db,
+                      model=MODELS[args.model])
     log.info("=== Synthesis Agent (ATProto) run complete ===")
 
 

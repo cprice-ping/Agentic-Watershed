@@ -15,6 +15,7 @@ Tools:
 
 import argparse
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,6 +44,31 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 # DB helper
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Model provenance
+# ---------------------------------------------------------------------------
+
+def _agent_model() -> str | None:
+    """Model id the agent is running, from AGENT_MODEL in the environment.
+
+    Deliberately taken from the environment rather than a tool argument. This
+    value ends up in the published record's `agentModel` field, which exists
+    so consumers can weight an observation by the capability of whatever
+    produced it — a claim the model must not be able to make about itself.
+    agent.py sets it before spawning this server; the LLM never sees it.
+
+    None when unset, so the row records "we don't know" instead of a guess.
+    """
+    return os.environ.get("AGENT_MODEL", "").strip() or None
+
+
+def _ensure_model_column(conn: sqlite3.Connection) -> None:
+    """Add agent_observations.model to databases created before it existed."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_observations)")}
+    if "model" not in cols:
+        conn.execute("ALTER TABLE agent_observations ADD COLUMN model TEXT")
+
 
 def _db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -300,12 +326,13 @@ def write_agent_observation(
     """
     now = datetime.now(timezone.utc).isoformat()
     with _db() as conn:
+        _ensure_model_column(conn)
         conn.execute(
             """
-            INSERT INTO agent_observations (observed_at, summary, flagged, reasoning)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO agent_observations (observed_at, summary, flagged, reasoning, model)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (now, summary, int(flagged), reasoning),
+            (now, summary, int(flagged), reasoning, _agent_model()),
         )
         conn.commit()
     return json.dumps({"status": "ok", "observed_at": now})

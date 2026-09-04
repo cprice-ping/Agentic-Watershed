@@ -105,7 +105,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             summary         TEXT NOT NULL,
             flagged         INTEGER NOT NULL DEFAULT 0,  -- 0 or 1
             reasoning       TEXT,
-            raw_context     TEXT                         -- JSON snapshot agent used
+            raw_context     TEXT,                        -- JSON snapshot agent used
+            model           TEXT                         -- model id that produced it
         );
 
         -- One row per collector run, written unconditionally (success or

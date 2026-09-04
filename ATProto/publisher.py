@@ -321,7 +321,7 @@ def build_watershed_record(row: dict, observed_at: str) -> dict:
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
-        "agentModel": "claude-haiku-4-5",
+        "agentModel": row.get("model") or "unknown",
         "watershed": watershed_block,
     }
 
@@ -346,7 +346,7 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
-        "agentModel": "claude-haiku-4-5",
+        "agentModel": row.get("model") or "unknown",
         "weather": weather_block,
     }
 
@@ -369,7 +369,7 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
-        "agentModel": "claude-haiku-4-5",
+        "agentModel": row.get("model") or "unknown",
         "aqi": aqi_block,
     }
 
@@ -403,7 +403,7 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": "",
-        "agentModel": "claude-haiku-4-5",
+        "agentModel": row.get("model") or "unknown",
         "fire": fire_block,
     }
 
