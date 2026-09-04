@@ -56,12 +56,16 @@ _SYNTH_CFG = json.loads(_SYNTH_CFG_PATH.read_text()) if _SYNTH_CFG_PATH.exists()
 REGION     = _SYNTH_CFG.get("region", "Napa Valley, California")
 
 MODELS = {
-    "haiku":  "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
+    "haiku":  "claude-haiku-4-5",
+    "sonnet": "claude-sonnet-5",
     "opus":   "claude-opus-4-6",
 }
 
 DEFAULT_MODEL = "sonnet"
+
+# Token counts from the most recent reason() call, recorded with the
+# observation so monthly spend can be attributed rather than estimated.
+_LAST_USAGE: dict[str, int | None] = {"input_tokens": None, "output_tokens": None}
 
 # ---------------------------------------------------------------------------
 # Prediction resolution constants (Phase 3)
@@ -823,6 +827,13 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
         tool_choice={"type": "tool", "name": "submit_assessment"},
     )
 
+    usage = getattr(message, "usage", None)
+    if usage is not None:
+        _LAST_USAGE["input_tokens"] = getattr(usage, "input_tokens", None)
+        _LAST_USAGE["output_tokens"] = getattr(usage, "output_tokens", None)
+        log.info("Tokens: %s in / %s out",
+                 _LAST_USAGE["input_tokens"], _LAST_USAGE["output_tokens"])
+
     if verbose:
         log.info("Raw Claude response:\n%s", message.content)
 
@@ -860,19 +871,24 @@ def write_observation(obs: dict, dry_run: bool = False,
             air_quality_risk TEXT, overall_risk TEXT,
             flagged INTEGER NOT NULL DEFAULT 0,
             flag_reason TEXT, reasoning TEXT,
-            model TEXT
+            model TEXT, input_tokens INTEGER, output_tokens INTEGER
         )
     """)
     # Older synthesis.db files predate the model column.
-    if "model" not in {r[1] for r in conn.execute("PRAGMA table_info(synthesis_observations)")}:
-        conn.execute("ALTER TABLE synthesis_observations ADD COLUMN model TEXT")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(synthesis_observations)")}
+    for _name, _decl in (("model", "TEXT"),
+                         ("input_tokens", "INTEGER"),
+                         ("output_tokens", "INTEGER")):
+        if _name not in cols:
+            conn.execute(f"ALTER TABLE synthesis_observations ADD COLUMN {_name} {_decl}")
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """
         INSERT INTO synthesis_observations (
             observed_at, summary, fire_risk, flood_risk,
-            air_quality_risk, overall_risk, flagged, flag_reason, reasoning, model
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            air_quality_risk, overall_risk, flagged, flag_reason, reasoning, model,
+            input_tokens, output_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             now, obs.get("summary", ""),
@@ -880,6 +896,7 @@ def write_observation(obs: dict, dry_run: bool = False,
             obs.get("air_quality_risk", "none"), obs.get("overall_risk", "none"),
             int(obs.get("flagged", False)),
             obs.get("flag_reason", ""), obs.get("reasoning", ""), model,
+            _LAST_USAGE["input_tokens"], _LAST_USAGE["output_tokens"],
         ),
     )
     conn.commit()

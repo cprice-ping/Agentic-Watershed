@@ -69,12 +69,27 @@ def _agent_model() -> str | None:
     return os.environ.get("AGENT_MODEL", "").strip() or None
 
 
+def _token_usage() -> tuple[int | None, int | None]:
+    """Token counts for the call that produced this observation.
+
+    Set by agent.py from response.usage before this server is spawned. Absent
+    on a dry run or an older agent, in which case the row records NULL rather
+    than a zero that would read as a real measurement.
+    """
+    def _n(name: str) -> int | None:
+        raw = os.environ.get(name, "").strip()
+        return int(raw) if raw.isdigit() else None
+    return _n("AGENT_INPUT_TOKENS"), _n("AGENT_OUTPUT_TOKENS")
+
+
 def _ensure_shadow_columns(conn: sqlite3.Connection) -> None:
-    """Add the shadow-verdict columns to databases created before them."""
+    """Add columns to databases created before they existed."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_observations)")}
     for name, decl in (("model", "TEXT"),
                        ("rules_flagged", "INTEGER"),
-                       ("rules_fired", "TEXT")):
+                       ("rules_fired", "TEXT"),
+                       ("input_tokens", "INTEGER"),
+                       ("output_tokens", "INTEGER")):
         if name not in cols:
             conn.execute(f"ALTER TABLE agent_observations ADD COLUMN {name} {decl}")
 
@@ -361,14 +376,15 @@ def write_agent_observation(
     with _db() as conn:
         _ensure_shadow_columns(conn)
         rules_flagged, rules_fired = _rule_verdict(conn)
+        in_tok, out_tok = _token_usage()
         conn.execute(
             """
             INSERT INTO agent_observations (observed_at, summary, flagged, reasoning, model,
-                 rules_flagged, rules_fired)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 rules_flagged, rules_fired, input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (now, summary, int(flagged), reasoning, _agent_model(),
-             rules_flagged, rules_fired),
+             rules_flagged, rules_fired, in_tok, out_tok),
         )
         conn.commit()
     return json.dumps({"status": "ok", "observed_at": now})
