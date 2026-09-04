@@ -18,10 +18,17 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+
+# Resolve flag_rules from this file's directory rather than relying on
+# sys.path[0], which is only the script's directory when this module is
+# run as a script — it is also imported directly (tests, offline eval).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import flag_rules  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -75,14 +82,32 @@ def _token_usage() -> tuple[int | None, int | None]:
     return _n("AGENT_INPUT_TOKENS"), _n("AGENT_OUTPUT_TOKENS")
 
 
-def _ensure_model_column(conn: sqlite3.Connection) -> None:
-    """Add agent_observations.model to databases created before it existed."""
+def _ensure_shadow_columns(conn: sqlite3.Connection) -> None:
+    """Add columns to databases created before they existed."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_observations)")}
     for name, decl in (("model", "TEXT"),
+                       ("rules_flagged", "INTEGER"),
+                       ("rules_fired", "TEXT"),
                        ("input_tokens", "INTEGER"),
                        ("output_tokens", "INTEGER")):
         if name not in cols:
             conn.execute(f"ALTER TABLE agent_observations ADD COLUMN {name} {decl}")
+
+
+def _rule_verdict(conn: sqlite3.Connection) -> tuple[int | None, str | None]:
+    """Deterministic flag verdict, recorded alongside the model's own.
+
+    Shadow only — nothing reads this to decide whether to flag. It exists so
+    the disagreement between the rules and the model is measurable before
+    anyone makes the rules authoritative. Never raises: a broken rule must not
+    be able to fail an agent run that would otherwise have written its
+    observation.
+    """
+    try:
+        verdict = flag_rules.evaluate(conn)
+        return int(verdict.must_flag), verdict.as_json()
+    except Exception:
+        return None, None
 
 
 def _db() -> sqlite3.Connection:
@@ -349,16 +374,17 @@ def write_agent_observation(
     """
     now = datetime.now(timezone.utc).isoformat()
     with _db() as conn:
-        _ensure_model_column(conn)
+        _ensure_shadow_columns(conn)
+        rules_flagged, rules_fired = _rule_verdict(conn)
         in_tok, out_tok = _token_usage()
         conn.execute(
             """
             INSERT INTO agent_observations (observed_at, summary, flagged, reasoning, model,
-                 input_tokens, output_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 rules_flagged, rules_fired, input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (now, summary, int(flagged), reasoning, _agent_model(),
-             in_tok, out_tok),
+             rules_flagged, rules_fired, in_tok, out_tok),
         )
         conn.commit()
     return json.dumps({"status": "ok", "observed_at": now})

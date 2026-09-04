@@ -110,6 +110,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             reasoning       TEXT,
             raw_context     TEXT,
             model           TEXT,                        -- model id that produced it
+            rules_flagged   INTEGER,                     -- deterministic verdict (shadow)
+            rules_fired     TEXT,                        -- JSON list of rules that matched
             input_tokens    INTEGER,                     -- from response.usage
             output_tokens   INTEGER
         );
