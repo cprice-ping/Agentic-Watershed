@@ -26,6 +26,7 @@ Cron (every 6 hours):
 
 import argparse
 import json
+import os
 import logging
 import subprocess
 import sys
@@ -218,6 +219,11 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
     """Send context to Claude and return its structured assessment."""
     model_id = MODELS[model_key]
     log.info("Reasoning with %s (%s)...", model_key, model_id)
+    # Record which model actually produced this observation. The MCP server
+    # is spawned as a subprocess and inherits this, so the value reaching the
+    # published record's `agentModel` field comes from the harness rather than
+    # from the model's own say-so.
+    os.environ["AGENT_MODEL"] = model_id
 
     client = anthropic.Anthropic()
     message = client.messages.create(

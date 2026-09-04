@@ -108,7 +108,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             summary         TEXT NOT NULL,
             flagged         INTEGER NOT NULL DEFAULT 0,
             reasoning       TEXT,
-            raw_context     TEXT
+            raw_context     TEXT,
+            model           TEXT                         -- model id that produced it
         );
     """)
     conn.commit()

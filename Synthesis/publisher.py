@@ -199,7 +199,7 @@ def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": row.get("flag_reason", ""),
-        "agentModel": "claude-sonnet-4-6",
+        "agentModel": row.get("model") or "unknown",
         "synthesis": {
             "fireRisk":        row.get("fire_risk", "none"),
             "floodRisk":       row.get("flood_risk", "none"),
