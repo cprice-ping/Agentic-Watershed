@@ -109,7 +109,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             flagged         INTEGER NOT NULL DEFAULT 0,
             reasoning       TEXT,
             raw_context     TEXT,
-            model           TEXT                         -- model id that produced it
+            model           TEXT,                        -- model id that produced it
+            rules_flagged   INTEGER,                     -- deterministic verdict (shadow)
+            rules_fired     TEXT                         -- JSON list of rules that matched
         );
     """)
     conn.commit()
