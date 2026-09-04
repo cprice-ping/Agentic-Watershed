@@ -187,9 +187,10 @@ def read_recent_observations(lookback_hours: float = 24.0,
             """
             SELECT observation_type, publisher_did, node_id,
                    observed_at, received_at, summary, flagged,
-                   flag_reason, agent_model, raw_record
+                   flag_reason, agent_model, raw_record, agent_did, charter_ok
             FROM observations
             WHERE received_at >= ?
+              AND (charter_ok IS NULL OR charter_ok = 1)
             ORDER BY observation_type, received_at DESC
             """,
             (cutoff,),

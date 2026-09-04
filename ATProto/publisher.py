@@ -497,6 +497,14 @@ def publish_domain(domain: str, session: BlueskySession,
             observed_at += "Z"
 
         record = config["builder"](row, observed_at)
+        charter_did = _NODE_CFG.get(domain, {}).get("charter_did")
+        if charter_did:
+            # Identifies which specific domain agent produced this record —
+            # a charter from the Agent Identity Registry, independent of and
+            # in addition to the node's own PDS/DID identity (which still
+            # signs the record via `session` below). Absent until that
+            # domain's agent is enrolled with the registry; see CONTEXT.md.
+            record["agentDid"] = charter_did
         flagged = bool(row.get("flagged", False))
 
         if dry_run:
