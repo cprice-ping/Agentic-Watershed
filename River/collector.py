@@ -93,7 +93,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             flagged         INTEGER NOT NULL DEFAULT 0,  -- 0 or 1
             reasoning       TEXT,
             raw_context     TEXT,                        -- JSON snapshot agent used
-            model           TEXT                         -- model id that produced it
+            model           TEXT,                        -- model id that produced it
+            input_tokens    INTEGER,                     -- from response.usage
+            output_tokens   INTEGER
         );
     """)
     conn.commit()

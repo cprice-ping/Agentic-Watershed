@@ -63,11 +63,27 @@ def _agent_model() -> str | None:
     return os.environ.get("AGENT_MODEL", "").strip() or None
 
 
+def _token_usage() -> tuple[int | None, int | None]:
+    """Token counts for the call that produced this observation.
+
+    Set by agent.py from response.usage before this server is spawned. Absent
+    on a dry run or an older agent, in which case the row records NULL rather
+    than a zero that would read as a real measurement.
+    """
+    def _n(name: str) -> int | None:
+        raw = os.environ.get(name, "").strip()
+        return int(raw) if raw.isdigit() else None
+    return _n("AGENT_INPUT_TOKENS"), _n("AGENT_OUTPUT_TOKENS")
+
+
 def _ensure_model_column(conn: sqlite3.Connection) -> None:
     """Add agent_observations.model to databases created before it existed."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_observations)")}
-    if "model" not in cols:
-        conn.execute("ALTER TABLE agent_observations ADD COLUMN model TEXT")
+    for name, decl in (("model", "TEXT"),
+                       ("input_tokens", "INTEGER"),
+                       ("output_tokens", "INTEGER")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE agent_observations ADD COLUMN {name} {decl}")
 
 
 def _db() -> sqlite3.Connection:
@@ -327,12 +343,15 @@ def write_agent_observation(
     now = datetime.now(timezone.utc).isoformat()
     with _db() as conn:
         _ensure_model_column(conn)
+        in_tok, out_tok = _token_usage()
         conn.execute(
             """
-            INSERT INTO agent_observations (observed_at, summary, flagged, reasoning, model)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO agent_observations (observed_at, summary, flagged, reasoning, model,
+                 input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (now, summary, int(flagged), reasoning, _agent_model()),
+            (now, summary, int(flagged), reasoning, _agent_model(),
+             in_tok, out_tok),
         )
         conn.commit()
     return json.dumps({"status": "ok", "observed_at": now})

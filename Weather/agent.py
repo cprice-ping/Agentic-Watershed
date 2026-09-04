@@ -38,8 +38,8 @@ import anthropic
 MCP_SERVER_PATH = Path(__file__).parent / "mcp_server.py"
 
 MODELS = {
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5",
+    "sonnet": "claude-sonnet-5",
     "opus": "claude-opus-4-6",
 }
 
@@ -225,6 +225,17 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
         tools=[_ASSESSMENT_TOOL],
         tool_choice={"type": "tool", "name": "submit_assessment"},
     )
+
+    # Token usage, recorded so the monthly bill can be attributed per domain
+    # rather than estimated. Passed to the MCP server the same way the model
+    # id is — via the environment, because it is a measurement the harness
+    # makes, not something the model reports about itself.
+    usage = getattr(message, "usage", None)
+    if usage is not None:
+        os.environ["AGENT_INPUT_TOKENS"] = str(getattr(usage, "input_tokens", "") or "")
+        os.environ["AGENT_OUTPUT_TOKENS"] = str(getattr(usage, "output_tokens", "") or "")
+        log.info("Tokens: %s in / %s out",
+                 getattr(usage, "input_tokens", "?"), getattr(usage, "output_tokens", "?"))
 
     if verbose:
         log.info("Raw Claude response:\n%s", message.content)
