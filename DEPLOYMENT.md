@@ -83,6 +83,118 @@ preserves them automatically. No export/import step.
    anything's wrong, reverting is just switching the cron lines back — the
    venvs and the databases are both still there untouched.
 
+## Migrating node-01 to cheaper hardware (e.g. a Raspberry Pi Zero 2 W)
+
+This is a different migration than the one above — same node, same identity,
+new physical hardware, and (deliberately) **not** a move to docker-compose.
+The reasoning: Docker's own daemon overhead is negligible on a Pi 4/5-class
+device but a real tax on something as RAM-constrained as a Zero 2 W (512MB) —
+exactly the device this migration exists to make cheaper. Stick with the
+native venv+cron setup already running on node-01 today; don't containerize
+as part of this move.
+
+**What has to move, and why one piece is different from the rest:**
+
+- The four domain SQLite DBs (`River/data/watershed.db`, `Weather/data/weather.db`,
+  `AQI/data/aqi.db`, `Fire/data/fire.db`) and `ATProto/data/publisher.db` —
+  just files, copy them.
+- `node_config.json` and `.env` — also just files, copy them (same values,
+  nothing node-specific needs to change since this is the same node moving,
+  not a new one).
+- **The PDS's data directory (`/home/cprice/pds-data` by default, per
+  `ATProto/pds/README.md`) is identity-critical, not just data.** It holds
+  the account, repo records, blob store, and — critically — the PLC rotation
+  key. That key is what makes this node's DID (`did:plc:ggztd5hjk3cnkhgzdk4rmqan`)
+  *this* node's identity. Losing it doesn't just lose history, it loses the
+  ability to prove you're still the same node at all. Treat this directory
+  like a credential store during the move, not like a cache — verify the
+  copy, don't just trust `rsync` exited 0.
+- The Cloudflare Tunnel credentials (`/etc/cloudflared/` — note: root's
+  systemd service reads from there, not `~/.cloudflared`, a previously
+  hard-won detail worth not re-learning the hard way) — either move the
+  existing tunnel's credentials file to the new device, or re-run
+  `cloudflared tunnel login` and re-route DNS if starting the tunnel fresh
+  there.
+
+### Phase 0 — validate before committing anything real
+
+Don't migrate real data onto unproven hardware. Get a Zero 2 W, and before
+touching any production identity or history:
+
+1. Flash it, get it on the network, confirm `docker --version`-equivalent
+   readiness isn't needed (we're not using Docker here) — just Python 3.11+
+   and enough headroom to run the PDS's Node.js process.
+2. Stand up a **throwaway** PDS instance on it (new account, new DID, per
+   `ATProto/pds/README.md` — not the real node-01 identity yet).
+3. With that throwaway PDS running, manually trigger a domain collector and
+   agent run concurrently (e.g. `python collector.py` in one shell while
+   `python agent.py` runs in another) and watch `free -h` under that combined
+   load — this is the realistic worst case (a collector firing while an
+   agent's mid-reasoning-call, or the PDS mid-request from Synthesis's next
+   fetch).
+4. If that's stable with reasonable headroom, proceed. If it's tight or
+   swaps, that's the answer to "is the Zero 2 W actually enough" — cheaper
+   to learn that here than after moving real identity onto it.
+
+### Phase 1 — prep the new device
+
+1. Same OS family (Raspberry Pi OS), Python 3.11+, per-stack venvs exactly
+   as documented in each stack's own README (`River/README.md`, etc.) —
+   nothing about venv setup changes based on which Pi model this is.
+2. `git clone` this repo; don't copy the old Pi's checkout wholesale (avoids
+   dragging over anything stale — logs, `__pycache__`, etc.).
+
+### Phase 2 — migrate the PDS (the identity-critical step)
+
+1. On node-01 (the Pi 5): `docker compose -f ATProto/pds/docker-compose.yml stop`
+   — stop writes before copying, same principle as backing up a running
+   database.
+2. Copy `/home/cprice/pds-data` to the new device (`rsync -av`, verify file
+   counts/sizes match on both ends — don't just check the exit code).
+3. Copy `ATProto/pds/pds.env` (the real one, with generated secrets — not
+   `pds.env.example`) to the new device, same path layout.
+4. On the new device: `docker compose -f ATProto/pds/docker-compose.yml up -d`,
+   confirm it starts clean (`docker compose logs -f pds`).
+5. **Don't start the old Pi 5's PDS back up while testing the new one** —
+   two instances both claiming the same DID's data at once is exactly the
+   kind of split-brain that corrupts identity state. Keep the Pi 5's PDS
+   stopped until the new device is confirmed working end-to-end.
+
+### Phase 3 — migrate the domain stacks and cron
+
+1. Copy the five DBs listed above into the new checkout's matching
+   `<Stack>/data/` paths.
+2. Copy `node_config.json` and `.env` as-is (same node, same values).
+3. **Test one service manually before touching cron** — same principle as
+   the docker-compose migration above:
+   ```bash
+   cd River && .venv/bin/python collector.py
+   sqlite3 data/watershed.db "SELECT * FROM readings ORDER BY collected_at DESC LIMIT 3;"
+   ```
+   Repeat for `weather`, `aqi`, `fire`.
+4. Move the Cloudflare Tunnel credentials (`/etc/cloudflared/`) to the new
+   device, or re-create the tunnel and re-route DNS if that's cleaner —
+   either way, confirm `https://napa-node-01.watershed-agent.dev/xrpc/_health`
+   resolves through the tunnel from the new device before trusting it.
+5. Add the same cron lines from `README.md`'s legacy (non-Docker) block to
+   the new device — unchanged, since this is native venv+cron on both ends.
+
+### Phase 4 — cutover with a real fallback window
+
+1. Leave the Pi 5's cron **disabled** (comment it out, don't delete it) once
+   the new device's cron is live — two nodes publishing under the same DID
+   concurrently would corrupt the PDS's repo state the same way two running
+   PDS instances would.
+2. Watch the new device's logs through a few full cron cycles (collectors,
+   agents, publisher) before considering this done.
+3. Confirm Synthesis still picks up records normally — nothing about
+   `Synthesis/publishers.json` needs to change, since the DID didn't change,
+   only which physical device is behind it.
+4. Once confident: decommission the Pi 5's production role (stop its PDS
+   container permanently, remove its cron lines for real) and repurpose it
+   as the dev/experimentation box — the MLX fine-tuning work, local model
+   pilots, whatever comes next. It already has everything installed for that.
+
 ## Why `node_config.json` is committed to git (and what that means)
 
 It's tracked so the *default* node (napa-node-01) works out of the box
