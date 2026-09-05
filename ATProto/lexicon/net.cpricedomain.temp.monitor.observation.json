@@ -35,8 +35,8 @@
 
           "summary": {
             "type": "string",
-            "maxLength": 500,
-            "description": "Plain language summary of conditions. Written for a general audience. Used as the public-facing text when posted to Bluesky."
+            "maxLength": 2000,
+            "description": "Plain language summary of conditions. Written for a general audience. The Bluesky post is truncated separately by the publisher to fit the 300-grapheme limit, so this field holds the full text rather than a post-sized one."
           },
 
           "flagged": {
@@ -283,6 +283,17 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "DIDs of nodes whose observations were used. Allows consumers to audit provenance."
+        },
+
+        "reasoning": {
+          "type": "string",
+          "maxLength": 10000,
+          "description": "Full cross-domain reasoning behind this synthesis, including trajectory and seasonal context. This is what makes the record auditable on its own rather than only via the truncated Bluesky post — long-form analysis belongs here, not in flagReason."
+        },
+
+        "synthesisDid": {
+          "type": "string",
+          "description": "DID of the synthesis agent that produced this record."
         }
       }
     }
