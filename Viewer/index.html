@@ -119,6 +119,34 @@
     word-break: break-all;
     margin-top: 0.3rem;
   }
+  /* Raw record disclosure. The card renders selected fields only, so
+     anything added to the lexicon later (agentModel was invisible here
+     until it was asked for) is otherwise unreachable without hand-building
+     an XRPC call. Collapsed by default — this is the escape hatch, not the
+     display. */
+  .raw-record { margin-top: 0.6rem; }
+  .raw-record summary {
+    cursor: pointer;
+    font-size: 0.75rem;
+    color: var(--muted);
+    user-select: none;
+  }
+  .raw-record summary:hover { color: var(--accent); }
+  .raw-record pre {
+    margin: 0.5rem 0 0;
+    padding: 0.75rem;
+    background: #0b1017;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--text);
+    overflow-x: auto;
+    max-height: 24rem;
+    overflow-y: auto;
+    white-space: pre;
+  }
   a { color: var(--accent); }
   .state {
     color: var(--muted);
@@ -277,6 +305,25 @@ function renderNumericFields(block) {
   return items.length ? `<div class="numeric-fields">${items.join("")}</div>` : "";
 }
 
+// Collapsed raw-record view. Takes whatever the PDS actually returned —
+// getRecord gives {uri, cid, value}, listRecords entries give {uri, value} —
+// so the disclosure shows the real response rather than a reconstruction of
+// it, including any field this Viewer doesn't know how to render.
+function rawRecord(record, label = "Raw record") {
+  let json;
+  try {
+    json = JSON.stringify(record, null, 2);
+  } catch (err) {
+    // Nothing off a PDS should be circular, but a render helper is the wrong
+    // place to throw — a broken disclosure must not take the card down.
+    return `<div class="meta">Couldn't serialise this record: ${esc(err.message)}</div>`;
+  }
+  return `<details class="raw-record">`
+       + `<summary>${esc(label)} (JSON)</summary>`
+       + `<pre>${esc(json)}</pre>`
+       + `</details>`;
+}
+
 function domainLabel(type) {
   const map = { watershed: "🌊 Watershed", weather: "🌤️ Weather", aqi: "💨 Air Quality", fire: "🔥 Fire" };
   return map[type] || type;
@@ -321,6 +368,7 @@ async function render(uri) {
     html += `<div class="reasoning">${esc(synth.reasoning)}</div>`;
   }
   html += `<div class="at-uri">${esc(uri)}</div>`;
+  html += rawRecord(synthRecord, "Raw synthesis record");
   html += `</div>`;
 
   document.getElementById("app").innerHTML = html;
@@ -375,6 +423,7 @@ async function render(uri) {
       blocks += `<div>${esc(rv.summary || "")}</div>`;
       blocks += renderNumericFields(domainBlock);
       blocks += `<div class="at-uri">${esc(rec.uri)}</div>`;
+      blocks += rawRecord(rec);
       blocks += `</div>`;
     }
     domainSection.innerHTML = `<h2>Underlying domain observations (last ${LOOKBACK_HOURS}h, newest first)</h2>${blocks}`;
