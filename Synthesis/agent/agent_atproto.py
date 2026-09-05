@@ -78,6 +78,18 @@ AQI_USG_THRESHOLD     = 100    # EPA PM2.5 "Unhealthy for Sensitive Groups" thre
 FIRE_CONFIRM_LEVELS   = frozenset({"high", "extreme"})  # weather.fireRisk values that confirm
 FIRE_CONFIRM_ALERTS   = frozenset({"Red Flag Warning", "Fire Weather Watch"})  # NWS alert names
 
+# Measured fire-weather thresholds, mirroring Weather/agent.py's own flag
+# criteria (and Weather/flag_rules.py). Needed because neither constant above
+# can be evaluated against what is actually published today: weather.fireRisk
+# is never emitted by ATProto/publisher.py, and activeAlerts is hardcoded to
+# []. Those two remain wired up so they start working the moment the publisher
+# does, but the numbers below are what confirms a prediction in practice.
+FIRE_WX_TEMP_F           = 90.0   # with humidity and wind, all three together
+FIRE_WX_HUMIDITY_PCT     = 25.0
+FIRE_WX_WIND_MPH         = 15.0
+FIRE_WX_HUMIDITY_ALONE   = 15.0   # sufficient on its own
+FIRE_WX_GUST_MPH         = 45.0   # sufficient on its own
+
 # How long a prediction stays pending before auto-expiry if no confirming observation arrives.
 # After the window closes the event either happened or didn't — leaving it pending pollutes calibration.
 PREDICTION_HORIZON_HOURS: dict[str, int] = {
@@ -486,21 +498,92 @@ def _ensure_predictions_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _resolve_prediction(risk_type: str, grouped: dict[str, list[dict]]) -> Optional[str]:
-    """Check whether current observations confirm a prediction.
+def _num(block: dict, *names) -> Optional[float]:
+    """First numeric value among *names*, so both the lexicon's camelCase and
+    the snake_case ATProto/publisher.py actually emits resolve to the same
+    reading. The two disagree today (windGustMph vs wind_gust_mph); accepting
+    either means this keeps working whichever way that is settled."""
+    for n in names:
+        v = block.get(n)
+        if v is None:
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
 
-    Each risk type maps to its corresponding domain agent. Confirmation currently
-    uses the domain agent's top-level `flagged` field rather than specific numeric
-    sub-fields. The `flagged` field IS authoritative on its own: it is the domain
-    agent's own assessment that conditions warrant attention, which is exactly
-    what confirms a synthesis prediction.
 
-    The ATProto publisher now populates numeric fields (dischargeCfs, gageHeightFt,
-    temperature_f, wind_speed_mph, pm25Aqi, ozoneAqi, etc. — see
-    ATProto/publisher.py) as of the self-hosted PDS migration, so specific
-    threshold checks using the module-level constants (FIRE_CONFIRM_LEVELS,
-    FLOOD_ACTION_STAGE_FT, AQI_USG_THRESHOLD, FIRE_CONFIRM_ALERTS) are now
-    possible here — not yet wired in.
+def _confirms(risk_type: str, block: dict) -> Optional[str]:
+    """Does this domain observation's measured data confirm *risk_type*?
+
+    Returns a reason string, or None. Deliberately reads numbers rather than
+    the domain agent's `flagged` boolean — see _resolve_prediction.
+    """
+    if risk_type == "fire":
+        alerts = {str(a).strip() for a in (block.get("activeAlerts") or [])}
+        hit = alerts & FIRE_CONFIRM_ALERTS
+        if hit:
+            return f"NWS {', '.join(sorted(hit))} active"
+        if str(block.get("fireRisk", "")).lower() in FIRE_CONFIRM_LEVELS:
+            return f"weather agent fireRisk={block['fireRisk']}"
+
+        temp = _num(block, "temperatureF", "temperature_f")
+        hum  = _num(block, "humidityPct", "humidity_pct")
+        wind = _num(block, "windSpeedMph", "wind_speed_mph")
+        gust = _num(block, "windGustMph", "wind_gust_mph")
+
+        if (temp is not None and hum is not None and wind is not None
+                and temp >= FIRE_WX_TEMP_F and hum <= FIRE_WX_HUMIDITY_PCT
+                and wind >= FIRE_WX_WIND_MPH):
+            return f"measured {temp:.0f}F / {hum:.0f}% / {wind:.0f}mph"
+        if hum is not None and hum <= FIRE_WX_HUMIDITY_ALONE:
+            return f"measured humidity {hum:.0f}%"
+        if gust is not None and gust >= FIRE_WX_GUST_MPH:
+            return f"measured gusts {gust:.0f}mph"
+        return None
+
+    if risk_type == "flood":
+        gage = _num(block, "gageHeightMaxFt", "gageHeightFt")
+        stage = _num(block, "floodStageThresholdFt") or FLOOD_ACTION_STAGE_FT
+        if gage is not None and gage >= stage:
+            return f"gage height {gage:.1f}ft at/above {stage:.1f}ft flood stage"
+        return None
+
+    if risk_type == "air_quality":
+        pm25 = _num(block, "pm25Aqi")
+        if pm25 is not None and pm25 >= AQI_USG_THRESHOLD:
+            return f"PM2.5 AQI {pm25:.0f} at/above {AQI_USG_THRESHOLD}"
+        return None
+
+    return None
+
+
+def _resolve_prediction(risk_type: str, grouped: dict[str, list[dict]],
+                        made_at: Optional[datetime] = None) -> Optional[str]:
+    """Check whether observations since *made_at* confirm a prediction.
+
+    This used to confirm on the domain agent's top-level `flagged` boolean,
+    on the reasoning that the agent's own assessment is authoritative. In
+    practice that made the ledger circular: synthesis predicts extreme fire
+    risk, the Weather agent independently flags (as it does on essentially
+    every run), the prediction is marked confirmed, and the ledger then tells
+    synthesis it has been right every time. As of 2026-09-05 that was 128
+    confirmed fire predictions and zero expired — including one confirmed on a
+    morning of 93.7% humidity and 0 mph wind. The prompt asks the agent to
+    calibrate on that ratio, so a ledger that cannot register a miss actively
+    reinforces over-forecasting.
+
+    Confirmation is now measured against the numbers in the record, using the
+    thresholds defined above. One model's opinion can no longer verify
+    another's.
+
+    Two further constraints:
+      - only observations *after* the prediction was made can confirm it.
+        Previously any record in the lookback window counted, so a prediction
+        could be confirmed by data that predated it.
+      - a record with no usable numbers confirms nothing; the prediction stays
+        pending and expires on its horizon, which is the honest outcome.
     """
     domain_map = {
         "fire":        "weather",
@@ -512,11 +595,34 @@ def _resolve_prediction(risk_type: str, grouped: dict[str, list[dict]]) -> Optio
         return None
 
     for rec in grouped.get(domain, []):
-        if rec.get("flagged"):
-            excerpt = (rec.get("summary") or "")[:100].strip()
-            return f"{domain} agent flagged: {excerpt}" if excerpt else f"{domain} agent flagged"
+        if made_at is not None:
+            observed = _parse_ts(rec.get("observed_at"))
+            if observed is None or observed <= made_at:
+                continue
+
+        try:
+            raw = json.loads(rec["raw_record"]) if rec.get("raw_record") else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+        block = raw.get(domain) or {}
+        why = _confirms(risk_type, block)
+        if why:
+            return f"{domain} observation {rec.get('observed_at', '')}: {why}"
 
     return None
+
+
+def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
+    """Lenient ISO8601 parse — a malformed timestamp should skip one record
+    rather than fail the whole resolution pass."""
+    if not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def check_predictions(grouped: dict[str, list[dict]],
@@ -543,7 +649,9 @@ def check_predictions(grouped: dict[str, list[dict]],
             "SELECT * FROM predictions WHERE status = 'pending'"
         ).fetchall()]:
             made_at = datetime.fromisoformat(row["made_at"].replace("Z", "+00:00"))
-            note    = _resolve_prediction(row["risk_type"], grouped)
+            # Pass made_at so only observations that postdate the prediction
+            # can confirm it.
+            note    = _resolve_prediction(row["risk_type"], grouped, made_at)
 
             if note:
                 new_status = "confirmed"
