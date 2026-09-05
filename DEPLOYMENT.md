@@ -204,3 +204,97 @@ a separate clone/directory (the normal case — a real second node is a
 separate checkout on separate hardware), or if running multiple nodes from
 one checkout for local testing, override the mount:
 `docker compose run --rm -v $(pwd)/node-02.config.json:/app/node_config.json:ro river ...`
+
+## GitHub Actions deploy — one-time Azure setup
+
+`.github/workflows/deploy-synthesis.yml` rebuilds the Synthesis image and
+updates its Container Apps Job whenever `Synthesis/**` changes on `main`.
+
+Synthesis runs from a container image, so a merge changes nothing until the
+image is rebuilt — `subscriber.py`, `publisher.py` and `agent/` are all
+`COPY`'d in at build time. That gap is why #47's subscriber fix reached the
+repo well before it reached Azure, and it's what this closes.
+
+Auth is **OIDC**: GitHub presents a short-lived token, Azure trusts it for
+this repository only. No standing Azure credential in the repo.
+
+### 1. App registration and federated credential
+
+```bash
+RG=rg-agentic-watershed
+REPO=cprice-ping/Agentic-Watershed
+
+APP_ID=$(az ad app create --display-name gha-agentic-watershed --query appId -o tsv)
+az ad sp create --id "$APP_ID"
+
+# Trust pushes to main from this repo, and nothing else.
+az ad app federated-credential create --id "$APP_ID" --parameters '{
+  "name": "main",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:'"$REPO"':ref:refs/heads/main",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+```
+
+`subject` is the security boundary — it pins the trust to this repo and this
+branch. A second credential with `subject: repo:<repo>:environment:<name>` is
+what you'd add later if you want an approval gate.
+
+Manual `workflow_dispatch` runs from `main` are covered by the credential
+above. Dispatching from another branch needs its own credential.
+
+### 2. Role assignment
+
+```bash
+SUB=$(az account show --query id -o tsv)
+az role assignment create --assignee "$APP_ID" --role Contributor \
+  --scope "/subscriptions/$SUB/resourceGroups/$RG"
+```
+
+Contributor on the resource group is the simple option and is broader than
+strictly needed — it covers both `az acr build` (which schedules an ACR Task,
+so `AcrPush` alone is insufficient) and the Container Apps Job update. A
+narrower setup is Contributor scoped to the registry plus a Container Apps
+role scoped to the job.
+
+### 3. Repository secrets
+
+| Secret | Purpose |
+|---|---|
+| `AZURE_CLIENT_ID` | the `APP_ID` above |
+| `AZURE_TENANT_ID` | `az account show --query tenantId -o tsv` |
+| `AZURE_SUBSCRIPTION_ID` | `az account show --query id -o tsv` |
+| `ANTHROPIC_API_KEY` | the job's runtime secret |
+| `BSKY_SYNTH_HANDLE` | the job's runtime secret |
+| `BSKY_SYNTH_APP_PASSWORD` | the job's runtime secret |
+
+The first three are identifiers, not credentials — OIDC means there's no
+Azure secret to store. The last three are different: they are the
+application's own runtime secrets, and they're needed because `deploy.sh`
+re-PUTs the entire job definition (secrets included) even with
+`--image-only`.
+
+That is a real expansion of where those secrets live. `az containerapp job
+update --image` would avoid it by touching only the image, but `deploy.sh`
+deliberately avoids the containerapp CLI extension — see the comment above
+its step 6 — because it "mangled secretRef values and stripped volume
+mounts", and losing the File Share mount would take `synthesis.db` and the
+prediction ledger with it. If you'd rather not hold those three in GitHub,
+the alternative is Key Vault plus `azure/get-keyvault-secrets`, which keeps
+them in Azure at the cost of another moving part.
+
+### What the workflow does
+
+1. builds and pushes `synthesis:<commit-sha>` via `az acr build`
+2. PUTs the job definition pointing at that image
+3. re-points `synthesis:latest` at the same build, so a manual
+   `./deploy.sh --image-only` doesn't ship an older image
+4. reads the job back and **fails** unless the deployed image is the commit
+   that just ran — a green tick means the image actually landed
+
+Tagging by SHA also fixes the ambiguity `:latest` created: the job spec now
+names the commit it's running, the same way the publisher's `Code version:`
+line does on the Pi.
+
+Changes take effect on the job's next scheduled run (`0 6,18 * * *` UTC),
+not at deploy time.
