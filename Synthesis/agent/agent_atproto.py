@@ -141,7 +141,7 @@ You must respond in this exact JSON format (no markdown, no extra text):
   "air_quality_risk": "none|low|moderate|high|extreme",
   "overall_risk": "none|low|moderate|high|extreme",
   "flagged": true or false,
-  "flag_reason": "brief reason if flagged, empty string if not",
+  "flag_reason": "one-line label if flagged (200 chars max), empty string if not — analysis goes in reasoning, not here",
   "reasoning": "Full cross-domain reasoning including trajectory assessment and seasonal context"
 }
 
@@ -798,11 +798,22 @@ _ASSESSMENT_TOOL = {
             "flagged": {"type": "boolean"},
             "flag_reason": {
                 "type": "string",
-                "description": "Brief reason if flagged, empty string if not",
+                "description": (
+                    "One-line label for why this is flagged, 200 characters "
+                    "maximum — the lexicon field it maps to is capped there and "
+                    "the publisher will truncate anything longer. Empty string "
+                    "if not flagged. Do NOT put the analysis here; it belongs "
+                    "in `reasoning`."
+                ),
             },
             "reasoning": {
                 "type": "string",
-                "description": "Full cross-domain reasoning including trajectory assessment and seasonal context",
+                "description": (
+                    "Full cross-domain reasoning including trajectory assessment "
+                    "and seasonal context. This is the auditable record of the "
+                    "run and must never be empty — it is where the long-form "
+                    "analysis goes, not `flag_reason`."
+                ),
             },
         },
         "required": [

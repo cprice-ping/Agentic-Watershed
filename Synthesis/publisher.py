@@ -190,15 +190,55 @@ class BlueskySession:
 # Build synthesis lexicon record and post
 # ---------------------------------------------------------------------------
 
+# Declared limits from the lexicon, enforced here because nothing else does.
+# Neither PDS validates an unknown custom lexicon, so an over-length field is
+# accepted silently and the record is only discoverably invalid later — the
+# 2026-09-04 advisory published a 996-byte flagReason against a 200-byte cap
+# and nothing anywhere complained.
+FLAG_REASON_MAX_BYTES = 200
+SUMMARY_MAX_BYTES     = 2000
+
+
+def _fit(text: str, max_bytes: int) -> str:
+    """Truncate to the lexicon's byte limit on a character boundary."""
+    encoded = (text or "").encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text or ""
+    # Reserve room for the ellipsis, then back off to a valid UTF-8 boundary.
+    return encoded[:max_bytes - 3].decode("utf-8", errors="ignore") + "…"
+
+
 def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
+    summary = row.get("summary", "") or ""
+    flag_reason = row.get("flag_reason", "") or ""
+    reasoning = row.get("reasoning", "") or ""
+
+    # The agent has been putting its long-form analysis in flag_reason and
+    # leaving reasoning empty, which inverts what the two fields are for:
+    # reasoning is the auditable record, flagReason is a one-line label. When
+    # that happens, keep the text rather than truncating it away — move it to
+    # the field it belongs in, and log loudly enough to notice.
+    if not reasoning.strip() and len(flag_reason.encode("utf-8")) > FLAG_REASON_MAX_BYTES:
+        log.warning(
+            "flag_reason is %d bytes with an empty reasoning field — treating it "
+            "as the reasoning and truncating flagReason to the lexicon's %d-byte "
+            "limit. The agent should be writing long-form analysis to reasoning.",
+            len(flag_reason.encode("utf-8")), FLAG_REASON_MAX_BYTES,
+        )
+        reasoning = flag_reason
+
+    if len(summary.encode("utf-8")) > SUMMARY_MAX_BYTES:
+        log.warning("summary is %d bytes; truncating to the lexicon's %d-byte limit",
+                    len(summary.encode("utf-8")), SUMMARY_MAX_BYTES)
+
     return {
         "$type": LEXICON,
         "observedAt": observed_at,
         "nodeId": SYNTH_ID,
         "observationType": f"{LEXICON}#synthesis",
-        "summary": row.get("summary", ""),
+        "summary": _fit(summary, SUMMARY_MAX_BYTES),
         "flagged": bool(row.get("flagged", False)),
-        "flagReason": row.get("flag_reason", ""),
+        "flagReason": _fit(flag_reason, FLAG_REASON_MAX_BYTES),
         "agentModel": row.get("model") or "unknown",
         "synthesis": {
             "fireRisk":        row.get("fire_risk", "none"),
@@ -210,7 +250,7 @@ def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
             # Full cross-domain reasoning, not just the public-facing summary —
             # makes the ATProto record itself the complete, publicly auditable
             # source of truth rather than just what fits in a Bluesky post.
-            "reasoning":       row.get("reasoning", ""),
+            "reasoning":       reasoning,
         },
     }
 
