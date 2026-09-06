@@ -218,25 +218,67 @@ repo well before it reached Azure, and it's what this closes.
 Auth is **OIDC**: GitHub presents a short-lived token, Azure trusts it for
 this repository only. No standing Azure credential in the repo.
 
-### 1. App registration and federated credential
+### 1. App registration, service principal, federated credential
+
+Safe to re-run. Every step checks for what it needs before creating it —
+`az ad app create` does **not** fail on a duplicate display name, it silently
+creates a second app registration with a different `appId`, which is how you
+end up with `AZURE_CLIENT_ID` naming one app while the role assignment sits on
+another's service principal.
 
 ```bash
+APP_NAME=gha-agentic-watershed
 RG=rg-agentic-watershed
 REPO=cprice-ping/Agentic-Watershed
 
-APP_ID=$(az ad app create --display-name gha-agentic-watershed --query appId -o tsv)
-az ad sp create --id "$APP_ID"
+# --- app registration -----------------------------------------------------
+COUNT=$(az ad app list --display-name "$APP_NAME" --query "length([])" -o tsv)
+if [ "$COUNT" -gt 1 ]; then
+  echo "WARNING: $COUNT apps named $APP_NAME — an earlier run created duplicates."
+  az ad app list --display-name "$APP_NAME" \
+    --query "[].{appId:appId, created:createdDateTime}" -o table
+  echo "Pick the one matching AZURE_CLIENT_ID and set APP_ID by hand, then skip ahead."
+fi
 
-# Trust pushes to main from this repo, and nothing else.
-az ad app federated-credential create --id "$APP_ID" --parameters '{
-  "name": "main",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:'"$REPO"':ref:refs/heads/main",
-  "audiences": ["api://AzureADTokenExchange"]
-}'
+APP_ID=$(az ad app list --display-name "$APP_NAME" --query "[0].appId" -o tsv)
+if [ -z "$APP_ID" ]; then
+  APP_ID=$(az ad app create --display-name "$APP_NAME" --query appId -o tsv)
+  echo "created app $APP_ID"
+else
+  echo "reusing app $APP_ID"
+fi
+
+# --- service principal ----------------------------------------------------
+SP_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv 2>/dev/null)
+if [ -z "$SP_ID" ]; then
+  SP_ID=$(az ad sp create --id "$APP_ID" --query id -o tsv)
+  echo "created service principal $SP_ID"
+else
+  echo "reusing service principal $SP_ID"
+fi
+
+# --- federated credential -------------------------------------------------
+WANT="repo:${REPO}:ref:refs/heads/main"
+HAVE=$(az ad app federated-credential list --id "$APP_ID" \
+        --query "[?name=='main'] | [0].subject" -o tsv 2>/dev/null)
+
+if [ -z "$HAVE" ]; then
+  az ad app federated-credential create --id "$APP_ID" --parameters "{
+    \"name\": \"main\",
+    \"issuer\": \"https://token.actions.githubusercontent.com\",
+    \"subject\": \"${WANT}\",
+    \"audiences\": [\"api://AzureADTokenExchange\"]
+  }"
+  echo "created federated credential"
+elif [ "$HAVE" != "$WANT" ]; then
+  echo "MISMATCH: credential 'main' has subject $HAVE, expected $WANT"
+  echo "Fix with: az ad app federated-credential update --id $APP_ID --federated-credential-id main --parameters '{\"subject\":\"${WANT}\"}'"
+else
+  echo "federated credential already correct"
+fi
 ```
 
-`subject` is the security boundary — it pins the trust to this repo and this
+`subject` is the security boundary — it pins trust to this repo and this
 branch. A second credential with `subject: repo:<repo>:environment:<name>` is
 what you'd add later if you want an approval gate.
 
@@ -245,17 +287,57 @@ above. Dispatching from another branch needs its own credential.
 
 ### 2. Role assignment
 
+Also safe to re-run.
+
 ```bash
 SUB=$(az account show --query id -o tsv)
-az role assignment create --assignee "$APP_ID" --role Contributor \
-  --scope "/subscriptions/$SUB/resourceGroups/$RG"
+SCOPE="/subscriptions/$SUB/resourceGroups/$RG"
+
+EXISTING=$(az role assignment list --assignee "$APP_ID" --scope "$SCOPE" \
+            --query "[?roleDefinitionName=='Contributor'] | length([])" -o tsv)
+
+if [ "$EXISTING" = "0" ] || [ -z "$EXISTING" ]; then
+  az role assignment create \
+    --assignee-object-id "$SP_ID" --assignee-principal-type ServicePrincipal \
+    --role Contributor --scope "$SCOPE"
+  echo "role assigned — allow a minute or two for it to propagate"
+else
+  echo "role assignment already present"
+fi
+
+az role assignment list --assignee "$APP_ID" --all -o table
 ```
+
+`--assignee-object-id` with an explicit principal type is used rather than
+`--assignee`, which has to resolve the id through the directory and fails
+intermittently against a service principal created moments earlier.
 
 Contributor on the resource group is the simple option and is broader than
 strictly needed — it covers both `az acr build` (which schedules an ACR Task,
 so `AcrPush` alone is insufficient) and the Container Apps Job update. A
 narrower setup is Contributor scoped to the registry plus a Container Apps
 role scoped to the job.
+
+### 2b. Verify before touching GitHub
+
+These three values must match the repository secrets exactly. Run this and
+compare:
+
+```bash
+echo "AZURE_CLIENT_ID       = $APP_ID"
+echo "AZURE_TENANT_ID       = $(az account show --query tenantId -o tsv)"
+echo "AZURE_SUBSCRIPTION_ID = $(az account show --query id -o tsv)"
+echo
+echo "federated subject: $(az ad app federated-credential list --id "$APP_ID" --query "[?name=='main'] | [0].subject" -o tsv)"
+echo "role assignments:"
+az role assignment list --assignee "$APP_ID" --all \
+  --query "[].{role:roleDefinitionName, scope:scope}" -o table
+```
+
+A subscription with more than one entry is worth checking twice: if the
+resource group lives in a different subscription than the one
+`az account show` returns, the workflow fails the same way as having no role
+at all.
 
 ### 3. Repository secrets
 
@@ -298,3 +380,39 @@ line does on the Pi.
 
 Changes take effect on the job's next scheduled run (`0 6,18 * * *` UTC),
 not at deploy time.
+
+### Troubleshooting
+
+**`Error: No subscriptions found for ***.`** — from `azure/login`.
+
+The OIDC exchange *worked*; the token was accepted. What's missing is RBAC:
+the service principal has no role assignment, so `az account list` comes back
+empty and the login step gives up. A wrong `subject` fails differently
+(`AADSTS70021: No matching federated identity record found`), so this error
+specifically rules the federated credential out as the cause.
+
+Three things to check, in order:
+
+```bash
+# 1. Duplicate app registrations from a re-run of section 1
+az ad app list --display-name gha-agentic-watershed \
+  --query "[].{appId:appId, created:createdDateTime}" -o table
+
+# 2. Does the app named by AZURE_CLIENT_ID have any role at all?
+APP_ID="00000000-0000-0000-0000-000000000000"   # <- your AZURE_CLIENT_ID
+az role assignment list --assignee "$APP_ID" --all -o table
+
+# 3. Is the RG in the subscription AZURE_SUBSCRIPTION_ID names?
+az group show -n rg-agentic-watershed --query id -o tsv
+```
+
+Empty output from (2) is the usual answer — re-run section 2. Allow a minute
+or two for propagation, then **Actions → the failed run → Re-run jobs**; no
+new commit is needed.
+
+**`FederatedIdentityCredential with name main already exists`** — harmless.
+Section 1 now detects this and verifies the existing `subject` instead of
+failing.
+
+A failed login costs nothing: the workflow stops before it touches ACR or the
+job, so nothing is half-deployed.
