@@ -102,6 +102,19 @@ PREDICTION_HORIZON_HOURS: dict[str, int] = {
 # false positives to be calibration-useful.
 PREDICTION_RISK_LEVELS = frozenset({"moderate", "high", "extreme"})
 
+# Predictions resolved before this instant were resolved by the superseded
+# mechanism — confirmation on a domain agent's `flagged` boolean rather than
+# on measured conditions. That produced 128 confirmed fire predictions and
+# zero expired, including one confirmed on a morning of 93.7% humidity and
+# 0 mph wind. Those resolutions are not evidence of anything, and the agent
+# was citing them ("59/65 confirmed ... no reason to lower threshold") to
+# justify holding at extreme. They are excluded from the ledger rather than
+# deleted: the rows stay as a record that the period happened.
+#
+# 2026-09-06T18:00Z is the first synthesis run on the measurement-based
+# resolver.
+LEDGER_VALID_FROM = "2026-09-06T18:00:00+00:00"
+
 SYSTEM_PROMPT = """You are a cross-domain environmental risk assessment agent for Napa Valley, California.
 
 You receive:
@@ -490,12 +503,34 @@ def _ensure_predictions_table(conn: sqlite3.Connection) -> None:
             predicted_level TEXT NOT NULL,       -- 'moderate' | 'high' | 'extreme'
             horizon_hours   INTEGER NOT NULL,    -- resolution window in hours
             status          TEXT NOT NULL DEFAULT 'pending',
-                                                 -- 'pending'|'confirmed'|'false_positive'|'expired'
+                                                 -- 'pending'|'confirmed'|'false_positive'
+                                                 -- |'expired'|'invalidated'
             resolved_at     TEXT,
             resolution_note TEXT
         )
     """)
     conn.commit()
+
+
+def _invalidate_legacy_resolutions(conn: sqlite3.Connection) -> int:
+    """Retire resolutions made by the superseded mechanism. Returns the count.
+
+    Idempotent — the status guard means a row is only ever touched once, so
+    this can run on every startup and does nothing after the first time.
+    Rows are marked, never deleted; the ledger stops counting them but the
+    history of the period remains inspectable.
+    """
+    cur = conn.execute(
+        """UPDATE predictions
+              SET status = 'invalidated',
+                  resolution_note = COALESCE(resolution_note, '')
+                      || ' [invalidated: resolved by the pre-2026-09-06 mechanism]'
+            WHERE resolved_at IS NOT NULL
+              AND resolved_at < ?
+              AND status != 'invalidated'""",
+        (LEDGER_VALID_FROM,),
+    )
+    return cur.rowcount or 0
 
 
 def _num(block: dict, *names) -> Optional[float]:
@@ -642,6 +677,13 @@ def check_predictions(grouped: dict[str, list[dict]],
         conn.row_factory = sqlite3.Row
         _ensure_predictions_table(conn)
 
+        retired = _invalidate_legacy_resolutions(conn)
+        if retired:
+            conn.commit()
+            log.warning("Ledger: retired %d resolution(s) made before %s by the "
+                        "superseded flagged-boolean mechanism; they no longer "
+                        "count toward calibration.", retired, LEDGER_VALID_FROM)
+
         now     = datetime.now(timezone.utc)
         now_str = now.isoformat()
 
@@ -678,13 +720,36 @@ def check_predictions(grouped: dict[str, list[dict]],
         cutoff_30d = (now - timedelta(days=30)).isoformat()
         rows = conn.execute(
             """SELECT risk_type, predicted_level, status, made_at, resolution_note
-               FROM predictions WHERE made_at >= ?
+               FROM predictions
+               WHERE made_at >= ? AND status != 'invalidated'
                ORDER BY made_at DESC""",
             (cutoff_30d,),
         ).fetchall()
+
+        # Retired resolutions are excluded above, but the agent needs to be
+        # told they exist. Otherwise the ledger simply looks thin, and a run
+        # that has been reasoning from "an unbroken confirmed history" will
+        # reach for an explanation rather than treat the record as reset.
+        retired_in_window = conn.execute(
+            "SELECT COUNT(*) FROM predictions WHERE made_at >= ? AND status = 'invalidated'",
+            (cutoff_30d,),
+        ).fetchone()[0]
         conn.close()
 
+        reset_note = (
+            f"NOTE: {retired_in_window} earlier prediction(s) in this window were resolved by a "
+            "superseded method that confirmed on another agent's judgement rather than on measured "
+            "conditions. They produced a near-perfect confirmation rate that did not reflect reality "
+            "and have been excluded. Calibration restarts from "
+            f"{LEDGER_VALID_FROM[:10]}; a short history is expected and is not evidence of accuracy. "
+            "Do not treat the earlier record as support for a current assessment."
+        ) if retired_in_window else None
+
         if not rows:
+            lines = ["=== PREDICTION LEDGER (last 30 days \u2014 no resolved predictions yet) ==="]
+            if reset_note:
+                lines.append(reset_note)
+                return "\n".join(lines)
             return None
 
         counts: dict[str, int] = {}
@@ -694,8 +759,10 @@ def check_predictions(grouped: dict[str, list[dict]],
 
         lines = [
             f"=== PREDICTION LEDGER (last 30 days \u2014 {len(rows)} total: {count_str}) ===",
-            "Recent predictions (newest first):",
         ]
+        if reset_note:
+            lines.append(reset_note)
+        lines.append("Recent predictions (newest first):")
         for p in [dict(r) for r in rows[:5]]:
             age_h = (now - datetime.fromisoformat(
                 p["made_at"].replace("Z", "+00:00"))).total_seconds() / 3600
