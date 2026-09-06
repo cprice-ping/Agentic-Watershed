@@ -1,0 +1,114 @@
+# Build and deploy the Synthesis agent to its Azure Container Apps Job.
+#
+# Synthesis runs from a container image, so a merge to main changes nothing
+# until the image is rebuilt — subscriber.py, publisher.py and agent/ are all
+# COPY'd in at build time. That gap is how #44's Fire fix sat in main for four
+# weeks while the Pi ran older code, and how #47's subscriber fix reached the
+# repo well before it reached Azure. This closes it for the Synthesis half.
+#
+# Auth is OIDC — no long-lived credential in the repo. See DEPLOYMENT.md
+# ("GitHub Actions deploy — one-time Azure setup") for the app registration,
+# federated credential, and role assignment this expects.
+#
+# Images are tagged with the commit SHA rather than only :latest, so the
+# deployed job spec names the commit that produced it. `latest` is re-pointed
+# afterwards so a manual `./deploy.sh --image-only` doesn't quietly ship an
+# older image.
+
+name: Deploy Synthesis
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Synthesis/**"
+      - ".github/workflows/deploy-synthesis.yml"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this manual deploy is being run"
+        required: false
+        default: "manual"
+
+# OIDC needs id-token: write. Everything else stays read-only.
+permissions:
+  id-token: write
+  contents: read
+
+# Never let two deploys race the same Container Apps Job. Queue rather than
+# cancel: a cancelled deploy can leave the job pointing at an image whose
+# build never finished.
+concurrency:
+  group: deploy-synthesis
+  cancel-in-progress: false
+
+env:
+  RESOURCE_GROUP: rg-agentic-watershed
+  ACR_NAME: agenticwatershed
+  IMAGE_NAME: synthesis
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image and update the job
+        working-directory: Synthesis/deploy
+        env:
+          # deploy.sh re-PUTs the whole job definition, secrets included, so it
+          # needs these even for --image-only. They are the app's own runtime
+          # credentials, not deployment credentials — Azure access is OIDC.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BSKY_SYNTH_HANDLE: ${{ secrets.BSKY_SYNTH_HANDLE }}
+          BSKY_SYNTH_APP_PASSWORD: ${{ secrets.BSKY_SYNTH_APP_PASSWORD }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ./deploy.sh --image-only
+
+      - name: Re-point :latest at this build
+        run: |
+          set -euo pipefail
+          az acr import \
+            --name "$ACR_NAME" \
+            --source "$ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}" \
+            --image "$IMAGE_NAME:latest" \
+            --force
+
+      - name: Confirm what the job is now running
+        run: |
+          set -euo pipefail
+          deployed=$(az containerapp job show \
+            --name synthesis-agent \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "properties.template.containers[0].image" -o tsv)
+          echo "Job image: $deployed"
+          # Fail loudly rather than reporting a green deploy that didn't land.
+          case "$deployed" in
+            *"${{ github.sha }}") echo "✓ matches this commit" ;;
+            *) echo "✗ job is running $deployed, expected tag ${{ github.sha }}" >&2
+               exit 1 ;;
+          esac
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Synthesis deploy"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| commit | \`${{ github.sha }}\` |"
+            echo "| image | \`$ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}\` |"
+            echo "| result | ${{ job.status }} |"
+            echo ""
+            echo "Takes effect on the next scheduled run (\`0 6,18 * * *\` UTC)."
+          } >> "$GITHUB_STEP_SUMMARY"
