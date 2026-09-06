@@ -105,16 +105,19 @@ Agentic-Watershed/
     collector.py                NWS observations + alerts → SQLite
     mcp_server.py                MCP tools over weather.db
     agent.py                     Domain agent (Haiku)
+    flag_rules.py                Flag criteria in code (shadow)
     README.md
   AQI/
     collector.py                 AirNow PM2.5/Ozone → SQLite
     mcp_server.py                 MCP tools over aqi.db
     agent.py                      Domain agent (Haiku)
+    flag_rules.py                 Flag criteria in code (shadow)
     README.md
   Fire/
     collector.py                 NASA FIRMS satellite hotspots → SQLite
     mcp_server.py                 MCP tools over fire.db
     agent.py                      Domain agent (Haiku)
+    flag_rules.py                 Flag criteria in code (shadow)
     README.md
   ATProto/
     publisher.py                  Publishes domain records to the node's PDS
@@ -125,6 +128,9 @@ Agentic-Watershed/
     publisher.py                   Posts the human-facing advisory to Bluesky
     deploy/deploy.sh               Azure Container Apps Job deployment
     README.md
+  Viewer/                          Static viewer for a single record + its sources
+  token_report.py                  Prices recorded token usage per domain
+  .github/workflows/               Synthesis rebuild + redeploy on merge to main
 ```
 
 ---
@@ -262,8 +268,10 @@ Without Docker (legacy — same schedule, `.venv/bin/python` instead of `docker 
 ```
 
 The Synthesis agent does **not** run via either of the above — it's an Azure
-Container Apps Job (`0 6,18 * * *` UTC), deployed via `Synthesis/deploy/deploy.sh`.
-See `CONTEXT.md` for the deployment details.
+Container Apps Job (`0 6,18 * * *` UTC). It redeploys automatically from GitHub
+Actions when a merge to `main` touches `Synthesis/`; `Synthesis/deploy/deploy.sh
+--image-only` does the same by hand. See `DEPLOYMENT.md` for the one-time Azure
+setup and `CONTEXT.md` for the rest.
 
 ---
 
