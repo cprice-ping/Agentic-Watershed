@@ -20,6 +20,7 @@ Run (HTTP, for testing with MCP Inspector):
 
 import argparse
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -46,6 +47,47 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 # DB helper
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Model provenance
+# ---------------------------------------------------------------------------
+
+def _agent_model() -> str | None:
+    """Model id the agent is running, from AGENT_MODEL in the environment.
+
+    Deliberately taken from the environment rather than a tool argument. This
+    value ends up in the published record's `agentModel` field, which exists
+    so consumers can weight an observation by the capability of whatever
+    produced it — a claim the model must not be able to make about itself.
+    agent.py sets it before spawning this server; the LLM never sees it.
+
+    None when unset, so the row records "we don't know" instead of a guess.
+    """
+    return os.environ.get("AGENT_MODEL", "").strip() or None
+
+
+def _token_usage() -> tuple[int | None, int | None]:
+    """Token counts for the call that produced this observation.
+
+    Set by agent.py from response.usage before this server is spawned. Absent
+    on a dry run or an older agent, in which case the row records NULL rather
+    than a zero that would read as a real measurement.
+    """
+    def _n(name: str) -> int | None:
+        raw = os.environ.get(name, "").strip()
+        return int(raw) if raw.isdigit() else None
+    return _n("AGENT_INPUT_TOKENS"), _n("AGENT_OUTPUT_TOKENS")
+
+
+def _ensure_model_column(conn: sqlite3.Connection) -> None:
+    """Add agent_observations.model to databases created before it existed."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_observations)")}
+    for name, decl in (("model", "TEXT"),
+                       ("input_tokens", "INTEGER"),
+                       ("output_tokens", "INTEGER")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE agent_observations ADD COLUMN {name} {decl}")
+
 
 def _db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -249,13 +291,17 @@ def write_agent_observation(
     """
     now = datetime.now(timezone.utc).isoformat()
     with _db() as conn:
+        _ensure_model_column(conn)
+        in_tok, out_tok = _token_usage()
         conn.execute(
             """
             INSERT INTO agent_observations
-                (observed_at, summary, flagged, reasoning)
-            VALUES (?, ?, ?, ?)
+                (observed_at, summary, flagged, reasoning, model,
+                 input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (now, summary, int(flagged), reasoning),
+            (now, summary, int(flagged), reasoning, _agent_model(),
+             in_tok, out_tok),
         )
         conn.commit()
     return json.dumps({"status": "ok", "observed_at": now})

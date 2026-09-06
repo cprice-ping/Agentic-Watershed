@@ -425,7 +425,7 @@ input[type=text]:focus { border-color: rgba(86,180,233,.45); outline: none; }
   .flagged-banner, .error { background: #fff; }
   .raw, .trace, .risk-value.none, .risk-value.low, .risk-value.moderate, .risk-value.high, .risk-value.extreme { color: #111; }
   .masthead svg.contour, .domain-icon svg, .foot a[href^="http"] { color: #036; }
-  .btn, .raw-toggle, .at-uri-chip { display: none; }
+  .btn, .raw-record, .at-uri-chip { display: none; }
 }
 
 /* Entrance choreography — one authored moment */
@@ -440,15 +440,40 @@ input[type=text]:focus { border-color: rgba(86,180,233,.45); outline: none; }
 .rise-4 { animation-delay: .28s; }
 .rise-5 { animation-delay: .36s; }
 
-/* Raw-record reveal */
-.raw-toggle { margin-top: 20px; }
-.raw {
-  display: none;
-  margin-top: 14px;
+/* Raw-record disclosure — native <details>, so keyboard and assistive
+   tech get the toggle for free. Shows the full PDS envelope, not a
+   reconstruction: getRecord gives {uri, cid, value}, listRecords entries
+   give {uri, value}. */
+.raw-record { margin-top: 14px; }
+.raw-record summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: .72rem;
+  color: var(--text-3);
+  user-select: none;
+  list-style: none;
+  transition: color .2s var(--ease);
+}
+.raw-record summary::-webkit-details-marker { display: none; }
+.raw-record summary::before {
+  content: "";
+  width: 0; height: 0;
+  border-left: 4px solid currentColor;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  transition: transform .2s var(--ease);
+}
+.raw-record[open] summary::before { transform: rotate(90deg); }
+.raw-record summary:hover { color: var(--water); }
+.raw-record pre {
+  margin: 10px 0 0;
+  padding: 14px;
   background: var(--bg-raised);
   border: 1px solid var(--hairline);
   border-radius: 8px;
-  padding: 14px;
   font-family: var(--mono);
   font-size: .72rem;
   line-height: 1.65;
@@ -457,12 +482,12 @@ input[type=text]:focus { border-color: rgba(86,180,233,.45); outline: none; }
   word-break: break-all;
   max-height: 400px;
   overflow-y: auto;
+  animation: rise .35s var(--ease);
 }
-.raw.open { display: block; animation: rise .35s var(--ease); }
-.raw::-webkit-scrollbar { width: 10px; }
-.raw::-webkit-scrollbar-track { background: transparent; }
-.raw::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 5px; border: 2px solid var(--bg-raised); }
-.raw { scrollbar-width: thin; scrollbar-color: var(--hairline-strong) transparent; }
+.raw-record pre::-webkit-scrollbar { width: 10px; }
+.raw-record pre::-webkit-scrollbar-track { background: transparent; }
+.raw-record pre::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 5px; border: 2px solid var(--bg-raised); }
+.raw-record pre { scrollbar-width: thin; scrollbar-color: var(--hairline-strong) transparent; }
 
 /* Responsive */
 @media (max-width: 640px) {
@@ -709,6 +734,25 @@ function riskValue(value) {
   return `<span class="risk-value ${esc(v)}">${esc(v)}</span>`;
 }
 
+// Collapsed raw-record view. Takes whatever the PDS actually returned —
+// getRecord gives {uri, cid, value}, listRecords entries give {uri, value} —
+// so the disclosure shows the real response rather than a reconstruction of
+// it, including any field this Viewer doesn't know how to render.
+function rawRecord(record, label = "Raw record") {
+  let json;
+  try {
+    json = JSON.stringify(record, null, 2);
+  } catch (err) {
+    // Nothing off a PDS should be circular, but a render helper is the wrong
+    // place to throw — a broken disclosure must not take the card down.
+    return `<div class="meta">Couldn't serialise this record: ${esc(err.message)}</div>`;
+  }
+  return `<details class="raw-record">`
+       + `<summary>${esc(label)} (JSON)</summary>`
+       + `<pre>${esc(json)}</pre>`
+       + `</details>`;
+}
+
 // ---------------------------------------------------------------------------
 // Main render
 // ---------------------------------------------------------------------------
@@ -766,29 +810,15 @@ async function render(uri) {
     html += `<div class="reasoning" role="article" aria-label="Full reasoning">${esc(synth.reasoning)}</div>`;
   }
 
-  // Provenance footer — the raw record, unfoldable.
-  html += `<div class="raw-toggle">
-    <button class="btn" id="raw-btn" aria-expanded="false" aria-controls="raw-panel">View raw record</button>
-    <pre class="raw" id="raw-panel"></pre>
-  </div>`;
+  // Provenance footer — the raw record, unfoldable. Full envelope: the
+  // real PDS response, including any field this card doesn't render.
+  html += rawRecord(synthRecord, "Raw synthesis record");
 
   html += `<div class="at-uri">${atUriChip(uri)}</div>`;
   html += `</article>`;
 
   app.innerHTML = html;
   document.getElementById("get-current-btn").addEventListener("click", goToCurrent);
-  document.getElementById("raw-btn").addEventListener("click", () => {
-    const panel = document.getElementById("raw-panel");
-    const btn = document.getElementById("raw-btn");
-    if (!panel.classList.contains("open")) {
-      if (!panel.textContent) panel.textContent = JSON.stringify(synthRecord.value, null, 2);
-      panel.classList.add("open");
-      btn.setAttribute("aria-expanded", "true");
-    } else {
-      panel.classList.remove("open");
-      btn.setAttribute("aria-expanded", "false");
-    }
-  });
   for (const chip of app.querySelectorAll(".at-uri-chip")) {
     chip.addEventListener("click", () => chip.classList.toggle("open"));
   }
@@ -867,6 +897,7 @@ async function render(uri) {
       blocks += `<p class="domain-summary">${esc(rv.summary || "")}</p>`;
       blocks += renderNumericFields(domainBlock);
       blocks += atUriChip(rec.uri);
+      blocks += rawRecord(rec);
       blocks += `</div>`;
     });
 

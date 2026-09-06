@@ -105,7 +105,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             summary         TEXT NOT NULL,
             flagged         INTEGER NOT NULL DEFAULT 0,  -- 0 or 1
             reasoning       TEXT,
-            raw_context     TEXT                         -- JSON snapshot agent used
+            raw_context     TEXT,                        -- JSON snapshot agent used
+            model           TEXT,                        -- model id that produced it
+            rules_flagged   INTEGER,                     -- deterministic verdict (shadow)
+            rules_fired     TEXT,                        -- JSON list of rules that matched
+            input_tokens    INTEGER,                     -- from response.usage
+            output_tokens   INTEGER
         );
 
         -- One row per collector run, written unconditionally (success or

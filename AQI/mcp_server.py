@@ -15,11 +15,19 @@ Tools:
 
 import argparse
 import json
+import os
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+
+# Resolve flag_rules from this file's directory rather than relying on
+# sys.path[0], which is only the script's directory when this module is
+# run as a script — it is also imported directly (tests, offline eval).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import flag_rules  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -43,6 +51,65 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 # DB helper
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Model provenance
+# ---------------------------------------------------------------------------
+
+def _agent_model() -> str | None:
+    """Model id the agent is running, from AGENT_MODEL in the environment.
+
+    Deliberately taken from the environment rather than a tool argument. This
+    value ends up in the published record's `agentModel` field, which exists
+    so consumers can weight an observation by the capability of whatever
+    produced it — a claim the model must not be able to make about itself.
+    agent.py sets it before spawning this server; the LLM never sees it.
+
+    None when unset, so the row records "we don't know" instead of a guess.
+    """
+    return os.environ.get("AGENT_MODEL", "").strip() or None
+
+
+def _token_usage() -> tuple[int | None, int | None]:
+    """Token counts for the call that produced this observation.
+
+    Set by agent.py from response.usage before this server is spawned. Absent
+    on a dry run or an older agent, in which case the row records NULL rather
+    than a zero that would read as a real measurement.
+    """
+    def _n(name: str) -> int | None:
+        raw = os.environ.get(name, "").strip()
+        return int(raw) if raw.isdigit() else None
+    return _n("AGENT_INPUT_TOKENS"), _n("AGENT_OUTPUT_TOKENS")
+
+
+def _ensure_shadow_columns(conn: sqlite3.Connection) -> None:
+    """Add columns to databases created before they existed."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_observations)")}
+    for name, decl in (("model", "TEXT"),
+                       ("rules_flagged", "INTEGER"),
+                       ("rules_fired", "TEXT"),
+                       ("input_tokens", "INTEGER"),
+                       ("output_tokens", "INTEGER")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE agent_observations ADD COLUMN {name} {decl}")
+
+
+def _rule_verdict(conn: sqlite3.Connection) -> tuple[int | None, str | None]:
+    """Deterministic flag verdict, recorded alongside the model's own.
+
+    Shadow only — nothing reads this to decide whether to flag. It exists so
+    the disagreement between the rules and the model is measurable before
+    anyone makes the rules authoritative. Never raises: a broken rule must not
+    be able to fail an agent run that would otherwise have written its
+    observation.
+    """
+    try:
+        verdict = flag_rules.evaluate(conn)
+        return int(verdict.must_flag), verdict.as_json()
+    except Exception:
+        return None, None
+
 
 def _db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -300,12 +367,17 @@ def write_agent_observation(
     """
     now = datetime.now(timezone.utc).isoformat()
     with _db() as conn:
+        _ensure_shadow_columns(conn)
+        rules_flagged, rules_fired = _rule_verdict(conn)
+        in_tok, out_tok = _token_usage()
         conn.execute(
             """
-            INSERT INTO agent_observations (observed_at, summary, flagged, reasoning)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO agent_observations (observed_at, summary, flagged, reasoning, model,
+                 rules_flagged, rules_fired, input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (now, summary, int(flagged), reasoning),
+            (now, summary, int(flagged), reasoning, _agent_model(),
+             rules_flagged, rules_fired, in_tok, out_tok),
         )
         conn.commit()
     return json.dumps({"status": "ok", "observed_at": now})
