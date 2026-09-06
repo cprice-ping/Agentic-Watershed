@@ -195,6 +195,14 @@ PDS individually via `plc.directory`, same pattern as `Viewer/index.html`'s
 `resolvePds()` — see "DID resolution" below. `ATPROTO_PDS_URL` is no longer
 read by the subscriber or set on the Azure job.
 
+Since 2026-09-06 the image rebuilds and redeploys from GitHub Actions on any
+merge to main touching `Synthesis/`, authenticated by OIDC rather than a stored
+credential. Images carry the commit SHA, and the workflow reads the job back
+and fails if the running image isn't the commit that just built — `:latest`
+alone couldn't distinguish "redeployed" from "unchanged", which is how the
+question "is Azure running current code?" kept coming up. `deploy.sh
+--image-only` still works by hand; DEPLOYMENT.md has the one-time Azure setup.
+
 Accumulating domain observations — first meaningful cross-domain synthesis
 expected after 2-3 days of data. Baseline established on first run (2026-06-22):
 low fire risk, no flood risk, low AQI risk. Marine influence dominant.
@@ -368,6 +376,54 @@ entry — see "Synthesis agent" above.
       SNPP-only was missing real detections during a live event (2026-07-15)
 - [x] River/Fire memory readback trimmed to summary only, not full reasoning
       text — was a real driver of Haiku token cost (2026-07-15)
+- [x] Publisher no longer aborts the whole run when one domain raises — Fire
+      being last in the list was the only reason the `fire.source` KeyError
+      cost just fire and not weather and aqi too. Still exits non-zero, so a
+      broken run doesn't read as a silent success to cron (2026-08-26)
+- [x] Publisher logs the checkout's branch and commit at startup. The Fire
+      crash sat fixed in main for four weeks while the Pi ran older code, and
+      `git pull` reported "Already up to date" because the checkout wasn't on
+      main. Nothing in publisher.log said which code produced a run
+      (2026-08-26)
+- [x] `subscriber.py` filters records outside the lookback window instead of
+      returning on the first one. The early exit assumed listRecords' rkey
+      order matched observedAt order, which stops being true after a backfill:
+      republishing 46 stranded Fire records put four-week-old observations at
+      the front of the repo, and the pre-fix subscriber fetched zero records
+      as a result (2026-08-27)
+- [x] `agentModel` records the model that actually ran. It had been a
+      hardcoded string in the record builders, so `--model sonnet` published a
+      record claiming Haiku. The value travels by environment variable rather
+      than as a tool argument — it ends up in the field consumers use to weigh
+      an observation, so the model must not be able to assert it about itself
+      (2026-09-04)
+- [x] Flag criteria evaluated in code alongside the model, shadow only.
+      `<Domain>/flag_rules.py` for Fire, Weather and AQI; the verdict is stored
+      next to the model's own and changes no behaviour. Making it authoritative
+      waits on the divergence data, mostly because Fire's persistence exception
+      is a de-escalation the rules deliberately don't implement (2026-09-04)
+- [x] Token usage recorded per run, and Synthesis moved from Sonnet 4.6 to
+      Sonnet 5 — a third cheaper on a newer model. `token_report.py` prices the
+      recorded usage per domain. The split between domain agents and Synthesis
+      had never actually been measured; the only prior data point was the
+      "Haiku 4-5x Sonnet" observation, which turned out to be prompt size
+      (2026-09-04)
+- [x] Viewer shows the raw record behind each card. `agentModel` had been
+      published on every record since #48 and was still unreachable from the
+      UI without hand-building an XRPC call (2026-09-05)
+- [x] Synthesis records comply with their own lexicon. Validating a live
+      advisory found four violations nothing had complained about — summary
+      and flagReason both over their maxLength, `reasoning` and `synthesisDid`
+      undeclared. Neither PDS validates an unknown custom lexicon, so an
+      invalid record publishes silently (2026-09-05)
+- [x] Synthesis auto-deploys from GitHub Actions on merge to main, OIDC auth,
+      images tagged by commit SHA. The deploy reads the job back afterwards and
+      fails unless the running image is the commit that just built, so a green
+      tick means the image landed rather than that the commands exited zero
+      (2026-09-06)
+- [x] Predictions resolve against measured conditions instead of another
+      agent's `flagged` boolean — see "The prediction ledger was a mirror"
+      below (2026-09-06)
 
 ### Host Synthesis agent outside the laptop — DONE
 
@@ -832,6 +888,109 @@ Once Phase 3 has accumulated a season of data:
 File Share, system prompt update to include it.
 
 ---
+
+## The prediction ledger was a mirror (2026-09)
+
+The synthesis agent had been reporting extreme fire risk on every run for over
+two weeks, including on mornings of 93.7% humidity and no wind. Its own prompt
+tells it to calibrate against the prediction ledger — "many false positives
+means you are being too aggressive; raise your threshold" — so the obvious
+question was why the ledger wasn't correcting it.
+
+It was, in a sense, doing the opposite. `_resolve_prediction()` confirmed a
+prediction whenever the corresponding domain agent's top-level `flagged` was
+true, on the reasoning that the agent's own assessment is authoritative. Fire
+maps to the Weather agent, and the Weather agent flags on nearly every run. So
+synthesis predicted extreme fire risk, Weather flagged for its own reasons, the
+prediction was marked confirmed, and the ledger reported a perfect record: 128
+confirmed fire predictions, one pending, zero expired, zero false positives.
+One of the confirmations carries the resolution note "a marked calm".
+
+The agent then cited that record back as justification. From the 2026-09-06
+18:00 run: "Prediction ledger shows high confirmation rate (59/65 confirmed,
+only 4 expired) validating continued extreme fire risk assessment — no reason
+to lower threshold at this time."
+
+Air quality looked healthier — 27 confirmed against 11 expired — but not
+because its resolution differed. It used the same `flagged` check. The AQI
+agent simply flags honestly, because PM2.5 is usually Good, so its predictions
+were free to expire. Weather never stops flagging, so fire's never could.
+
+The thresholds needed to fix this already existed as module constants, with a
+comment saying "encoding thresholds as constants prevents drift — the agent
+can't argue itself into a looser definition of confirmed", and the function's
+own docstring noted they were "not yet wired in". Resolution now reads the
+numbers in the record. Two other things came out of wiring it up: only
+observations that postdate a prediction can confirm it (any record in the
+lookback window used to count, so a prediction could be confirmed by data older
+than itself), and neither fire constant can currently be evaluated at all,
+because `weather.fireRisk` is never emitted by the publisher and `activeAlerts`
+is hardcoded to `[]`.
+
+The 128 legacy confirmations are marked `invalidated` rather than deleted, and
+excluded from the ledger the agent reads. Leaving them to age out over 30 days
+meant a month of the agent quoting a record the bug had manufactured. The
+ledger summary now also tells the agent the reset happened and that a short
+history is not itself evidence of accuracy — without that it would see a
+suddenly thin ledger after days of reasoning from an unbroken record and reach
+for an explanation, which is the failure this whole thing is about.
+
+### What generalises, and what doesn't
+
+The tempting conclusion is that models can't handle deterministic rules. That's
+too broad, and it points at the wrong fixes. Ask the model once, cold, whether
+93.7% is below 25% and it answers correctly every time.
+
+The 2026-09-06 record makes the narrower point better than any argument.
+Three values in a single run, same model, same prompt:
+
+  Diablo onset countdown   11 days -> 10 days   correct, computed by seasonal_context()
+  "Day N of drought"       143+ -> 143+ -> 145+ frozen a day, then jumped two
+  "Nth overnight cycle"    71st -> 72nd -> 73rd increments once per run, not per event
+
+The countdown is right because code calculates it from the date. The other two
+are carried in the agent's own prose from run to run, and nothing anchors them.
+Same run also restated 34.2% humidity as "below fire-weather thresholds" — its
+own threshold is 25% — and described winds at 190-280° as "offshore/Diablo
+direction", when the prompt defines Diablo as NE/E and calls SW/W the marine
+direction. Both errors move in the direction that supports the standing
+conclusion.
+
+So the failure isn't rules. It's state that has to be re-narrated to be used,
+inside a loop with nothing outside it to check against. Three loops here read
+what the agents themselves wrote: domain agent memory, synthesis memory, and
+the ledger — and the ledger was the one designed to be the anchor.
+
+The stronger form of the lesson: a grounding mechanism that isn't causally
+independent of the thing it grounds is a mirror. Confirming one model's claim
+with another model's judgement isn't verification, especially when both share a
+prompt lineage and a model family. That also bears on the multi-model idea in
+"Possible additions" — two models agreeing is weak evidence if they share
+priors, and independence is most of what a second opinion is worth.
+
+Worth noting what this cost to find: the drift came with rising confidence and
+a perfect self-reported track record. At the point the system was least
+reliable, its own scoreboard read 128 for 128. "Is the system reporting
+problems?" was not a usable check, and it took reading a published record and
+noticing a counter hadn't incremented.
+
+### Still open
+
+Whether the Weather agent's constant flagging is drift or a correctly applied
+but badly calibrated rule. Its criteria include gusts >= 45 mph applied across
+a 48-hour trend, and in a windy valley in September that threshold is plausibly
+crossed most days — one crossing keeps the flag true for four consecutive runs.
+If so the model is doing what it was told and the threshold is wrong for the
+location. The shadow verdicts from `flag_rules.py` separate these two, and
+until they have accumulated it isn't worth guessing; the fixes are completely
+different.
+
+Also unresolved: `domainsObserved` is still hardcoded to all four domains in
+`Synthesis/publisher.py`, and domain records still publish `flagReason` as an
+empty string. Both are the same shape as the `agentModel` problem — a field
+asserting something nobody checked — and both are waiting on the same
+divergence data, since `rules_fired` is the natural source for a real
+flagReason.
 
 ## Architecture decisions made
 
