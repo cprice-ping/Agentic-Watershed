@@ -34,7 +34,7 @@ import logging
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -171,15 +171,17 @@ def _fetch_weather_numerics(observed_at: str) -> dict:
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        cutoff = _stale_cutoff(observed_at, READING_MAX_AGE_HOURS)
         row = conn.execute(
             """
             SELECT temperature_f, humidity_pct, wind_speed_mph,
                    wind_direction_deg, wind_gust_mph, precip_24h_mm
             FROM observations
+            WHERE collected_at >= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
             LIMIT 1
             """,
-            (observed_at,),
+            (cutoff, observed_at),
         ).fetchone()
         conn.close()
         return dict(row) if row else {}
@@ -194,15 +196,17 @@ def _fetch_watershed_numerics(observed_at: str) -> dict:
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        cutoff = _stale_cutoff(observed_at, READING_MAX_AGE_HOURS)
         rows = conn.execute(
             """
             SELECT parameter_code, value
             FROM readings
             WHERE parameter_code IN ('00060', '00065') AND value IS NOT NULL
+              AND collected_at >= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
             LIMIT 10
             """,
-            (observed_at,),
+            (cutoff, observed_at),
         ).fetchall()
         conn.close()
         result = {}
@@ -227,15 +231,17 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        cutoff = _stale_cutoff(observed_at, READING_MAX_AGE_HOURS)
         rows = conn.execute(
             """
             SELECT parameter, aqi
             FROM observations
             WHERE parameter IN ('PM2.5', 'OZONE') AND aqi IS NOT NULL
+              AND collected_at >= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
             LIMIT 10
             """,
-            (observed_at,),
+            (cutoff, observed_at),
         ).fetchall()
         conn.close()
         result = {}
@@ -253,26 +259,78 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
         return {}
 
 
+# Staleness bounds for the numeric fields attached to a published record.
+#
+# Every collector DB keeps its rows forever, and these queries pick the row
+# nearest in time to the observation with no lower bound on how far "nearest"
+# may be. That is fine while the collectors are running and catastrophic when
+# one stops: the publisher goes on attaching the last reading it ever saw to
+# every subsequent record, with nothing marking it stale, and Synthesis reads
+# those numbers as current conditions.
+#
+# Fire is the case that bit us — its query ordered by distance rather than
+# time, so a single old detection stayed "nearest" indefinitely and a
+# five-day-old hotspot was published as an 8.5-mile threat while the agent's
+# own summary said nothing was inside 20 miles.
+#
+# The bound is measured from observedAt, not from now. A record describes the
+# moment it claims to, and republishing a backlog (as happened on 2026-08-26)
+# should attach the readings from that moment rather than today's.
+_FIRE_DAY_RANGE = _NODE_CFG["fire"].get("day_range", 2)
+NEAREST_HOTSPOT_MAX_AGE_HOURS = _FIRE_DAY_RANGE * 24 + 24  # matches Fire/mcp_server.py
+
+# Collectors poll every 15-30 minutes, so a reading hours old means the
+# collector is struggling. Wide enough to ride out a few missed polls, narrow
+# enough that a dead collector produces an absent field instead of a fiction.
+READING_MAX_AGE_HOURS = 6
+
+
+def _stale_cutoff(observed_at: str, hours: float) -> str:
+    """ISO cutoff `hours` before *observed_at*, for use as a SQL lower bound.
+
+    Falls back to the same span before now if observedAt can't be parsed —
+    an unreadable timestamp should narrow the query, never widen it.
+    """
+    try:
+        anchor = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        anchor = datetime.now(timezone.utc)
+    return (anchor - timedelta(hours=hours)).isoformat()
+
+
 def _fetch_fire_numerics(observed_at: str) -> dict:
-    """Return the nearest hotspot's distance/confidence/FRP closest in time
-    to observed_at — not the closest in *distance*, since the agent's own
-    reasoning already picked the relevant nearby hotspot; this just attaches
-    numeric context to whatever it reasoned about."""
+    """Return the nearest currently-relevant hotspot's distance/confidence/FRP.
+
+    "Nearest" means nearest in distance among hotspots still inside the
+    currency window — the same set the agent saw via get_nearest_hotspots, so
+    the numeric fields describe the hotspot the summary is actually about. The
+    lexicon defines nearestHotspotDistanceMi as "the nearest hotspot used in
+    this observation", and that is only true if both sides apply the same
+    window.
+
+    Returns no distance/confidence/frp at all when nothing is current, so
+    build_fire_record omits those fields rather than publishing a stale
+    reading. hotspotCount keeps its own 6-hour window, which the lexicon
+    documents separately.
+    """
     db_path = DB_PATHS["fire"]
     if not db_path.exists():
         return {}
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        cutoff = _stale_cutoff(observed_at, NEAREST_HOTSPOT_MAX_AGE_HOURS)
         row = conn.execute(
             """
             SELECT distance_mi, confidence, frp
             FROM hotspots
-            ORDER BY distance_mi ASC,
-                     ABS(strftime('%s', collected_at) - strftime('%s', ?))
+            WHERE collected_at >= ? AND distance_mi IS NOT NULL
+            ORDER BY distance_mi ASC
             LIMIT 1
             """,
-            (observed_at,),
+            (cutoff,),
         ).fetchone()
         count_row = conn.execute(
             """
