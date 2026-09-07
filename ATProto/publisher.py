@@ -34,7 +34,7 @@ import logging
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -253,26 +253,49 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
         return {}
 
 
+# Currency window for "nearest hotspot", matching
+# Fire/mcp_server.py's NEAREST_HOTSPOT_MAX_AGE_HOURS. The hotspots table keeps
+# every row forever, so without this the nearest-by-distance query returns the
+# closest detection ever recorded — and a single old hotspot with nothing
+# fresher since reads as an ongoing threat indefinitely. The MCP tool the agent
+# reasons with has always applied this window; the published numerics did not,
+# so the record could disagree with the summary sitting next to it.
+_FIRE_DAY_RANGE = _NODE_CFG["fire"].get("day_range", 2)
+NEAREST_HOTSPOT_MAX_AGE_HOURS = _FIRE_DAY_RANGE * 24 + 24
+
+
 def _fetch_fire_numerics(observed_at: str) -> dict:
-    """Return the nearest hotspot's distance/confidence/FRP closest in time
-    to observed_at — not the closest in *distance*, since the agent's own
-    reasoning already picked the relevant nearby hotspot; this just attaches
-    numeric context to whatever it reasoned about."""
+    """Return the nearest currently-relevant hotspot's distance/confidence/FRP.
+
+    "Nearest" means nearest in distance among hotspots still inside the
+    currency window — the same set the agent saw via get_nearest_hotspots, so
+    the numeric fields describe the hotspot the summary is actually about. The
+    lexicon defines nearestHotspotDistanceMi as "the nearest hotspot used in
+    this observation", and that is only true if both sides apply the same
+    window.
+
+    Returns no distance/confidence/frp at all when nothing is current, so
+    build_fire_record omits those fields rather than publishing a stale
+    reading. hotspotCount keeps its own 6-hour window, which the lexicon
+    documents separately.
+    """
     db_path = DB_PATHS["fire"]
     if not db_path.exists():
         return {}
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(hours=NEAREST_HOTSPOT_MAX_AGE_HOURS)).isoformat()
         row = conn.execute(
             """
             SELECT distance_mi, confidence, frp
             FROM hotspots
-            ORDER BY distance_mi ASC,
-                     ABS(strftime('%s', collected_at) - strftime('%s', ?))
+            WHERE collected_at >= ? AND distance_mi IS NOT NULL
+            ORDER BY distance_mi ASC
             LIMIT 1
             """,
-            (observed_at,),
+            (cutoff,),
         ).fetchone()
         count_row = conn.execute(
             """
