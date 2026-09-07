@@ -275,6 +275,17 @@ h1.eyebrow, h2.eyebrow {
 }
 .numeric b { color: var(--text); font-weight: 400; margin-right: 4px; }
 
+/* NWS alerts in effect — empty until the publisher started sending them */
+.alerts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.alert-chip {
+  font-size: .7rem;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 5px;
+  padding: 2px 7px;
+  opacity: .85;
+}
+
 /* at-uri chip — unfolds */
 .at-uri-chip {
   display: inline-flex;
@@ -710,6 +721,12 @@ function fmtTime(iso) {
 }
 
 const NUMERIC_FIELD_LABELS = {
+  temperatureF: ["Temp", "°F"], humidityPct: ["Humidity", "%"],
+  windSpeedMph: ["Wind", "mph"], windGustMph: ["Gust", "mph"],
+  windDirectionDeg: ["Wind dir", "°"], precipMm24h: ["Precip 24h", "mm"],
+  windPattern: ["Wind pattern", ""],
+  // Weather records published before the lexicon fix used the collector's
+  // raw column names. Kept so older records still render.
   temperature_f: ["Temp", "°F"], humidity_pct: ["Humidity", "%"],
   wind_speed_mph: ["Wind", "mph"], wind_gust_mph: ["Gust", "mph"],
   wind_direction_deg: ["Wind dir", "°"], precip_24h_mm: ["Precip 24h", "mm"],
@@ -726,6 +743,16 @@ const NUMERIC_FIELD_LABELS = {
   nearestHotspotFrpMw: ["FRP", "MW"],
   hotspotCount: ["Hotspots (6h)", ""],
 };
+
+// NWS alert names in effect at observedAt. Absent on every record published
+// before the publisher started reading the collector's alerts table.
+function renderAlerts(block) {
+  const alerts = (block && block.activeAlerts) || [];
+  if (!Array.isArray(alerts) || !alerts.length) return "";
+  return `<div class="alerts">${alerts
+    .map((a) => `<span class="alert-chip">${esc(String(a))}</span>`)
+    .join("")}</div>`;
+}
 
 function renderNumericFields(block) {
   if (!block) return "";
@@ -901,6 +928,7 @@ async function render(uri) {
       blocks += `<span class="domain-time">${fmtTime(rv.observedAt)}</span>`;
       blocks += `</div>`;
       blocks += `<p class="domain-summary">${esc(rv.summary || "")}</p>`;
+      blocks += renderAlerts(domainBlock);
       blocks += renderNumericFields(domainBlock);
       blocks += atUriChip(rec.uri);
       blocks += rawRecord(rec);

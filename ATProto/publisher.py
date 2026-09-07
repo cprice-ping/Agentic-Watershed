@@ -164,6 +164,21 @@ class BlueskySession:
 # Collector data enrichment — fetch numeric readings closest to observed_at
 # ---------------------------------------------------------------------------
 
+# SQLite column to lexicon field. The publisher spent its whole life emitting
+# the raw column names, which weatherData has never declared — a consumer
+# reading the lexicon and looking for windGustMph found nothing, while the
+# actual records carried wind_gust_mph. Rename at the fetch boundary so the
+# builder only ever handles declared names.
+_WEATHER_FIELD_MAP = {
+    "temperature_f":      "temperatureF",
+    "humidity_pct":       "humidityPct",
+    "wind_speed_mph":     "windSpeedMph",
+    "wind_direction_deg": "windDirectionDeg",
+    "wind_gust_mph":      "windGustMph",
+    "precip_24h_mm":      "precipMm24h",
+}
+
+
 def _fetch_weather_numerics(observed_at: str) -> dict:
     db_path = DB_PATHS["weather"]
     if not db_path.exists():
@@ -184,9 +199,98 @@ def _fetch_weather_numerics(observed_at: str) -> dict:
             (cutoff, observed_at),
         ).fetchone()
         conn.close()
-        return dict(row) if row else {}
     except sqlite3.Error:
         return {}
+    if not row:
+        return {}
+    return {field: row[column] for column, field in _WEATHER_FIELD_MAP.items()
+            if row[column] is not None}
+
+
+def _fetch_active_alerts(observed_at: str) -> list[str]:
+    """NWS alert event names in effect at observedAt.
+
+    This field was published as an empty list on every weather record ever
+    written, which is not "no alerts known" but a positive assertion that
+    none were active — and the collector has been storing them in the alerts
+    table the whole time. Synthesis reads activeAlerts to confirm fire
+    predictions against FIRE_CONFIRM_ALERTS; that branch could never fire.
+
+    Alerts are filtered by their own onset/expires rather than by collection
+    time, so a Red Flag Warning polled six hours ago and still in effect is
+    reported and one that has since expired is not. An alert whose window
+    won't parse is included: the collector saw it inside the staleness
+    window, and dropping it silently is the failure this fixes.
+    """
+    db_path = DB_PATHS["weather"]
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT event, onset, expires
+            FROM alerts
+            WHERE collected_at >= ? AND event IS NOT NULL AND event != ''
+            ORDER BY collected_at DESC
+            """,
+            (_stale_cutoff(observed_at, READING_MAX_AGE_HOURS),),
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return []
+
+    anchor = _anchor(observed_at)
+    events: list[str] = []
+    for r in rows:
+        expires = _parse_iso(r["expires"])
+        if expires is not None and expires < anchor:
+            continue
+        onset = _parse_iso(r["onset"])
+        if onset is not None and onset > anchor:
+            continue
+        event = r["event"].strip()
+        if event and event not in events:
+            events.append(event)
+    return events
+
+
+# Below this speed the vane is reporting noise, not a pattern.
+CALM_WIND_MPH = 3.0
+
+# Offshore quadrant, NNE through ESE. Same range as Synthesis's _is_diablo,
+# which carries the meteorological rationale; the two are separate
+# deployments and each needs its own copy.
+DIABLO_ARC_DEG = (22.0, 112.0)
+
+# South through WNW: San Pablo Bay is south of Napa and the Petaluma Gap
+# southwest, so this is where marine air arrives from.
+MARINE_ARC_DEG = (180.0, 300.0)
+
+
+def _wind_pattern(direction_deg, speed_mph) -> str:
+    """Classify wind pattern from direction and speed.
+
+    Deliberately never returns "valley", though the lexicon lists it. Napa
+    Valley runs NNW-SSE, so up-valley flow arrives from the same southerly
+    sector as marine air and direction alone cannot separate them. Returning
+    "unknown" for a sector we can't classify is worth more to a consumer than
+    a category that might be wrong — the same reason fireRisk stays absent
+    rather than being inferred from the numbers.
+    """
+    speed = _parse_float(speed_mph)
+    if speed is not None and speed < CALM_WIND_MPH:
+        return "calm"
+    deg = _parse_float(direction_deg)
+    if deg is None:
+        return "unknown"
+    deg %= 360
+    if DIABLO_ARC_DEG[0] <= deg <= DIABLO_ARC_DEG[1]:
+        return "diablo"
+    if MARINE_ARC_DEG[0] <= deg <= MARINE_ARC_DEG[1]:
+        return "marine"
+    return "unknown"
 
 
 def _fetch_watershed_numerics(observed_at: str) -> dict:
@@ -382,19 +486,36 @@ NEAREST_HOTSPOT_MAX_AGE_HOURS = _FIRE_DAY_RANGE * 24 + 24  # matches Fire/mcp_se
 READING_MAX_AGE_HOURS = 6
 
 
+def _parse_iso(value) -> datetime | None:
+    """An ISO8601 timestamp as an aware datetime, or None if it won't parse.
+
+    Naive timestamps are read as UTC — every collector writes UTC — while
+    NWS alert windows arrive with a local offset, so comparisons have to go
+    through datetimes rather than string ordering.
+    """
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _parse_float(value) -> float | None:
+    """Numeric value as a float, or None. Accepts the strings the publisher
+    itself emits, so a value can be re-read after _atproto_safe."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _anchor(observed_at: str) -> datetime:
     """The moment a record claims to describe, as a datetime.
 
     Falls back to now if observedAt can't be parsed — an unreadable
     timestamp should narrow a query window, never widen it.
     """
-    try:
-        anchor = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
-        if anchor.tzinfo is None:
-            anchor = anchor.replace(tzinfo=timezone.utc)
-        return anchor
-    except (TypeError, ValueError):
-        return datetime.now(timezone.utc)
+    return _parse_iso(observed_at) or datetime.now(timezone.utc)
 
 
 def _stale_cutoff(observed_at: str, hours: float) -> str:
@@ -495,13 +616,25 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
     numerics = _fetch_weather_numerics(observed_at)
     weather_block: dict = {
         "stationId": _NODE_CFG["weather"]["observation_station"],
-        "activeAlerts": [],
+        "activeAlerts": _fetch_active_alerts(observed_at),
     }
-    for field in ("temperature_f", "humidity_pct", "wind_speed_mph",
-                  "wind_direction_deg", "wind_gust_mph", "precip_24h_mm"):
+    for field in _WEATHER_FIELD_MAP.values():
         val = numerics.get(field)
         if val is not None:
             weather_block[field] = _atproto_safe(val)
+
+    # Derived here rather than asked of the model: it's a lookup from a number
+    # the record already carries, and Synthesis's Diablo branch has had
+    # nothing to read since it was written.
+    pattern = _wind_pattern(numerics.get("windDirectionDeg"),
+                            numerics.get("windSpeedMph"))
+    if pattern != "unknown":
+        weather_block["windPattern"] = pattern
+
+    # fireRisk stays absent. The lexicon calls it "the weather agent's
+    # assessment", and Weather/agent.py returns only summary, flagged and
+    # reasoning — there is no assessment to publish. Deriving one from the
+    # thresholds here would put a number in the agent's mouth.
 
     return {
         "$type": LEXICON,

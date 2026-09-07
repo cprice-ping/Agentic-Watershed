@@ -79,11 +79,13 @@ FIRE_CONFIRM_LEVELS   = frozenset({"high", "extreme"})  # weather.fireRisk value
 FIRE_CONFIRM_ALERTS   = frozenset({"Red Flag Warning", "Fire Weather Watch"})  # NWS alert names
 
 # Measured fire-weather thresholds, mirroring Weather/agent.py's own flag
-# criteria (and Weather/flag_rules.py). Needed because neither constant above
-# can be evaluated against what is actually published today: weather.fireRisk
-# is never emitted by ATProto/publisher.py, and activeAlerts is hardcoded to
-# []. Those two remain wired up so they start working the moment the publisher
-# does, but the numbers below are what confirms a prediction in practice.
+# criteria (and Weather/flag_rules.py). These were the only usable signal
+# while the publisher emitted an empty activeAlerts on every record and no
+# fireRisk at all. activeAlerts now carries the alerts the collector saw, so
+# FIRE_CONFIRM_ALERTS finally has something to match; fireRisk is still
+# absent, because the weather agent produces no such assessment to publish.
+# The numbers below remain what confirms a prediction in the common case
+# where no alert is in effect.
 FIRE_WX_TEMP_F           = 90.0   # with humidity and wind, all three together
 FIRE_WX_HUMIDITY_PCT     = 25.0
 FIRE_WX_WIND_MPH         = 15.0
@@ -384,14 +386,17 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
         (("gageHeightMaxFt", "gageHeightFt"),  "Gage height",      "ft",
          "flood risk building",    "normal"),
     ]
+    # Weather records published before the lexicon fix carry the collector's
+    # raw column names, which weatherData never declared; the snake_case
+    # fallbacks keep a window spanning the change readable.
     WEATHER_METRICS = [
-        ("temperature_f",     "Temperature",  "°F",
+        (("temperatureF", "temperature_f"),     "Temperature",  "°F",
          "warming",                        "cooling / fire risk easing"),
-        ("humidity_pct",      "Humidity",     "%",
+        (("humidityPct", "humidity_pct"),       "Humidity",     "%",
          "fire risk easing",              "⚠ fire risk building if trend continues"),
-        ("wind_speed_mph",    "Wind speed",   "mph",
+        (("windSpeedMph", "wind_speed_mph"),    "Wind speed",   "mph",
          "increased transport of smoke/embers", "easing"),
-        ("precip_24h_mm",     "Precip 24h",  "mm",
+        (("precipMm24h", "precip_24h_mm"),      "Precip 24h",  "mm",
          "wetting — flood risk if prolonged",   "drying"),
     ]
     AQI_METRICS = [
@@ -461,8 +466,8 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
             )
 
         # Wind direction: special-case because it's circular and Diablo-relevant
-        old_wd = oldest_raw.get("wind_direction_deg")
-        new_wd = latest_raw.get("wind_direction_deg")
+        old_wd = _num(oldest_raw, "windDirectionDeg", "wind_direction_deg")
+        new_wd = _num(latest_raw, "windDirectionDeg", "wind_direction_deg")
         if domain == "weather" and old_wd is not None and new_wd is not None:
             old_c = _deg_to_compass(float(old_wd))
             new_c = _deg_to_compass(float(new_wd))
@@ -541,9 +546,9 @@ def _invalidate_legacy_resolutions(conn: sqlite3.Connection) -> int:
 
 def _num(block: dict, *names) -> Optional[float]:
     """First numeric value among *names*, so both the lexicon's camelCase and
-    the snake_case ATProto/publisher.py actually emits resolve to the same
-    reading. The two disagree today (windGustMph vs wind_gust_mph); accepting
-    either means this keeps working whichever way that is settled."""
+    the snake_case the publisher used to emit resolve to the same reading.
+    The publisher now writes the declared names; the old ones stay accepted
+    because records published before that are still in the window."""
     for n in names:
         v = block.get(n)
         if v is None:
