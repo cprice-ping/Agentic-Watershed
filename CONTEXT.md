@@ -267,6 +267,25 @@ Required environment variables:
   Any numeric field pulled from a SQLite `REAL` column must be stringified before
   going into a record, or `createRecord` rejects it with `InvalidRequest`. Fixed
   in `publisher.py` via `_atproto_safe()`; worth remembering for any future field.
+- Watershed records published one gauge's reading as the whole watershed's,
+  2026-09-06 — fixed. The node polls two USGS stations, Napa (11458000) and
+  St Helena (11456000), and both report the same parameter codes. The
+  publisher's query selected parameter code and value with no station column
+  and kept whichever row sat nearest in time, so one station won both fields
+  and the other was dropped without trace. The record that surfaced it claimed
+  0.0 cfs and 0.47 ft while its own summary read "Near Napa: 0.14 cfs at
+  2.09 ft" — St Helena, which is dry in September, standing in for a river
+  that was still flowing. The lexicon had declared the right shape from the
+  start (`dischargeMinCfs`/`MeanCfs`/`MaxCfs`, `gageHeightMinFt`/`MaxFt`) and
+  the publisher had never implemented it, emitting undeclared singular fields
+  instead. Same family as the Fire distance bug: the numeric block and the
+  prose summary were computed from different data and nothing compared them.
+- `sevenDayTrend` was hardcoded to "unknown" on every watershed record ever
+  published, while the agent's own summary computed the trend in prose. Now
+  derived from discharge, comparing the older half of the seven-day window
+  against the newer half over stations present in both — a gauge dropping out
+  mid-window would otherwise move the aggregate on its own and read as a
+  trend in the river.
 - `PDS_HOSTNAME` alone does not authorize account handles under that domain on a
   self-hosted PDS — `PDS_SERVICE_HANDLE_DOMAINS` (suffix match, leading dot) is
   required too.
@@ -811,7 +830,9 @@ Shipped in `agent_atproto.py`:
 - Metrics tracked (field names match `ATProto/publisher.py`'s actual output as of
   2026-07-02 — the original field names here were speculative and never matched
   what got published; see "Known issues"):
-  - Watershed: `dischargeCfs`, `gageHeightFt`
+  - Watershed: `dischargeCfs`, `gageHeightFt` (superseded 2026-09-07 by
+    `dischargeMeanCfs` and `gageHeightMaxFt`; the old names are still read as
+    fallbacks so a trend window can span the change)
   - Weather: `temperature_f`, `humidity_pct`, `wind_speed_mph`, `precip_24h_mm`,
     `wind_direction_deg` (with Diablo quadrant detection)
   - AQI: `pm25Aqi`, `ozoneAqi`
@@ -859,7 +880,7 @@ Prediction resolution currently confirms via the domain agent's `flagged=True` f
 rather than specific numeric thresholds (`FIRE_CONFIRM_LEVELS`, `FLOOD_ACTION_STAGE_FT`,
 `AQI_USG_THRESHOLD`). This was originally deferred because the publisher only wrote
 `summary`/`flagged` to ATProto records — **that's no longer true as of 2026-07-02**;
-numeric fields (`temperature_f`, `dischargeCfs`, `gageHeightFt`, `pm25Aqi`, `ozoneAqi`,
+numeric fields (`temperature_f`, `dischargeMeanCfs`, `gageHeightMaxFt`, `pm25Aqi`, `ozoneAqi`,
 etc.) are now populated on every record. Threshold-based confirmation in
 `_resolve_prediction()` is a live option now, just not wired in yet — the constants
 are still sitting unused in code, waiting for that change.

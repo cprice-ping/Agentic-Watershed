@@ -713,6 +713,12 @@ const NUMERIC_FIELD_LABELS = {
   temperature_f: ["Temp", "°F"], humidity_pct: ["Humidity", "%"],
   wind_speed_mph: ["Wind", "mph"], wind_gust_mph: ["Gust", "mph"],
   wind_direction_deg: ["Wind dir", "°"], precip_24h_mm: ["Precip 24h", "mm"],
+  dischargeMinCfs: ["Discharge min", "cfs"], dischargeMeanCfs: ["Discharge mean", "cfs"],
+  dischargeMaxCfs: ["Discharge max", "cfs"],
+  gageHeightMinFt: ["Gage min", "ft"], gageHeightMaxFt: ["Gage max", "ft"],
+  sevenDayTrend: ["7-day trend", ""],
+  // Pre-aggregation records carry a single station's reading under these
+  // names. Kept so older records still render rather than going blank.
   dischargeCfs: ["Discharge", "cfs"], gageHeightFt: ["Gage height", "ft"],
   pm25Aqi: ["PM2.5 AQI", ""], ozoneAqi: ["Ozone AQI", ""],
   nearestHotspotDistanceMi: ["Nearest hotspot", "mi"],

@@ -190,6 +190,23 @@ def _fetch_weather_numerics(observed_at: str) -> dict:
 
 
 def _fetch_watershed_numerics(observed_at: str) -> dict:
+    """Aggregate the nearest current reading from every reporting station.
+
+    The Napa watershed is gauged at two points with very different regimes:
+    St Helena runs dry by late summer while Napa still carries flow. Both
+    report the same USGS parameter codes, and an earlier version of this
+    query selected (parameter_code, value) with no station column, keeping
+    whichever row happened to sit closest in time. One station's reading was
+    published as the whole watershed's and the other was silently dropped —
+    on 2026-09-06 that produced a record asserting 0.0 cfs and 0.47 ft while
+    its own summary read "Near Napa (11458000): 0.14 cfs at 2.09 ft".
+
+    The lexicon has always declared the right shape for two gauges — min,
+    mean and max across stations — so aggregate rather than pick. Stations
+    are reported as those that actually contributed, not the configured
+    list, so a gauge that goes dark shows up as an absent station instead of
+    disappearing into an average.
+    """
     db_path = DB_PATHS["watershed"]
     if not db_path.exists():
         return {}
@@ -199,29 +216,109 @@ def _fetch_watershed_numerics(observed_at: str) -> dict:
         cutoff = _stale_cutoff(observed_at, READING_MAX_AGE_HOURS)
         rows = conn.execute(
             """
-            SELECT parameter_code, value
+            SELECT station_id, parameter_code, value
             FROM readings
             WHERE parameter_code IN ('00060', '00065') AND value IS NOT NULL
               AND collected_at >= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
-            LIMIT 10
             """,
             (cutoff, observed_at),
         ).fetchall()
         conn.close()
-        result = {}
-        seen: set = set()
-        for r in rows:
-            code = r["parameter_code"]
-            if code not in seen:
-                seen.add(code)
-                if code == "00060":
-                    result["dischargeCfs"] = r["value"]
-                elif code == "00065":
-                    result["gageHeightFt"] = r["value"]
-        return result
     except sqlite3.Error:
         return {}
+
+    # Rows arrive ordered by distance from observedAt, so the first row seen
+    # for a (station, parameter) pair is that station's nearest reading.
+    nearest: dict[tuple, float] = {}
+    for r in rows:
+        nearest.setdefault((r["station_id"], r["parameter_code"]), r["value"])
+
+    discharge = [v for (_, code), v in nearest.items() if code == "00060"]
+    gage      = [v for (_, code), v in nearest.items() if code == "00065"]
+
+    result: dict = {}
+    if discharge:
+        result["dischargeMinCfs"]  = min(discharge)
+        result["dischargeMeanCfs"] = round(sum(discharge) / len(discharge), 3)
+        result["dischargeMaxCfs"]  = max(discharge)
+    if gage:
+        result["gageHeightMinFt"] = min(gage)
+        result["gageHeightMaxFt"] = max(gage)
+    if nearest:
+        result["stationIds"] = sorted({sid for sid, _ in nearest})
+    return result
+
+
+# Seven-day trend thresholds. A watershed in a dry September moves in
+# hundredths of a cfs, so a purely relative test calls noise a trend; a
+# purely absolute one is deaf to a river running at hundreds of cfs. Require
+# both: a change of at least 10% and of at least 0.05 cfs.
+TREND_WINDOW_HOURS = 24 * 7
+TREND_MIN_RELATIVE_CHANGE = 0.10
+TREND_MIN_ABSOLUTE_CHANGE_CFS = 0.05
+
+
+def _fetch_watershed_trend(observed_at: str) -> str:
+    """Direction of discharge over the seven days ending at observedAt.
+
+    Compares mean discharge in the older half of the window against the
+    newer half, and only over stations present in both halves — a gauge that
+    drops out mid-window would otherwise move the aggregate by itself and
+    read as a trend in the river.
+
+    Returns one of the lexicon's knownValues. "unknown" means there wasn't
+    enough data to say, which is what this field claimed unconditionally
+    before it was computed at all.
+    """
+    db_path = DB_PATHS["watershed"]
+    if not db_path.exists():
+        return "unknown"
+
+    end = _anchor(observed_at)
+    start = end - timedelta(hours=TREND_WINDOW_HOURS)
+    midpoint = end - timedelta(hours=TREND_WINDOW_HOURS / 2)
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT station_id, collected_at, value
+            FROM readings
+            WHERE parameter_code = '00060' AND value IS NOT NULL
+              AND collected_at >= ? AND collected_at <= ?
+            """,
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return "unknown"
+
+    mid_iso = midpoint.isoformat()
+    halves: dict[str, list] = {}
+    for r in rows:
+        older, newer = halves.setdefault(r["station_id"], ([], []))
+        (older if r["collected_at"] < mid_iso else newer).append(r["value"])
+
+    older_total = newer_total = 0.0
+    stations_compared = 0
+    for older, newer in halves.values():
+        if not older or not newer:
+            continue
+        older_total += sum(older) / len(older)
+        newer_total += sum(newer) / len(newer)
+        stations_compared += 1
+
+    if not stations_compared:
+        return "unknown"
+
+    delta = newer_total - older_total
+    threshold = max(TREND_MIN_ABSOLUTE_CHANGE_CFS,
+                    TREND_MIN_RELATIVE_CHANGE * older_total)
+    if abs(delta) < threshold:
+        return "stable"
+    return "rising" if delta > 0 else "falling"
 
 
 def _fetch_aqi_numerics(observed_at: str) -> dict:
@@ -285,19 +382,24 @@ NEAREST_HOTSPOT_MAX_AGE_HOURS = _FIRE_DAY_RANGE * 24 + 24  # matches Fire/mcp_se
 READING_MAX_AGE_HOURS = 6
 
 
-def _stale_cutoff(observed_at: str, hours: float) -> str:
-    """ISO cutoff `hours` before *observed_at*, for use as a SQL lower bound.
+def _anchor(observed_at: str) -> datetime:
+    """The moment a record claims to describe, as a datetime.
 
-    Falls back to the same span before now if observedAt can't be parsed —
-    an unreadable timestamp should narrow the query, never widen it.
+    Falls back to now if observedAt can't be parsed — an unreadable
+    timestamp should narrow a query window, never widen it.
     """
     try:
         anchor = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
         if anchor.tzinfo is None:
             anchor = anchor.replace(tzinfo=timezone.utc)
+        return anchor
     except (TypeError, ValueError):
-        anchor = datetime.now(timezone.utc)
-    return (anchor - timedelta(hours=hours)).isoformat()
+        return datetime.now(timezone.utc)
+
+
+def _stale_cutoff(observed_at: str, hours: float) -> str:
+    """ISO cutoff `hours` before *observed_at*, for use as a SQL lower bound."""
+    return (_anchor(observed_at) - timedelta(hours=hours)).isoformat()
 
 
 def _fetch_fire_numerics(observed_at: str) -> dict:
@@ -362,14 +464,19 @@ def _atproto_safe(value):
 
 def build_watershed_record(row: dict, observed_at: str) -> dict:
     numerics = _fetch_watershed_numerics(observed_at)
+    # Fall back to the configured stations only when nothing is current —
+    # an empty list would read as "no gauges exist" rather than "no gauge
+    # reported in time".
+    station_ids = (numerics.pop("stationIds", None)
+                   or list(_NODE_CFG["watershed"]["usgs_stations"]))
     watershed_block: dict = {
-        "stationIds": [f"USGS-{sid}" for sid in _NODE_CFG["watershed"]["usgs_stations"]],
-        "sevenDayTrend": "unknown",
+        "stationIds": [f"USGS-{sid}" for sid in station_ids],
+        "sevenDayTrend": _fetch_watershed_trend(observed_at),
     }
-    if "dischargeCfs" in numerics:
-        watershed_block["dischargeCfs"] = _atproto_safe(numerics["dischargeCfs"])
-    if "gageHeightFt" in numerics:
-        watershed_block["gageHeightFt"] = _atproto_safe(numerics["gageHeightFt"])
+    for field in ("dischargeMinCfs", "dischargeMeanCfs", "dischargeMaxCfs",
+                  "gageHeightMinFt", "gageHeightMaxFt"):
+        if field in numerics:
+            watershed_block[field] = _atproto_safe(numerics[field])
 
     return {
         "$type": LEXICON,
