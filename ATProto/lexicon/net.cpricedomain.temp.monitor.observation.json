@@ -138,43 +138,43 @@
           "description": "Observation station identifier. e.g. 'KAPC' for Napa County Airport."
         },
         "temperatureF": {
-          "type": "number",
-          "description": "Current temperature in Fahrenheit."
+          "type": "string",
+          "description": "Current temperature in Fahrenheit. Stringified — DAG-CBOR has no float type."
         },
         "humidityPct": {
-          "type": "number",
-          "description": "Relative humidity percentage."
+          "type": "string",
+          "description": "Relative humidity percentage. Stringified — DAG-CBOR has no float type."
         },
         "windSpeedMph": {
-          "type": "number",
-          "description": "Wind speed in miles per hour."
+          "type": "string",
+          "description": "Wind speed in miles per hour. Stringified — DAG-CBOR has no float type."
         },
         "windGustMph": {
-          "type": "number",
-          "description": "Wind gust speed in miles per hour."
+          "type": "string",
+          "description": "Wind gust speed in miles per hour. Stringified — DAG-CBOR has no float type."
         },
         "windDirectionDeg": {
-          "type": "number",
-          "description": "Wind direction in degrees. 0/360=N, 90=E, 180=S, 270=W. NE (45°) indicates Diablo wind pattern."
+          "type": "string",
+          "description": "Wind direction in degrees. 0/360=N, 90=E, 180=S, 270=W. NE (45°) indicates Diablo wind pattern. Stringified — DAG-CBOR has no float type."
         },
         "windPattern": {
           "type": "string",
           "knownValues": ["marine", "diablo", "valley", "calm", "unknown"],
-          "description": "Interpreted wind pattern. Diablo (NE/E offshore flow) dramatically increases fire risk."
+          "description": "Interpreted wind pattern. Diablo (NE/E offshore flow) dramatically increases fire risk. Derived from direction and speed by the publisher; omitted rather than guessed when the sector is ambiguous. 'valley' is never emitted — Napa Valley runs NNW-SSE, so up-valley flow shares a sector with marine air and direction alone cannot separate them."
         },
         "precipMm24h": {
-          "type": "number",
-          "description": "Precipitation in millimetres over the last 24 hours."
+          "type": "string",
+          "description": "Precipitation in millimetres over the last 24 hours. Stringified — DAG-CBOR has no float type."
         },
         "activeAlerts": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Active NWS alert event names. e.g. ['Red Flag Warning', 'Flood Watch']"
+          "description": "NWS alert event names in effect at observedAt, filtered by each alert's own onset/expires. e.g. ['Red Flag Warning', 'Flood Watch']. An empty array asserts no alert was in effect, not that none were checked."
         },
         "fireRisk": {
           "type": "string",
           "knownValues": ["none", "low", "moderate", "high", "extreme"],
-          "description": "Weather agent's assessment of fire weather risk."
+          "description": "Weather agent's assessment of fire weather risk. Not currently populated: Weather/agent.py returns only summary, flagged and reasoning, so there is no assessment to carry here."
         }
       }
     },

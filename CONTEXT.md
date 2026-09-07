@@ -286,6 +286,31 @@ Required environment variables:
   against the newer half over stations present in both — a gauge dropping out
   mid-window would otherwise move the aggregate on its own and read as a
   trend in the river.
+- Weather records published field names the lexicon never declared, 2026-09-07
+  — fixed. The publisher wrote the collector's raw SQLite column names
+  (`temperature_f`, `wind_gust_mph`, `precip_24h_mm`) while `weatherData`
+  declares `temperatureF`, `windGustMph`, `precipMm24h`. Anything reading the
+  lexicon and looking for the declared names found nothing. Synthesis had
+  already worked around it with a `_num()` helper accepting either spelling,
+  which is why it went unnoticed for months — the workaround made the record
+  wrong in a way nothing complained about. Renamed at the fetch boundary; the
+  old names stay readable on the consumer side because records carrying them
+  are still inside the lookback window.
+- `activeAlerts` was hardcoded to `[]` on every weather record ever published,
+  which is not "no alerts known" but an assertion that none were active. The
+  collector has been storing NWS alerts in its `alerts` table the whole time,
+  and Synthesis has a `FIRE_CONFIRM_ALERTS` branch that could never fire.
+  Alerts are now filtered by their own onset/expires against observedAt rather
+  than by collection time, and parsed as datetimes rather than compared as
+  strings — NWS returns local offsets, so `2026-09-06T20:00:00-07:00` sorts
+  wrongly against a UTC anchor.
+- `windPattern` is now derived by the publisher from direction and speed, which
+  is a lookup rather than a judgment. It deliberately never returns "valley"
+  even though the lexicon lists it: Napa Valley runs NNW-SSE, so up-valley flow
+  arrives from the same southerly sector as marine air and direction alone
+  cannot separate them. Sectors outside the Diablo and marine arcs return
+  "unknown" and the field is omitted. Same reasoning as leaving `fireRisk`
+  absent — a category that might be wrong is worth less than no category.
 - `PDS_HOSTNAME` alone does not authorize account handles under that domain on a
   self-hosted PDS — `PDS_SERVICE_HANDLE_DOMAINS` (suffix match, leading dot) is
   required too.
@@ -833,8 +858,8 @@ Shipped in `agent_atproto.py`:
   - Watershed: `dischargeCfs`, `gageHeightFt` (superseded 2026-09-07 by
     `dischargeMeanCfs` and `gageHeightMaxFt`; the old names are still read as
     fallbacks so a trend window can span the change)
-  - Weather: `temperature_f`, `humidity_pct`, `wind_speed_mph`, `precip_24h_mm`,
-    `wind_direction_deg` (with Diablo quadrant detection)
+  - Weather: `temperatureF`, `humidityPct`, `windSpeedMph`, `precipMm24h`,
+    `windDirectionDeg` (with Diablo quadrant detection), `windPattern`
   - AQI: `pm25Aqi`, `ozoneAqi`
 
 - Each metric shows: old → new value, delta, hours elapsed, direction, and a plain-language
@@ -944,9 +969,13 @@ own docstring noted they were "not yet wired in". Resolution now reads the
 numbers in the record. Two other things came out of wiring it up: only
 observations that postdate a prediction can confirm it (any record in the
 lookback window used to count, so a prediction could be confirmed by data older
-than itself), and neither fire constant can currently be evaluated at all,
-because `weather.fireRisk` is never emitted by the publisher and `activeAlerts`
-is hardcoded to `[]`.
+than itself), and neither fire constant could be evaluated at all, because
+`weather.fireRisk` was never emitted by the publisher and `activeAlerts` was
+hardcoded to `[]`. The alerts half of that is fixed as of 2026-09-07 —
+`FIRE_CONFIRM_ALERTS` now has something to match. `fireRisk` stays absent, and
+should: the weather agent returns only summary, flagged and reasoning, so
+publishing a risk level would mean inventing an assessment and attributing it
+to the agent.
 
 The 128 legacy confirmations are marked `invalidated` rather than deleted, and
 excluded from the ledger the agent reads. Leaving them to age out over 30 days
