@@ -98,28 +98,28 @@
           "description": "USGS or other station identifiers contributing to this observation."
         },
         "dischargeMinCfs": {
-          "type": "number",
-          "description": "Minimum stream discharge in cubic feet per second across stations."
+          "type": "string",
+          "description": "Minimum stream discharge in cubic feet per second across stations. Stringified — DAG-CBOR has no float type."
         },
         "dischargeMeanCfs": {
-          "type": "number",
-          "description": "Mean stream discharge in cubic feet per second across stations."
+          "type": "string",
+          "description": "Mean stream discharge in cubic feet per second across stations. Stringified — DAG-CBOR has no float type."
         },
         "dischargeMaxCfs": {
-          "type": "number",
-          "description": "Maximum stream discharge in cubic feet per second across stations."
+          "type": "string",
+          "description": "Maximum stream discharge in cubic feet per second across stations. Stringified — DAG-CBOR has no float type."
         },
         "gageHeightMinFt": {
-          "type": "number",
-          "description": "Minimum gage height in feet across stations."
+          "type": "string",
+          "description": "Minimum gage height in feet across stations. Stringified — DAG-CBOR has no float type."
         },
         "gageHeightMaxFt": {
-          "type": "number",
-          "description": "Maximum gage height in feet across stations."
+          "type": "string",
+          "description": "Maximum gage height in feet across stations. Stringified — DAG-CBOR has no float type."
         },
         "floodStageThresholdFt": {
-          "type": "number",
-          "description": "NWS flood stage threshold in feet for the primary station."
+          "type": "string",
+          "description": "NWS flood stage threshold in feet for the primary station. Stringified — DAG-CBOR has no float type. Not currently populated: no flood stage is configured for either Napa gauge."
         },
         "sevenDayTrend": {
           "type": "string",

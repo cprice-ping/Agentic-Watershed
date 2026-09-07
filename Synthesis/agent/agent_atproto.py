@@ -371,14 +371,17 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
     exist for every domain (nothing to compute).
     """
 
-    # (lexicon_field, display_label, unit, rise_note, fall_note)
-    # Field names match what ATProto/publisher.py actually writes — the
-    # closest single reading to observed_at, not an aggregate, despite the
-    # discharge/gage-height labels below saying "mean"/"max" for readability.
+    # (lexicon_field(s), display_label, unit, rise_note, fall_note)
+    # A field may be a tuple of candidates tried in order. Watershed records
+    # published before the aggregation fix carry the singular dischargeCfs /
+    # gageHeightFt — one arbitrary station's reading — so the old names stay
+    # as fallbacks and the window can span the change. A window straddling it
+    # compares one station against a two-station aggregate, which is only
+    # roughly comparable; it self-corrects once the window clears the change.
     WATERSHED_METRICS = [
-        ("dischargeCfs",  "River discharge", "cfs",
+        (("dischargeMeanCfs", "dischargeCfs"), "River discharge", "cfs",
          "flood risk building",    "normal summer decline / drought stress if rapid"),
-        ("gageHeightFt",  "Gage height",      "ft",
+        (("gageHeightMaxFt", "gageHeightFt"),  "Gage height",      "ft",
          "flood risk building",    "normal"),
     ]
     WEATHER_METRICS = [
@@ -427,8 +430,11 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
 
         lines = []
         for field, label, unit, rise_note, fall_note in metric_defs:
-            old_val = oldest_raw.get(field)
-            new_val = latest_raw.get(field)
+            names = (field,) if isinstance(field, str) else field
+            old_val = next((oldest_raw[n] for n in names
+                            if oldest_raw.get(n) is not None), None)
+            new_val = next((latest_raw[n] for n in names
+                            if latest_raw.get(n) is not None), None)
             if old_val is None or new_val is None:
                 continue
             try:
