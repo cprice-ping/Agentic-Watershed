@@ -51,10 +51,24 @@ FLOOD_ALERT_EVENTS = ("Flood Watch", "Flood Warning")
 # a lull during an ongoing wind event still warrants a flag.
 TREND_WINDOW_HOURS = 48.0
 
-# How far back to look for the last meaningful rain, and what counts as
-# meaningful. Context for the model rather than a flag criterion.
-DRY_SPELL_LOOKBACK_DAYS  = 7
-MEANINGFUL_RAIN_1H_MM    = 1.0
+# What counts as meaningful rain. Context for the model rather than a flag
+# criterion.
+MEANINGFUL_RAIN_1H_MM = 1.0
+
+# How far back get_fire_risk_indicators reports on recent rain.
+DRY_SPELL_LOOKBACK_DAYS = 7
+
+# The dry-spell counter searches the whole observation record instead, with no
+# lookback. A 7-day bound is why nothing could ever substantiate the "147+
+# consecutive precipitation-free days" that synthesis summaries had been
+# carrying forward in prose: the deepest true statement available was "none in
+# the last 7 days", so the counter was incrementing itself across runs with
+# nothing measuring it.
+#
+# The honest form of this number is bounded by the record, not by the climate.
+# If no rain appears anywhere in the observations table, the answer is "none
+# in the N days we have data for, and our data starts on <date>" — never a
+# drought length. That distinction is the whole point of computing it.
 
 
 def _n(value: float) -> str:

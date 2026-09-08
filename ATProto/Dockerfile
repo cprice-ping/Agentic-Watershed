@@ -22,3 +22,4 @@ COPY ATProto ./ATProto
 # and never hit it.
 COPY node_config.json ./node_config.json
 COPY Fire/thresholds.py ./Fire/thresholds.py
+COPY Weather/thresholds.py ./Weather/thresholds.py

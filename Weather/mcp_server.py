@@ -262,6 +262,64 @@ def get_active_alerts() -> str:
     return json.dumps(_rows_to_dicts(rows), indent=2)
 
 
+def _dry_spell(conn: sqlite3.Connection) -> dict:
+    """Days since the last measurable rain, searching the whole record.
+
+    Deliberately bounded by the observation record rather than presented as a
+    drought length. When no rain appears anywhere in the table the answer is
+    "none in the N days we hold, and the record starts on <date>", never
+    "an N-day drought" — the collector cannot see past its own first row, and
+    a number that outruns its evidence is what produced the "147+ consecutive
+    precipitation-free days" that synthesis had been carrying in prose while
+    nothing measured it.
+
+    A dry summer in Napa is also the seasonal norm, not an anomaly, so the
+    reply says which it is rather than leaving the reader to infer.
+    """
+    now = datetime.now(timezone.utc)
+    first = conn.execute(
+        "SELECT MIN(collected_at) AS t FROM observations"
+    ).fetchone()
+    if not first or not first["t"]:
+        return {"status": "no observations recorded"}
+
+    record_start = first["t"]
+    record_days = max(0, (now - datetime.fromisoformat(record_start)).days)
+
+    last_rain = conn.execute(
+        """
+        SELECT collected_at, precip_1h_mm FROM observations
+        WHERE precip_1h_mm > ?
+        ORDER BY collected_at DESC LIMIT 1
+        """,
+        (thresholds.MEANINGFUL_RAIN_1H_MM,),
+    ).fetchone()
+
+    result = {
+        "measurable_rain_threshold_mm_1h": thresholds.MEANINGFUL_RAIN_1H_MM,
+        "observation_record_starts": record_start,
+        "observation_record_days": record_days,
+        "seasonal_note": (
+            "Napa's dry season runs roughly May-October; consecutive rainless "
+            "days in that span are the seasonal norm, not evidence of drought."
+        ),
+    }
+    if last_rain:
+        result["last_measurable_rain"] = last_rain["collected_at"]
+        result["days_since_measurable_rain"] = max(
+            0, (now - datetime.fromisoformat(last_rain["collected_at"])).days)
+    else:
+        result["last_measurable_rain"] = None
+        result["days_since_measurable_rain"] = None
+        result["note"] = (
+            f"No measurable rain anywhere in the {record_days}-day observation "
+            f"record. The true dry spell is at least this long and may be "
+            f"longer; this collector cannot see before {record_start[:10]}, so "
+            f"do not state a specific number of drought days beyond it."
+        )
+    return result
+
+
 @mcp.tool()
 def get_fire_risk_indicators() -> str:
     """
@@ -311,6 +369,8 @@ def get_fire_risk_indicators() -> str:
             (thresholds.MEANINGFUL_RAIN_1H_MM, cutoff_7d),
         ).fetchone()
 
+        dry_spell = _dry_spell(conn)
+
     if not latest:
         return "No observations available."
 
@@ -327,6 +387,7 @@ def get_fire_risk_indicators() -> str:
         # against a prompt that said 25% / 15 mph / 45 mph gusts, so the model
         # was reading two different rulebooks — one as instruction and one,
         # because it arrived inside the measurements, as fact.
+        "dry_spell": dry_spell,
         "fire_risk_criteria": thresholds.as_dict(),
     }
     return json.dumps(result, indent=2)

@@ -203,6 +203,29 @@ FIRE DETECTION (satellite hotspots) directly answers what smoke alone can only i
   - Hotspot count or FRP rising across consecutive fire-agent runs = growing fire, escalate
     even if it hasn't yet shown up as a wind/AQI signal
 
+QUANTITIES YOU MUST NOT INVENT. Every number in your reasoning has to come from
+an observation, a computed trend, or the seasonal calendar in this prompt. Do
+not carry a figure forward from your own earlier write-ups and increment it —
+your history is prose you wrote, not measurement, and a counter that grows
+run to run with nothing re-deriving it is fabrication however plausible it
+looks. Two specific cases:
+  - Dry-spell length: use daysSinceMeasurableRain from the weather observation.
+    If instead you see dryRecordDays, that is the length of the collector's
+    record with no rain in it — the dry spell is AT LEAST that long and the
+    collector cannot see further back. Say "at least N days"; never state a
+    longer figure, and never call it a drought of a specific duration.
+  - A rainless Napa summer is the seasonal norm. The seasonal calendar tells
+    you whether the dry season is active. Consecutive rainless days between
+    roughly May and October are expected and are not by themselves evidence
+    of drought, "historic" conditions, or anything unprecedented.
+
+RIVER DISCHARGE IS A RATE, NOT A VOLUME. Zero or near-zero cfs means no
+measurable flow; it does not mean the channel is dry, and it says nothing
+about reservoir, municipal, or firefighting water supply, none of which this
+system observes. Gage height in the same record tells you whether water is
+present. Do not infer water scarcity beyond what discharge and stage actually
+measure.
+
 TRAJECTORY SIGNALS to look for across your recent history:
   - Gradual drying trend in humidity over multiple days = fire risk building
   - AQI creeping up over several runs = smoke accumulating, monitor
@@ -482,9 +505,23 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
         except (KeyError, ValueError):
             hours = 12.0
 
+        # Wind magnitudes are only comparable when both ends of the window
+        # postdate the collector's unit fix. Before it, a record's wind is
+        # 3.6x too high, so a window straddling the fix reports the correction
+        # as a 72% collapse in wind speed — which is exactly how the
+        # 2026-09-08T18:00Z synthesis came to describe "genuine short-term
+        # moderation" and "a temporary lull" in weather that never changed.
+        # WIND_DATA_VALID_FROM guarded prediction resolution from the start;
+        # it has to guard the trend the agent reads as well.
+        wind_comparable = (_wind_is_trustworthy(oldest.get("observed_at"))
+                           and _wind_is_trustworthy(latest.get("observed_at")))
+
         lines = []
         for field, label, unit, rise_note, fall_note in metric_defs:
             names = (field,) if isinstance(field, str) else field
+            if domain == "weather" and not wind_comparable and (
+                    set(names) & _WIND_MAGNITUDE_FIELDS):
+                continue
             old_val = next((oldest_raw[n] for n in names
                             if oldest_raw.get(n) is not None), None)
             new_val = next((latest_raw[n] for n in names
@@ -536,6 +573,32 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
         if domain == "weather" and old_wp and new_wp and old_wp != new_wp:
             diablo_flag = " ⚠" if new_wp == "diablo" else ""
             lines.append(f"  Wind pattern: {old_wp} → {new_wp}{diablo_flag}")
+
+        # Zero discharge is not zero water, and the agent had been treating it
+        # as such — the 2026-09-08T18:00Z synthesis turned "St. Helena 0.0 cfs"
+        # into "zero watershed water availability for firefighting". Discharge
+        # is a rate; stage is presence. State the distinction from the numbers
+        # rather than leaving it to be inferred, since both are published and
+        # only one was being read.
+        if domain == "watershed":
+            gage = _num(latest_raw, "gageHeightMaxFt", "gageHeightFt")
+            flow = _num(latest_raw, "dischargeMeanCfs", "dischargeCfs")
+            if gage is not None and flow is not None and flow < 0.1 and gage > 0:
+                lines.append(
+                    f"  Channel state: {flow:.2f} cfs with {gage:.2f} ft of "
+                    "gage height — negligible flow, water still standing in "
+                    "the channel. Low discharge in the dry season is seasonal "
+                    "recession, not an empty watershed, and says nothing "
+                    "about stored or municipal water supply."
+                )
+
+        if domain == "weather" and not wind_comparable:
+            lines.append(
+                "  Wind speed: not compared — this window starts before the "
+                f"{WIND_DATA_VALID_FROM[:10]} collector unit fix, when wind "
+                "was recorded 3.6x too high. Any apparent drop across that "
+                "boundary is the correction, not the weather."
+            )
 
         if lines:
             sections.append(
@@ -614,6 +677,14 @@ def _num(block: dict, *names) -> Optional[float]:
         except (TypeError, ValueError):
             continue
     return None
+
+
+# Wind magnitude fields, under both the declared and the legacy spelling.
+# Direction and windPattern are excluded: the unit bug scaled magnitudes and
+# left bearings alone, so those stayed comparable throughout.
+_WIND_MAGNITUDE_FIELDS = frozenset({
+    "windSpeedMph", "wind_speed_mph", "windGustMph", "wind_gust_mph",
+})
 
 
 def _wind_is_trustworthy(observed_at: Optional[str]) -> bool:
@@ -968,9 +1039,30 @@ def gather_context(lookback_hours: float = 24.0,
     prior = read_recent_synthesis(memory_runs, synthesis_db=synthesis_db)
     if prior:
         log.info("Memory: %d prior synthesis observations loaded", len(prior))
+        # Your own past reasoning is prose, and prose carries numbers forward
+        # that nothing re-derives. Two specific ways that has gone wrong here:
+        # wind figures written before the unit fix are 3.6x too high, and a
+        # "days without rain" counter has been incrementing itself across runs
+        # since long before anything could measure it. Say so, rather than
+        # letting the agent treat its own history as measurement.
+        stale_wind = [p for p in prior
+                      if not _wind_is_trustworthy(p.get("observed_at"))]
+        caveats = [
+            "These are your own prior write-ups, not measurements. Where a "
+            "number appears both here and in the observations or computed "
+            "trends below, the observation is authoritative and this is not."
+        ]
+        if stale_wind:
+            caveats.append(
+                f"{len(stale_wind)} of these runs predate the "
+                f"{WIND_DATA_VALID_FROM[:10]} collector unit fix and quote "
+                "wind speeds 3.6x too high. Do not read the difference "
+                "between those figures and today's as a change in conditions."
+            )
         sections.append(
             f"=== SYNTHESIS HISTORY (last {len(prior)} runs — oldest first) ===\n"
-            f"{json.dumps(list(reversed(prior)), indent=2)}"
+            + "\n".join(f"NOTE: {c}" for c in caveats) + "\n"
+            + json.dumps(list(reversed(prior)), indent=2)
         )
     else:
         sections.append("=== SYNTHESIS HISTORY ===\nNone yet — first run.")

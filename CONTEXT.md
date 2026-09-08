@@ -1050,6 +1050,71 @@ history is not itself evidence of accuracy — without that it would see a
 suddenly thin ledger after days of reasoning from an unbroken record and reach
 for an explanation, which is the failure this whole thing is about.
 
+### The wind correction read as weather (2026-09-08)
+
+The first synthesis run after the unit fix reported "the 48h max wind has
+dropped from 66.3 mph to 18.4 mph" and built a story on it: "genuine
+short-term moderation", "second consecutive run showing conditions actually
+improving", "a temporary lull, not a trend reversal". 66.3 / 3.6 = 18.4
+exactly. It was narrating the unit correction as meteorology, and waiting for
+wind that never existed to return.
+
+Two sources fed it. `compute_trends` compares the oldest and newest record in
+the window, and with a pre-fix record at one end it computed the correction as
+a 72% collapse in wind speed and handed it to the agent as fact — the ledger
+path had been guarded by `WIND_DATA_VALID_FROM` and the trend path had not.
+The other source is memory: the agent's own prior write-ups quote inflated
+figures, and prose carries numbers that nothing re-derives.
+
+Both are now handled, and the shape of the fix is the same in each: state the
+provenance rather than hide the gap. The trend section says wind is not
+compared and why; the memory section says how many of the runs shown predate
+the fix. An absent number with a reason is worth more than a number the reader
+cannot date.
+
+### Numbers the harness could not substantiate (2026-09-08)
+
+The same record claimed "day 147+ of a historic drought" and "147+ consecutive
+precipitation-free days, unprecedented per history". Nothing could have
+produced that figure: `DRY_SPELL_LOOKBACK_DAYS` was 7, so the deepest true
+statement available was "none in the last 7 days". It was a prose counter
+incrementing itself across runs, the same pattern already recorded here as
+143+ → 143+ → 145+.
+
+Two things were wrong, not one. The counter was invented, and the framing was
+also wrong — a rainless Napa summer is the seasonal norm, and the agent's own
+seasonal calendar says "Flood season: not active (dry season)". It overrode
+computed seasonal context with a number it had made up, and that number was
+the primary justification for holding fire risk at extreme.
+
+Fixed by computing it instead: the dry-spell search now runs over the whole
+observation record, and publishes `daysSinceMeasurableRain` when rain is found
+or `dryRecordDays` when none is, never both. The distinction is the point —
+`dryRecordDays` means "at least this long, and the collector cannot see
+further back", which is a bounded claim rather than a drought length. The
+system prompt now requires the "at least N days" form and states that
+consecutive rainless days between May and October are expected.
+
+Worth noting what the same record got right: "Diablo wind season begins in 7
+days" was exact, because `seasonal_context()` computes it. Every reliable
+number in that record came from code and every unreliable one came from prose.
+
+### Discharge is a rate, not a volume (2026-09-08)
+
+The same record turned "St. Helena 0.0 cfs" into "zero watershed water
+availability for firefighting" and "zero watershed reserves". Neither follows.
+Zero discharge means no measurable flow, not an empty channel — the same
+record carried 0.47 ft of gage height, which is standing water — and Napa
+firefighting draws on reservoirs and municipal supply, which this system does
+not observe at all. Gage height was available and went unread; the reasoning
+ran entirely on cfs.
+
+`compute_trends` now emits an explicit channel-state line when discharge is
+near zero and stage is above it, and the system prompt states that discharge
+is a rate and that water supply is outside what this system measures. The
+computed line is doing the real work: telling the agent not to infer something
+is weaker than showing it the number that contradicts the inference.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

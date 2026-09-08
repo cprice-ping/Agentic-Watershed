@@ -85,6 +85,8 @@ def _load_domain_thresholds(domain: str):
 
 
 _FIRE_THRESHOLDS = _load_domain_thresholds("Fire")
+_WEATHER_THRESHOLDS = _load_domain_thresholds("Weather")
+MEANINGFUL_RAIN_1H_MM = _WEATHER_THRESHOLDS.MEANINGFUL_RAIN_1H_MM
 
 # PDS endpoint domain agents publish to. Defaults to a self-hosted PDS
 # (see ATProto/pds/) — set ATPROTO_PDS_URL or "pds_url" in node_config.json
@@ -231,6 +233,56 @@ def _fetch_weather_numerics(observed_at: str) -> dict:
         return {}
     return {field: row[column] for column, field in _WEATHER_FIELD_MAP.items()
             if row[column] is not None}
+
+
+def _fetch_dry_spell(observed_at: str) -> dict:
+    """Days since measurable rain as of observedAt, bounded by the record.
+
+    Mirrors Weather/mcp_server.py's _dry_spell so the published record carries
+    the same fact the agent reasoned from. Publishing it as a field is the
+    point: synthesis had been carrying a "147+ consecutive precipitation-free
+    days" counter in prose, incrementing itself run to run with nothing
+    measuring it, while the deepest substantiated claim available was "none in
+    the last 7 days".
+
+    Returns at most one of daysSinceMeasurableRain (rain found) or
+    dryRecordDays (none found anywhere), never both — a consumer must not be
+    able to read the record's length as a drought's length.
+    """
+    db_path = DB_PATHS["weather"]
+    if not db_path.exists():
+        return {}
+    anchor = _anchor(observed_at)
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        last_rain = conn.execute(
+            """
+            SELECT collected_at FROM observations
+            WHERE precip_1h_mm > ? AND collected_at <= ?
+            ORDER BY collected_at DESC LIMIT 1
+            """,
+            (MEANINGFUL_RAIN_1H_MM, anchor.isoformat()),
+        ).fetchone()
+        first = conn.execute(
+            "SELECT MIN(collected_at) AS t FROM observations WHERE collected_at <= ?",
+            (anchor.isoformat(),),
+        ).fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return {}
+
+    if last_rain:
+        since = _parse_iso(last_rain["collected_at"])
+        if since is None:
+            return {}
+        return {"daysSinceMeasurableRain": max(0, (anchor - since).days)}
+    if first and first["t"]:
+        start = _parse_iso(first["t"])
+        if start is None:
+            return {}
+        return {"dryRecordDays": max(0, (anchor - start).days)}
+    return {}
 
 
 def _fetch_active_alerts(observed_at: str) -> list[str]:
@@ -655,6 +707,8 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
                             numerics.get("windSpeedMph"))
     if pattern != "unknown":
         weather_block["windPattern"] = pattern
+
+    weather_block.update(_fetch_dry_spell(observed_at))
 
     # fireRisk stays absent. The lexicon calls it "the weather agent's
     # assessment", and Weather/agent.py returns only summary, flagged and
