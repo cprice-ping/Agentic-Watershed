@@ -117,7 +117,71 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
     """)
     conn.commit()
+    _migrate(conn)
     log.info("Database initialised at %s", DB_PATH)
+
+
+# The factor by which every wind row collected before the unitCode fix was
+# inflated: the collector read km/h, called it m/s, and multiplied by 3.6.
+_WIND_INFLATION = 3.6
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent data migrations, run from init_db on every startup.
+
+    Currently one: divide the historical wind columns by 3.6.
+
+    Correcting in place rather than marking a cutover, because this is not an
+    estimate. The stored value is the true reading times a known constant, so
+    the correction is exact and reversible. Leaving the rows would keep the
+    48-hour trend window mixing real and inflated numbers for two days after
+    deploy, and would leave a permanently unusable month of history behind
+    that.
+
+    Guarded by schema_migrations, because running it twice would divide by
+    12.96 and there is no marker in a row itself to tell corrected from not.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            name       TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL,
+            note       TEXT
+        )
+    """)
+    conn.commit()
+
+    name = "2026-09-08-wind-kmh-mistaken-for-ms"
+    if conn.execute("SELECT 1 FROM schema_migrations WHERE name = ?",
+                    (name,)).fetchone():
+        return
+
+    affected = conn.execute(
+        "SELECT COUNT(*) FROM observations WHERE wind_speed_kmh IS NOT NULL"
+        "   OR wind_gust_kmh IS NOT NULL OR wind_speed_mph IS NOT NULL"
+        "   OR wind_gust_mph IS NOT NULL"
+    ).fetchone()[0]
+
+    conn.execute(
+        """
+        UPDATE observations SET
+            wind_speed_kmh = ROUND(wind_speed_kmh / ?, 1),
+            wind_speed_mph = ROUND(wind_speed_mph / ?, 1),
+            wind_gust_kmh  = ROUND(wind_gust_kmh  / ?, 1),
+            wind_gust_mph  = ROUND(wind_gust_mph  / ?, 1)
+        """,
+        (_WIND_INFLATION,) * 4,
+    )
+    conn.execute(
+        "INSERT INTO schema_migrations (name, applied_at, note) VALUES (?, ?, ?)",
+        (name, datetime.now(timezone.utc).isoformat(),
+         f"divided {affected} rows' wind columns by {_WIND_INFLATION}"),
+    )
+    conn.commit()
+    log.warning(
+        "Corrected %d historical observation rows: wind was stored %.1fx too "
+        "high because km/h was read as m/s. Agent observations and published "
+        "ATProto records from before this point still quote the inflated "
+        "figures and are not rewritten.", affected, _WIND_INFLATION)
 
 
 # ---------------------------------------------------------------------------
@@ -139,16 +203,81 @@ def kmh_to_mph(kmh: float | None) -> float | None:
     return round(kmh * 0.621371, 1) if kmh is not None else None
 
 
-def ms_to_kmh(ms: float | None) -> float | None:
-    return round(ms * 3.6, 1) if ms is not None else None
+# NWS QuantitativeValue objects declare their unit in unitCode, and the units
+# are not stable across endpoints or over time. Wind on the observations
+# endpoint is km/h (wmoUnit:km_h-1); this collector assumed m/s and converted
+# m/s → km/h → mph, multiplying every wind value by 3.6.
+#
+# That is not a small error. It recorded routine Napa breezes as 70-95 mph
+# gusts, which crossed the 45 mph gust flag rule on almost every run — the
+# Weather agent's constant flagging, which had been read as model drift or a
+# badly chosen threshold, was neither. The threshold was fine and the model
+# was reasoning correctly about numbers that were wrong before it saw them.
+#
+# Nothing downstream could catch it: flag_rules.py reads the same column, so
+# the shadow verdict agreed with the model while both were wrong, and
+# Synthesis resolved fire predictions against the published windGustMph.
+#
+# So: convert from what the payload declares, never from what we expect. An
+# unrecognised unit yields None and a warning rather than a guess — a missing
+# reading is recoverable, a plausible-looking wrong one is not.
+_TO_KMH = {
+    "wmoUnit:km_h-1": 1.0,
+    "wmoUnit:m_s-1":  3.6,
+    "unit:m_s-1":     3.6,        # pre-2021 NWS spelling
+    "wmoUnit:mi_h-1": 1.609344,
+    "unit:mi_h-1":    1.609344,
+}
+
+_TO_DEGC = {
+    "wmoUnit:degC": lambda v: v,
+    "unit:degC":    lambda v: v,
+    "wmoUnit:degF": lambda v: (v - 32) * 5 / 9,
+    "unit:degF":    lambda v: (v - 32) * 5 / 9,
+}
 
 
 def extract_value(prop: dict | None) -> float | None:
-    """Extract numeric value from NWS QuantitativeValue object."""
+    """Numeric value from an NWS QuantitativeValue, with no conversion.
+
+    Only for quantities whose unit this collector stores as-is — percent,
+    millimetres, metres, degrees of bearing. Anything needing a conversion
+    must go through a unit-aware helper below, so the unit comes from the
+    payload rather than from an assumption.
+    """
     if prop is None:
         return None
     v = prop.get("value")
     return float(v) if v is not None else None
+
+
+def _converted(prop: dict | None, table: dict, quantity: str) -> float | None:
+    """Value converted to the canonical unit using the payload's unitCode."""
+    if prop is None:
+        return None
+    v = prop.get("value")
+    if v is None:
+        return None
+    code = prop.get("unitCode")
+    conv = table.get(code)
+    if conv is None:
+        log.warning(
+            "Unrecognised unitCode %r for %s — dropping the reading rather "
+            "than assuming a unit. Add it to the conversion table.", code, quantity)
+        return None
+    return float(v) * conv if isinstance(conv, float) else float(conv(float(v)))
+
+
+def wind_kmh(prop: dict | None) -> float | None:
+    """Wind speed in km/h, whatever unit NWS declared."""
+    v = _converted(prop, _TO_KMH, "wind speed")
+    return round(v, 1) if v is not None else None
+
+
+def temperature_c(prop: dict | None) -> float | None:
+    """Temperature in Celsius, whatever unit NWS declared."""
+    v = _converted(prop, _TO_DEGC, "temperature")
+    return round(v, 1) if v is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +299,9 @@ def fetch_observations(client: httpx.Client, conn: sqlite3.Connection) -> int:
     for feature in features:
         props = feature.get("properties", {})
 
-        temp_c = extract_value(props.get("temperature"))
-        wind_ms = extract_value(props.get("windSpeed"))
-        wind_kmh = ms_to_kmh(wind_ms)
-        gust_ms = extract_value(props.get("windGust"))
-        gust_kmh = ms_to_kmh(gust_ms)
+        temp_c = temperature_c(props.get("temperature"))
+        wind_speed_kmh = wind_kmh(props.get("windSpeed"))
+        gust_kmh = wind_kmh(props.get("windGust"))
 
         rows.append({
             "collected_at": now,
@@ -184,8 +311,8 @@ def fetch_observations(client: httpx.Client, conn: sqlite3.Connection) -> int:
             "temperature_c": temp_c,
             "temperature_f": celsius_to_fahrenheit(temp_c),
             "humidity_pct": extract_value(props.get("relativeHumidity")),
-            "wind_speed_kmh": wind_kmh,
-            "wind_speed_mph": kmh_to_mph(wind_kmh),
+            "wind_speed_kmh": wind_speed_kmh,
+            "wind_speed_mph": kmh_to_mph(wind_speed_kmh),
             "wind_direction_deg": extract_value(props.get("windDirection")),
             "wind_gust_kmh": gust_kmh,
             "wind_gust_mph": kmh_to_mph(gust_kmh),
@@ -201,7 +328,7 @@ def fetch_observations(client: httpx.Client, conn: sqlite3.Connection) -> int:
             props.get("textDescription", "—"),
             celsius_to_fahrenheit(temp_c) or 0,
             round(extract_value(props.get("relativeHumidity")) or 0),
-            kmh_to_mph(wind_kmh) or "—",
+            kmh_to_mph(wind_speed_kmh) or "—",
             round(extract_value(props.get("windDirection")) or 0),
             kmh_to_mph(gust_kmh) or "—",
         )
