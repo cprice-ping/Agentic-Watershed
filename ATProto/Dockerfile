@@ -14,3 +14,11 @@ COPY ATProto/requirements.txt ./ATProto/requirements.txt
 RUN pip install --no-cache-dir -r ATProto/requirements.txt
 
 COPY ATProto ./ATProto
+
+# publisher.py reads these from BASE (= /app) at import time: node_config.json
+# for the node identity and PDS, and each domain's thresholds.py for the query
+# windows it must share with that domain's agent. Neither was copied before,
+# so this image crashed on import — cron on the Pi runs from a full checkout
+# and never hit it.
+COPY node_config.json ./node_config.json
+COPY Fire/thresholds.py ./Fire/thresholds.py

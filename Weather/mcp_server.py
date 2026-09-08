@@ -29,6 +29,7 @@ from mcp.server.fastmcp import FastMCP
 # run as a script — it is also imported directly (tests, offline eval).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flag_rules  # noqa: E402
+import thresholds  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -270,8 +271,10 @@ def get_fire_risk_indicators() -> str:
 
     High fire risk indicators: temp > 90°F, humidity < 20%, wind > 20mph, no recent rain.
     """
-    cutoff_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
-    cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    cutoff_48h = (datetime.now(timezone.utc)
+                  - timedelta(hours=thresholds.TREND_WINDOW_HOURS)).isoformat()
+    cutoff_7d = (datetime.now(timezone.utc)
+                 - timedelta(days=thresholds.DRY_SPELL_LOOKBACK_DAYS)).isoformat()
 
     with _db() as conn:
         latest = conn.execute(
@@ -301,11 +304,11 @@ def get_fire_risk_indicators() -> str:
             """
             SELECT collected_at, precip_1h_mm
             FROM observations
-            WHERE precip_1h_mm > 1.0 AND collected_at >= ?
+            WHERE precip_1h_mm > ? AND collected_at >= ?
             ORDER BY collected_at DESC
             LIMIT 1
             """,
-            (cutoff_7d,),
+            (thresholds.MEANINGFUL_RAIN_1H_MM, cutoff_7d),
         ).fetchone()
 
     if not latest:
@@ -313,14 +316,18 @@ def get_fire_risk_indicators() -> str:
 
     result = {
         "current": dict(latest),
-        "trend_48h": dict(trend) if trend else {},
-        "last_significant_rain": dict(last_rain) if last_rain else "None in last 7 days",
-        "fire_risk_thresholds": {
-            "high_temp": "≥ 90°F",
-            "critical_humidity": "≤ 20%",
-            "high_wind": "≥ 20 mph",
-            "critical_wind": "≥ 35 mph",
-        },
+        f"trend_{int(thresholds.TREND_WINDOW_HOURS)}h": dict(trend) if trend else {},
+        "last_significant_rain": (
+            dict(last_rain) if last_rain
+            else f"None in last {thresholds.DRY_SPELL_LOOKBACK_DAYS} days"
+        ),
+        # Generated from thresholds.py, the same module agent.py builds its
+        # prompt criteria from. This block used to be typed by hand and had
+        # drifted to 20% humidity / 20 mph wind / 35 mph "critical wind"
+        # against a prompt that said 25% / 15 mph / 45 mph gusts, so the model
+        # was reading two different rulebooks — one as instruction and one,
+        # because it arrived inside the measurements, as fact.
+        "fire_risk_criteria": thresholds.as_dict(),
     }
     return json.dumps(result, indent=2)
 

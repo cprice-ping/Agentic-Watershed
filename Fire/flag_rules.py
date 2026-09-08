@@ -16,24 +16,23 @@ flagged value; it does not override it. Enforcing it is a separate decision
 that should be made against the divergence data this produces, not in advance
 — see the persistence-exception note below for why that matters here.
 
-Windows deliberately match Fire/mcp_server.py, so a divergence means the model
-and the rules disagreed about the same facts rather than about which rows were
-in scope.
+Windows come from thresholds.py, the same module mcp_server.py reads, so a
+divergence means the model and the rules disagreed about the same facts rather
+than about which rows were in scope.
 """
 
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-_NODE_CFG = json.loads((Path(__file__).parent.parent / "node_config.json").read_text())
-_DAY_RANGE = _NODE_CFG["fire"]["day_range"]
-
-# Same currency window as mcp_server.NEAREST_HOTSPOT_MAX_AGE_HOURS.
-NEAREST_HOTSPOT_MAX_AGE_HOURS = _DAY_RANGE * 24 + 24
-
-NEAR_DISTANCE_MI = 20.0   # unconditional on confidence
-FAR_DISTANCE_MI  = 50.0   # high-confidence only
+# Every threshold comes from thresholds.py, which agent.py's prompt,
+# mcp_server.py's queries and ATProto/publisher.py's currency window are also
+# read from. The currency window in particular used to exist in three copies
+# and be absent from a fourth place that needed it.
+from thresholds import (  # noqa: E402
+    NEAREST_HOTSPOT_MAX_AGE_HOURS, NEAR_DISTANCE_MI, FAR_DISTANCE_MI,
+    HIGH_CONFIDENCE_LETTER, HIGH_CONFIDENCE_NUMERIC,
+)
 
 
 class Verdict:
@@ -77,19 +76,18 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
         v.fire("hotspot_within_20mi",
                f"{row['distance_mi']:.1f}mi, confidence={row['confidence']}")
 
-    # Rule 2 — any high-confidence hotspot within 50 miles.
-    # VIIRS encodes confidence as l/n/h; MODIS uses 0-100, where >=80 is the
-    # conventional high band. Both appear in this table.
+    # Rule 2 — any high-confidence hotspot within 50 miles. The two encodings
+    # of "high" are defined in thresholds.py alongside the distances.
     row = conn.execute(
         """
         SELECT distance_mi, confidence FROM hotspots
         WHERE collected_at >= ? AND distance_mi IS NOT NULL AND distance_mi <= ?
-          AND (LOWER(confidence) = 'h'
-               OR (CAST(confidence AS INTEGER) >= 80
+          AND (LOWER(confidence) = ?
+               OR (CAST(confidence AS INTEGER) >= ?
                    AND confidence GLOB '[0-9]*'))
         ORDER BY distance_mi ASC LIMIT 1
         """,
-        (cutoff, FAR_DISTANCE_MI),
+        (cutoff, FAR_DISTANCE_MI, HIGH_CONFIDENCE_LETTER, HIGH_CONFIDENCE_NUMERIC),
     ).fetchone()
     if row:
         v.fire("high_confidence_within_50mi",

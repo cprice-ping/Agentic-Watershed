@@ -311,6 +311,36 @@ Required environment variables:
   cannot separate them. Sectors outside the Diablo and marine arcs return
   "unknown" and the field is omitted. Same reasoning as leaving `fireRisk`
   absent — a category that might be wrong is worth less than no category.
+- Flag thresholds were written out four times per domain and had drifted,
+  2026-09-08 — consolidated into `<Domain>/thresholds.py`. The worst case was
+  Weather: `get_fire_risk_indicators` handed the model a `fire_risk_thresholds`
+  block reading 20% humidity, 20 mph wind and 35 mph "critical wind", while
+  `agent.py`'s prompt, `flag_rules.py` and Synthesis all used 25%, 15 mph and
+  45 mph gusts. Three of four numbers disagreed, and the wrong copy arrived
+  inside the same JSON as the measurements, so it read as fact rather than as
+  instruction. That is the source of the recurring "well below critical 15%
+  and 20% thresholds" line in published summaries — the model was quoting both
+  rulebooks because it had been given both.
+  The prompt criteria are now generated from the constants via
+  `string.Template` (not `.format()` — the prompts contain literal JSON braces),
+  the tool returns `thresholds.as_dict()`, and `flag_rules.py` imports the same
+  names. Changing a number moves all three in one edit. River has no numeric
+  flag criteria at all, which is why it has no `flag_rules.py` and needs no
+  thresholds module.
+  `ATProto/publisher.py` loads `Fire/thresholds.py` by file path rather than
+  import, because it ships in its own image and four modules named `thresholds`
+  would collide on `sys.path`. A missing module raises rather than defaulting:
+  a silent fallback to a locally-guessed window is precisely the divergence
+  that published a five-day-old hotspot as an 8.5-mile threat.
+  Synthesis's `FIRE_WX_*` constants are deliberately left as a fifth copy. They
+  decide whether a prediction is confirmed, so importing the node's numbers
+  would let the node define what counts as confirmation of the node's own flag
+  — the same mirror that made the old ledger read 128 confirmed and 0 expired.
+  The Synthesis image cannot see the domain code anyway, which enforces it.
+- `ATProto/Dockerfile` never copied `node_config.json`, so that image crashed
+  on import; `publisher.py` reads it from BASE at module level. Only cron on
+  the Pi, running from a full checkout, was unaffected — which is why nobody
+  noticed. Fixed alongside the thresholds copy the same Dockerfile now needs.
 - `PDS_HOSTNAME` alone does not authorize account handles under that domain on a
   self-hosted PDS — `PDS_SERVICE_HANDLE_DOMAINS` (suffix match, leading dot) is
   required too.
