@@ -33,6 +33,7 @@ from mcp.server.fastmcp import FastMCP
 # run as a script — it is also imported directly (tests, offline eval).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flag_rules  # noqa: E402
+import thresholds  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config — points at the same DB the collector writes to
@@ -40,15 +41,14 @@ import flag_rules  # noqa: E402
 
 DB_PATH = Path(__file__).parent / "data" / "fire.db"
 
-_NODE_CFG_PATH = Path(__file__).parent.parent / "node_config.json"
-_DAY_RANGE = json.loads(_NODE_CFG_PATH.read_text())["fire"]["day_range"]
-
-# FIRMS itself is only ever queried for the last day_range days (collector.py),
-# but the hotspots table keeps every row forever — without a matching recency
+# The hotspots table keeps every row forever — without a matching recency
 # window here, a single old detection with nothing closer since would stay
 # "nearest" indefinitely and read as an ongoing current signal long after it's
-# aged out of what FIRMS would even still report.
-NEAREST_HOTSPOT_MAX_AGE_HOURS = _DAY_RANGE * 24 + 24  # + 1 day buffer for poll timing
+# aged out of what FIRMS would even still report. Defined in thresholds.py so
+# flag_rules.py and ATProto/publisher.py apply the identical window; the
+# publisher having no window at all is what published a five-day-old hotspot
+# as an 8.5-mile threat.
+NEAREST_HOTSPOT_MAX_AGE_HOURS = thresholds.NEAREST_HOTSPOT_MAX_AGE_HOURS
 
 mcp = FastMCP(
     "fire",
@@ -274,7 +274,8 @@ def get_last_poll_status() -> str:
 
 
 @mcp.tool()
-def get_hotspot_count_since(hours_ago: float = 24.0, max_distance_mi: float = 50.0) -> str:
+def get_hotspot_count_since(hours_ago: float = 24.0,
+                            max_distance_mi: float = thresholds.FAR_DISTANCE_MI) -> str:
     """
     Quick count of hotspots within max_distance_mi in the last N hours —
     useful for a fast "has anything changed" check before pulling full detail.

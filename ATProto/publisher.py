@@ -29,6 +29,7 @@ Cron (run after each agent cycle — 15 min after the last agent fires):
 """
 
 import argparse
+import importlib.util
 import json
 import logging
 import os
@@ -59,6 +60,31 @@ LEXICON = "net.cpricedomain.temp.monitor.observation"
 
 _NODE_CFG = json.loads((BASE / "node_config.json").read_text())
 NODE_ID   = _NODE_CFG["node_id"]
+
+
+def _load_domain_thresholds(domain: str):
+    """Load a domain's thresholds module by path.
+
+    The publisher lives outside the domain packages and is built into its own
+    image, so a plain import won't reach them; loading by explicit file path
+    keeps one definition of a window shared without putting a module named
+    `thresholds` on sys.path, where four domains would collide.
+
+    A missing module is fatal rather than defaulted. The whole point is that
+    the publisher and the domain agent scope the same rows, and a silent
+    fallback to a locally-guessed window is exactly the divergence this
+    removes — a five-day-old hotspot published as an 8.5-mile threat.
+    """
+    path = BASE / domain / "thresholds.py"
+    spec = importlib.util.spec_from_file_location(f"_{domain}_thresholds", path)
+    if spec is None or spec.loader is None:      # pragma: no cover - unreachable
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_FIRE_THRESHOLDS = _load_domain_thresholds("Fire")
 
 # PDS endpoint domain agents publish to. Defaults to a self-hosted PDS
 # (see ATProto/pds/) — set ATPROTO_PDS_URL or "pds_url" in node_config.json
@@ -477,8 +503,7 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
 # The bound is measured from observedAt, not from now. A record describes the
 # moment it claims to, and republishing a backlog (as happened on 2026-08-26)
 # should attach the readings from that moment rather than today's.
-_FIRE_DAY_RANGE = _NODE_CFG["fire"].get("day_range", 2)
-NEAREST_HOTSPOT_MAX_AGE_HOURS = _FIRE_DAY_RANGE * 24 + 24  # matches Fire/mcp_server.py
+NEAREST_HOTSPOT_MAX_AGE_HOURS = _FIRE_THRESHOLDS.NEAREST_HOTSPOT_MAX_AGE_HOURS
 
 # Collectors poll every 15-30 minutes, so a reading hours old means the
 # collector is struggling. Wide enough to ride out a few missed polls, narrow
@@ -535,7 +560,7 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
 
     Returns no distance/confidence/frp at all when nothing is current, so
     build_fire_record omits those fields rather than publishing a stale
-    reading. hotspotCount keeps its own 6-hour window, which the lexicon
+    reading. hotspotCount keeps its own narrower window, which the lexicon
     documents separately.
     """
     db_path = DB_PATHS["fire"]
@@ -559,9 +584,9 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
             """
             SELECT COUNT(*) as n
             FROM hotspots
-            WHERE ABS(strftime('%s', collected_at) - strftime('%s', ?)) < 3600 * 6
+            WHERE ABS(strftime('%s', collected_at) - strftime('%s', ?)) < 3600 * ?
             """,
-            (observed_at,),
+            (observed_at, _FIRE_THRESHOLDS.HOTSPOT_COUNT_WINDOW_HOURS),
         ).fetchone()
         conn.close()
         result = dict(row) if row else {}

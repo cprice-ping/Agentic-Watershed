@@ -23,8 +23,15 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from string import Template
 
 import anthropic
+
+# Flag criteria come from thresholds.py, the same module mcp_server.py and
+# flag_rules.py read, so the rules stated in the prompt below are generated
+# rather than transcribed. They used to be transcribed, and they drifted.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import thresholds  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -40,7 +47,7 @@ MODELS = {
 
 DEFAULT_MODEL = "haiku"
 
-SYSTEM_PROMPT = """You are an autonomous air quality monitoring agent for Napa County, California.
+_SYSTEM_PROMPT_TEMPLATE = """You are an autonomous air quality monitoring agent for Napa County, California.
 You run on a schedule with no human present.
 
 Your primary job is to detect wildfire smoke. PM2.5 is your key signal.
@@ -55,15 +62,18 @@ You must respond in this exact JSON format (no markdown, no extra text):
 }
 
 Flag (set flagged=true) if ANY of these are true:
-- PM2.5 AQI ≥ 101 (Unhealthy for Sensitive Groups or worse)
-- PM2.5 AQI rising ≥ 20 points in 3 hours
-- PM2.5 AQI ≥ 75 AND previous observation was ≤ 50 (sudden jump from Good to elevated Moderate)
-- Any category_number ≥ 4 (Unhealthy) for any parameter
+$flag_criteria
 
 When smoke is suspected (PM2.5 spike without ozone rise), say so explicitly.
 Always note the AQI category name, not just the number.
 Note if conditions are improving (falling AQI) vs deteriorating (rising AQI).
 """
+
+# string.Template rather than .format() or an f-string: the prompt contains a
+# literal JSON example, and brace-based substitution would collide with it.
+SYSTEM_PROMPT = Template(_SYSTEM_PROMPT_TEMPLATE).substitute(
+    flag_criteria=thresholds.flag_criteria_text(),
+)
 
 logging.basicConfig(
     level=logging.INFO,

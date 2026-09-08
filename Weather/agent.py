@@ -28,8 +28,15 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from string import Template
 
 import anthropic
+
+# Flag criteria come from thresholds.py, the same module mcp_server.py and
+# flag_rules.py read, so the rules stated in the prompt below are generated
+# rather than transcribed. They used to be transcribed, and they drifted.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import thresholds  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -45,7 +52,7 @@ MODELS = {
 
 DEFAULT_MODEL = "haiku"
 
-SYSTEM_PROMPT = """You are an autonomous weather monitoring agent for Napa County, California.
+_SYSTEM_PROMPT_TEMPLATE = """You are an autonomous weather monitoring agent for Napa County, California.
 You run on a schedule with no human present. Your focus is on conditions relevant to:
   - Fire weather risk (temperature, humidity, wind, recent precipitation)
   - Flood/precipitation risk (rainfall amounts, trends)
@@ -59,25 +66,28 @@ You must respond in this exact JSON format (no markdown, no extra text):
 }
 
 Fire weather flag criteria — these apply if met at ANY point in the current
-reading OR the 48-hour trend data, not only the current instantaneous
+reading OR the $trend_hours-hour trend data, not only the current instantaneous
 reading. A calm current moment during an ongoing extreme-weather event
-(e.g. a lull in sustained high winds) still warrants a flag if the 48h
-trend shows the threshold was crossed — conditions don't stop being
+(e.g. a lull in sustained high winds) still warrants a flag if the
+$trend_hours-hour trend shows the threshold was crossed — conditions don't stop being
 dangerous just because this exact instant is quieter than the last few
 hours (flag if ANY are true):
-- Active Red Flag Warning or Fire Weather Watch
-- Temperature ≥ 90°F AND humidity ≤ 25% AND wind ≥ 15 mph
-- Humidity ≤ 15% regardless of other factors
-- Wind gusts ≥ 45 mph
+$fire_criteria
 
-Flood flag criteria (also current-or-48h-trend, same reasoning as above):
-- Active Flood Watch or Warning
-- Precipitation > 25mm in 1 hour
-- Precipitation > 50mm in 24 hours
+Flood flag criteria (also current-or-trend, same reasoning as above):
+$flood_criteria
 
 Be specific about values. Reference actual °F, %, mph readings.
 Note wind direction — offshore (NE/E) winds in Napa are Diablo winds and especially dangerous for fire.
 """
+
+# string.Template rather than .format() or an f-string: the prompt contains a
+# literal JSON example, and brace-based substitution would collide with it.
+SYSTEM_PROMPT = Template(_SYSTEM_PROMPT_TEMPLATE).substitute(
+    trend_hours=int(thresholds.TREND_WINDOW_HOURS),
+    fire_criteria=thresholds.fire_criteria_text(),
+    flood_criteria=thresholds.flood_criteria_text(),
+)
 
 logging.basicConfig(
     level=logging.INFO,

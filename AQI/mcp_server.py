@@ -28,6 +28,7 @@ from mcp.server.fastmcp import FastMCP
 # run as a script — it is also imported directly (tests, offline eval).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flag_rules  # noqa: E402
+import thresholds  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -217,17 +218,18 @@ def get_smoke_indicators() -> str:
 
     Surfaces:
     - Current PM2.5 AQI and category
-    - Whether PM2.5 is rising rapidly (>20 AQI points in 3 hours)
-    - Peak PM2.5 in last 24h and 7 days
-    - Any readings in Unhealthy range (AQI > 150) in last 7 days
+    - Whether PM2.5 is rising rapidly (see thresholds.py for the points
+      and window that count as rapid — the same numbers the flag rules use)
+    - Peak PM2.5 in the recent series window and over the trend window
+    - Any readings in the EPA Unhealthy category
 
     A sudden PM2.5 spike without corresponding ozone rise often means
     smoke from a nearby fire rather than general pollution.
     """
     now = datetime.now(timezone.utc)
-    cutoff_3h = (now - timedelta(hours=3)).isoformat()
-    cutoff_24h = (now - timedelta(hours=24)).isoformat()
-    cutoff_7d = (now - timedelta(days=7)).isoformat()
+    cutoff_3h = (now - timedelta(hours=thresholds.PM25_RISE_WINDOW_HOURS)).isoformat()
+    cutoff_24h = (now - timedelta(hours=thresholds.SERIES_WINDOW_HOURS)).isoformat()
+    cutoff_7d = (now - timedelta(days=thresholds.TREND_WINDOW_DAYS)).isoformat()
 
     with _db() as conn:
         # Latest PM2.5
@@ -276,9 +278,9 @@ def get_smoke_indicators() -> str:
             """
             SELECT COUNT(*) as n, MAX(aqi) as worst_aqi
             FROM observations
-            WHERE parameter = 'PM2.5' AND aqi > 150 AND collected_at >= ?
+            WHERE parameter = 'PM2.5' AND aqi >= ? AND collected_at >= ?
             """,
-            (cutoff_7d,),
+            (thresholds.PM25_UNHEALTHY_AQI, cutoff_7d),
         ).fetchone()
 
         # Latest Ozone for comparison

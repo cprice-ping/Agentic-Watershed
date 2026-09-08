@@ -16,16 +16,14 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-PM25 = "PM2.5"
-
-PM25_UNHEALTHY_SENSITIVE = 101   # AQI >= this flags outright
-PM25_RISE_POINTS         = 20    # over the rise window
-PM25_RISE_WINDOW_HOURS   = 3.0
-PM25_JUMP_TO             = 75    # >= this, when the previous reading was...
-PM25_JUMP_FROM           = 50    # ...<= this
-CATEGORY_UNHEALTHY       = 4     # any parameter
-
-SERIES_WINDOW_HOURS = 24.0
+# Every threshold comes from thresholds.py, which agent.py's prompt is also
+# generated from — one definition, so the prompt and these rules cannot
+# disagree about what counts as a flag.
+from thresholds import (  # noqa: E402
+    PM25,
+    PM25_UNHEALTHY_SENSITIVE, PM25_RISE_POINTS, PM25_RISE_WINDOW_HOURS,
+    PM25_JUMP_TO, PM25_JUMP_FROM, CATEGORY_UNHEALTHY, SERIES_WINDOW_HOURS,
+)
 
 
 class Verdict:

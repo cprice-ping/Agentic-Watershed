@@ -78,8 +78,25 @@ AQI_USG_THRESHOLD     = 100    # EPA PM2.5 "Unhealthy for Sensitive Groups" thre
 FIRE_CONFIRM_LEVELS   = frozenset({"high", "extreme"})  # weather.fireRisk values that confirm
 FIRE_CONFIRM_ALERTS   = frozenset({"Red Flag Warning", "Fire Weather Watch"})  # NWS alert names
 
-# Measured fire-weather thresholds, mirroring Weather/agent.py's own flag
-# criteria (and Weather/flag_rules.py). These were the only usable signal
+# Measured fire-weather thresholds, mirroring Weather/thresholds.py.
+#
+# DELIBERATELY NOT SHARED with the node, and not an oversight to DRY away.
+# The node consolidated its four copies into Weather/thresholds.py; this fifth
+# copy stays separate because it does a different job. These numbers decide
+# whether a prediction is confirmed — whether fire conditions actually
+# occurred. If Synthesis imported the node's thresholds, the node would be
+# defining what counts as confirmation of the node's own flag, which is the
+# mirror that made the old ledger read 128 confirmed and 0 expired: resolution
+# consulted the same `flagged` bit the prediction was made from. A grader that
+# adopts the gradee's definition of success measures nothing. The Synthesis
+# container also cannot see the domain code at all, which enforces this.
+#
+# Divergence between these and the node's is therefore expected and worth
+# seeing rather than eliminating. rules_fired already records which node rule
+# matched and on what values; publishing it as a real flagReason would make
+# that visible here without Synthesis having to agree with it.
+#
+# These were the only usable signal
 # while the publisher emitted an empty activeAlerts on every record and no
 # fireRisk at all. activeAlerts now carries the alerts the collector saw, so
 # FIRE_CONFIRM_ALERTS finally has something to match; fireRisk is still

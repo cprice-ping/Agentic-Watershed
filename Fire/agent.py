@@ -35,8 +35,15 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from string import Template
 
 import anthropic
+
+# Flag criteria come from thresholds.py, the same module mcp_server.py and
+# flag_rules.py read, so the rules stated in the prompt below are generated
+# rather than transcribed. They used to be transcribed, and they drifted.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import thresholds  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -54,7 +61,7 @@ MODELS = {
 
 DEFAULT_MODEL = "haiku"
 
-SYSTEM_PROMPT = """You are an autonomous fire-detection monitoring agent for Napa Valley, California.
+_SYSTEM_PROMPT_TEMPLATE = """You are an autonomous fire-detection monitoring agent for Napa Valley, California.
 You run on a schedule with no human present. Your job is narrow and specific:
 
 You are NOT assessing fire weather (wind, humidity, Red Flag Warnings — a separate
@@ -67,13 +74,13 @@ agent does that). Your only job: is there an actual satellite-detected heat sour
    and there's genuinely nothing new" (status=ok) from "collector is failing"
    (status=error). A quiet hotspot table means different things depending on
    which of these it is — don't conflate them in your summary.
-3. Check the nearest current hotspots and how many exist within 50 miles.
+3. Check the nearest current hotspots and how many exist within $far_mi miles.
    get_nearest_hotspots only returns hotspots within its currency window
    (matching how far back FIRMS itself is queried) — an empty or short list
    there means nothing current nearby, full stop. Don't describe the feed
    itself as "frozen" or "stale" based on hotspot ages; that's answered by
    get_last_poll_status, not by how old the nearest hotspot is.
-4. Assess: are there new hotspots since last run? Are any close (<20mi) or
+4. Assess: are there new hotspots since last run? Are any close (<${near_mi}mi) or
    high-confidence? Is FRP (fire radiative power) rising, indicating a growing fire?
 5. Write a clear, concise observation that will inform Synthesis's cross-domain
    reasoning — Synthesis will correlate your findings with Weather's wind direction
@@ -87,11 +94,7 @@ You must respond in this exact JSON format (no markdown, no extra text):
 }
 
 Flag (set flagged=true) if ANY of these are true:
-- Any hotspot detected within 20 miles of Napa Valley center — this is
-  unconditional on confidence level. A low-confidence detection within 20
-  miles still counts; do not require elevated confidence for this specific
-  trigger (that requirement only applies to the separate 50-mile rule below).
-- Any high-confidence hotspot within 50 miles
+$flag_criteria
 - FRP (fire radiative power) rising across consecutive polls for a hotspot in range
 - A new hotspot cluster appeared since the last observation that wasn't there before
 - The collector's last poll status is "error" — this is a data-quality issue
@@ -105,13 +108,21 @@ reasonable to stop treating each identical re-observation as newly alarming.
 If you do this, say so explicitly in the summary (e.g. "previously-flagged
 persistent low-confidence hotspot, unchanged, not re-flagging") — don't
 silently downgrade it without explanation. A genuinely new detection within
-20 miles always flags, regardless of how many old persistent ones exist.
+$near_mi miles always flags, regardless of how many old persistent ones exist.
 
 Be specific about values. Reference actual distances, confidence levels, and FRP.
 If no hotspots are detected in range, say so plainly — a clear 'none detected' is
 as useful as an alert, especially when correlated against AQI showing smoke with
 no identified local source.
 """
+
+# string.Template rather than .format() or an f-string: the prompt contains a
+# literal JSON example, and brace-based substitution would collide with it.
+SYSTEM_PROMPT = Template(_SYSTEM_PROMPT_TEMPLATE).substitute(
+    flag_criteria=thresholds.flag_criteria_text(),
+    near_mi=f"{thresholds.NEAR_DISTANCE_MI:g}",
+    far_mi=f"{thresholds.FAR_DISTANCE_MI:g}",
+)
 
 logging.basicConfig(
     level=logging.INFO,

@@ -25,21 +25,20 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-TREND_WINDOW_HOURS = 48.0
+# Every threshold comes from thresholds.py, which agent.py's prompt and
+# mcp_server.py's tool output are also generated from. Changing a number
+# there changes what the model is told and what these rules enforce in the
+# same edit — they used to be separate copies, and they drifted.
+from thresholds import (  # noqa: E402
+    TREND_WINDOW_HOURS,
+    TEMP_F_MIN, HUMIDITY_MAX_PCT, WIND_MPH_MIN, HUMIDITY_ALONE, GUST_MPH_MIN,
+    PRECIP_1H_MM_MAX, PRECIP_24H_MM_MAX,
+    FIRE_ALERT_EVENTS, FLOOD_ALERT_EVENTS,
+)
 
-# Fire weather
-TEMP_F_MIN        = 90.0
-HUMIDITY_MAX_PCT  = 25.0   # only in combination with temp and wind
-WIND_MPH_MIN      = 15.0   # only in that same combination
-HUMIDITY_ALONE    = 15.0   # sufficient on its own
-GUST_MPH_MIN      = 45.0
-
-# Flood
-PRECIP_1H_MM_MAX  = 25.0
-PRECIP_24H_MM_MAX = 50.0
-
-FIRE_ALERT_EVENTS  = ("red flag warning", "fire weather watch")
-FLOOD_ALERT_EVENTS = ("flood watch", "flood warning")
+# Alert names are stored for display; match case-insensitively.
+_FIRE_ALERT_MATCH  = tuple(e.lower() for e in FIRE_ALERT_EVENTS)
+_FLOOD_ALERT_MATCH = tuple(e.lower() for e in FLOOD_ALERT_EVENTS)
 
 
 class Verdict:
@@ -73,9 +72,9 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     for a in alerts:
         event = (a["event"] or "").strip()
         low = event.lower()
-        if any(name in low for name in FIRE_ALERT_EVENTS):
+        if any(name in low for name in _FIRE_ALERT_MATCH):
             v.fire("fire_weather_alert", event)
-        if any(name in low for name in FLOOD_ALERT_EVENTS):
+        if any(name in low for name in _FLOOD_ALERT_MATCH):
             v.fire("flood_alert", event)
 
     # --- Fire weather thresholds ------------------------------------------
