@@ -171,6 +171,14 @@
           "items": { "type": "string" },
           "description": "NWS alert event names in effect at observedAt, filtered by each alert's own onset/expires. e.g. ['Red Flag Warning', 'Flood Watch']. An empty array asserts no alert was in effect, not that none were checked."
         },
+        "daysSinceMeasurableRain": {
+          "type": "integer",
+          "description": "Whole days since the last hour with more than 1mm of rain. Absent when no measurable rain appears anywhere in the collector's record, in which case dryRecordDays gives what is actually known instead — the two are never both present, so a consumer cannot mistake the record's length for a drought length."
+        },
+        "dryRecordDays": {
+          "type": "integer",
+          "description": "Length in days of the observation record searched, present only when it contains no measurable rain at all. Means 'at least this long, and possibly longer' — the collector cannot see before its first row. Not a drought duration."
+        },
         "fireRisk": {
           "type": "string",
           "knownValues": ["none", "low", "moderate", "high", "extreme"],
