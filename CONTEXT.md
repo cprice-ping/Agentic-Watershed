@@ -341,6 +341,20 @@ Required environment variables:
   on import; `publisher.py` reads it from BASE at module level. Only cron on
   the Pi, running from a full checkout, was unaffected — which is why nobody
   noticed. Fixed alongside the thresholds copy the same Dockerfile now needs.
+- NWS QuantitativeValue objects carry a `unitCode`, and it is not what you
+  might assume: wind on the observations endpoint is `wmoUnit:km_h-1`, not
+  m/s. `extract_value()` ignored it entirely and the collector assumed m/s,
+  inflating every wind reading by 3.6x for the life of the project. Fixed
+  2026-09-08 by converting from the declared unit; an unrecognised unitCode
+  now drops the reading with a warning rather than guessing, because a missing
+  reading is recoverable and a plausible-looking wrong one is not.
+  Historical rows are corrected in place by an idempotent migration in
+  `init_db`, guarded by a new `schema_migrations` table — the error is a known
+  constant, so the correction is exact, and leaving it would have kept the
+  48-hour trend window mixing real and inflated numbers for two days after
+  deploy. Running it twice would divide by 12.96, hence the guard.
+  Not rewritten: agent observation summaries already written, and published
+  ATProto records, both of which quote the inflated figures permanently.
 - `PDS_HOSTNAME` alone does not authorize account handles under that domain on a
   self-hosted PDS — `PDS_SERVICE_HANDLE_DOMAINS` (suffix match, leading dot) is
   required too.
@@ -1054,16 +1068,34 @@ reliable, its own scoreboard read 128 for 128. "Is the system reporting
 problems?" was not a usable check, and it took reading a published record and
 noticing a counter hadn't incremented.
 
-### Still open
+### Answered: the Weather agent's constant flagging (2026-09-08)
 
-Whether the Weather agent's constant flagging is drift or a correctly applied
-but badly calibrated rule. Its criteria include gusts >= 45 mph applied across
-a 48-hour trend, and in a windy valley in September that threshold is plausibly
-crossed most days — one crossing keeps the flag true for four consecutive runs.
-If so the model is doing what it was told and the threshold is wrong for the
-location. The shadow verdicts from `flag_rules.py` separate these two, and
-until they have accumulated it isn't worth guessing; the fixes are completely
-different.
+The open question here was whether it was model drift or a correctly applied
+but badly calibrated threshold. It was neither, and the framing was wrong —
+both options assumed the data was right.
+
+`Weather/collector.py` read the NWS `windSpeed` value and ignored its
+`unitCode`. NWS reports wind on the observations endpoint in km/h
+(`wmoUnit:km_h-1`); the collector assumed m/s and converted m/s → km/h → mph.
+Every wind value in the database was 3.6x too high. A 19.6 mph gust was stored
+as 70.5 mph, and the 45 mph gust rule was crossed by any true gust above
+12.5 mph — a light breeze, most days. The threshold was fine. The model was
+reasoning correctly about numbers that were already wrong when it saw them.
+
+The thing worth keeping from this: nothing in the design could have caught it.
+`flag_rules.py` reads the same column as the model, so the shadow verdict
+agreed with the model on every run — two checks that look independent, sharing
+one corrupted input. That is the same shape as the prediction ledger being a
+mirror, one layer further upstream. Agreement between two things is only
+evidence if they don't share a source. Synthesis compounded it: `_confirms`
+resolves fire predictions against the published `windGustMph`, so the ledger
+purged on 2026-09-06 had been refilling with confirmations from phantom wind.
+
+It surfaced from a physical-plausibility read, not from any instrumentation:
+sustained 74.6 mph with 95.3 mph gusts at Napa County Airport is Category 1
+hurricane force, and it was appearing in routine September summaries.
+Worth considering a sanity bound on collector inputs — a value outside what
+the location can physically produce is a collector bug, not an observation.
 
 Also unresolved: `domainsObserved` is still hardcoded to all four domains in
 `Synthesis/publisher.py`, and domain records still publish `flagReason` as an
