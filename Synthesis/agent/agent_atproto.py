@@ -130,9 +130,41 @@ PREDICTION_RISK_LEVELS = frozenset({"moderate", "high", "extreme"})
 # justify holding at extreme. They are excluded from the ledger rather than
 # deleted: the rows stay as a record that the period happened.
 #
-# 2026-09-06T18:00Z is the first synthesis run on the measurement-based
-# resolver.
-LEDGER_VALID_FROM = "2026-09-06T18:00:00+00:00"
+# 2026-09-06T18:00Z was the first synthesis run on the measurement-based
+# resolver, and the first cutover.
+#
+# Moved forward on 2026-09-08 for an unrelated reason. Weather/collector.py
+# had been reading the NWS windSpeed value while ignoring its unitCode: NWS
+# reports km/h, the collector assumed m/s, and every wind figure was 3.6x too
+# high. A 19.6 mph gust was stored, published, and read here as 70.5 mph. The
+# fire branch of _confirms resolves on gusts at or above 45 mph, so the ledger
+# purged on 2026-09-06 immediately began refilling with confirmations from
+# wind that never blew.
+#
+# Set past the collector fix rather than at it, deliberately. The exact
+# instant is in the Pi's collector.log, on the "Corrected N historical
+# observation rows" line; move this back to that timestamp if the intervening
+# hours are worth counting. Retiring a few hours of possibly-clean
+# resolutions is much cheaper than keeping one bad one.
+LEDGER_VALID_FROM = "2026-09-08T12:00:00+00:00"
+
+# Weather observations recorded before this instant carry the 3.6x inflated
+# wind described above, and always will: the numbers are in published ATProto
+# records, which are immutable, and the subscriber's 15-hour lookback keeps
+# them in view well after the collector was fixed. A timestamp on the ledger
+# alone would purge the past and then let the same contamination straight back
+# in, so wind from those records confirms nothing.
+#
+# Keyed on the observation's own timestamp rather than on when it was
+# resolved, which makes it robust to publish lag, to backlog republishes, and
+# to the lookback window — all three of which decouple "when it was seen" from
+# "when it was measured".
+#
+# Note this is not a plausibility bound. A bound low enough to catch a 70.5
+# mph inflated reading would also reject the genuine extreme gusts these rules
+# exist to detect; the two ranges overlap and cannot be separated by value.
+# Provenance separates them, so provenance is what this checks.
+WIND_DATA_VALID_FROM = "2026-09-08T12:00:00+00:00"
 
 SYSTEM_PROMPT = """You are a cross-domain environmental risk assessment agent for Napa Valley, California.
 
@@ -541,22 +573,29 @@ def _ensure_predictions_table(conn: sqlite3.Connection) -> None:
 
 
 def _invalidate_legacy_resolutions(conn: sqlite3.Connection) -> int:
-    """Retire resolutions made by the superseded mechanism. Returns the count.
+    """Retire resolutions made before LEDGER_VALID_FROM. Returns the count.
+
+    Two cutovers so far, for unrelated reasons: the circular resolver that
+    confirmed on another agent's `flagged` boolean (2026-09-06), and the
+    collector unit bug that inflated every wind reading 3.6x and refilled the
+    ledger with gust confirmations after that first purge (2026-09-08). Both
+    produced resolutions that are not evidence of anything.
 
     Idempotent — the status guard means a row is only ever touched once, so
-    this can run on every startup and does nothing after the first time.
-    Rows are marked, never deleted; the ledger stops counting them but the
-    history of the period remains inspectable.
+    this can run on every startup and does nothing after the first time. It
+    also correctly retires rows resolved between deploys, since the cutoff is
+    set slightly ahead of the fix. Rows are marked, never deleted; the ledger
+    stops counting them but the history of the period remains inspectable.
     """
     cur = conn.execute(
         """UPDATE predictions
               SET status = 'invalidated',
                   resolution_note = COALESCE(resolution_note, '')
-                      || ' [invalidated: resolved by the pre-2026-09-06 mechanism]'
+                      || ' [invalidated: resolved before ' || ? || ']'
             WHERE resolved_at IS NOT NULL
               AND resolved_at < ?
               AND status != 'invalidated'""",
-        (LEDGER_VALID_FROM,),
+        (LEDGER_VALID_FROM, LEDGER_VALID_FROM),
     )
     return cur.rowcount or 0
 
@@ -577,11 +616,30 @@ def _num(block: dict, *names) -> Optional[float]:
     return None
 
 
-def _confirms(risk_type: str, block: dict) -> Optional[str]:
+def _wind_is_trustworthy(observed_at: Optional[str]) -> bool:
+    """Whether a weather observation's wind fields can be believed.
+
+    False for anything recorded before WIND_DATA_VALID_FROM, and for anything
+    whose timestamp won't parse — an observation that can't prove it postdates
+    the unit fix is treated as if it doesn't.
+    """
+    observed = _parse_ts(observed_at)
+    valid_from = _parse_ts(WIND_DATA_VALID_FROM)
+    if observed is None or valid_from is None:
+        return False
+    return observed >= valid_from
+
+
+def _confirms(risk_type: str, block: dict,
+              observed_at: Optional[str] = None) -> Optional[str]:
     """Does this domain observation's measured data confirm *risk_type*?
 
     Returns a reason string, or None. Deliberately reads numbers rather than
     the domain agent's `flagged` boolean — see _resolve_prediction.
+
+    Wind is ignored on observations predating the collector's unit fix; see
+    WIND_DATA_VALID_FROM. Humidity and temperature were never affected, so the
+    humidity-alone rule still resolves against the whole history.
     """
     if risk_type == "fire":
         alerts = {str(a).strip() for a in (block.get("activeAlerts") or [])}
@@ -593,8 +651,9 @@ def _confirms(risk_type: str, block: dict) -> Optional[str]:
 
         temp = _num(block, "temperatureF", "temperature_f")
         hum  = _num(block, "humidityPct", "humidity_pct")
-        wind = _num(block, "windSpeedMph", "wind_speed_mph")
-        gust = _num(block, "windGustMph", "wind_gust_mph")
+        wind_ok = _wind_is_trustworthy(observed_at)
+        wind = _num(block, "windSpeedMph", "wind_speed_mph") if wind_ok else None
+        gust = _num(block, "windGustMph", "wind_gust_mph") if wind_ok else None
 
         if (temp is not None and hum is not None and wind is not None
                 and temp >= FIRE_WX_TEMP_F and hum <= FIRE_WX_HUMIDITY_PCT
@@ -669,7 +728,7 @@ def _resolve_prediction(risk_type: str, grouped: dict[str, list[dict]],
             continue
 
         block = raw.get(domain) or {}
-        why = _confirms(risk_type, block)
+        why = _confirms(risk_type, block, rec.get("observed_at"))
         if why:
             return f"{domain} observation {rec.get('observed_at', '')}: {why}"
 

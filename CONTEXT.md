@@ -1021,6 +1021,27 @@ should: the weather agent returns only summary, flagged and reasoning, so
 publishing a risk level would mean inventing an assessment and attributing it
 to the agent.
 
+Purged a second time on 2026-09-08, for an unrelated cause. The wind unit bug
+meant `_confirms` had been resolving fire predictions on gust figures 3.6x too
+high, so the ledger began refilling with false confirmations immediately after
+the first purge. `LEDGER_VALID_FROM` moves to `2026-09-08T12:00Z`.
+
+The cutoff alone would not have held. Published ATProto records are immutable,
+so the inflated wind is in them permanently, and the subscriber's 15-hour
+lookback keeps them in view long after the collector was fixed — a purge would
+have cleared the past and let the same contamination straight back in.
+`WIND_DATA_VALID_FROM` therefore makes wind from observations predating the
+fix confirm nothing, keyed on the observation's own timestamp rather than on
+when it was resolved, which is what makes it robust to publish lag, backlog
+republishes and the lookback window.
+
+Not a plausibility bound, deliberately: a bound low enough to reject a 70.5 mph
+inflated reading would also reject the genuine extreme gusts the rule exists to
+detect. The value ranges overlap and cannot be separated by magnitude. Only
+provenance separates them, so provenance is what is checked. Humidity and
+temperature were never affected, so the humidity-alone rule still resolves
+against the whole history and the ledger is not left completely empty.
+
 The 128 legacy confirmations are marked `invalidated` rather than deleted, and
 excluded from the ledger the agent reads. Leaving them to age out over 30 days
 meant a month of the agent quoting a record the bug had manufactured. The
