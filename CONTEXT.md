@@ -1291,6 +1291,40 @@ The general shape is worth remembering when adding a tool to any of these
 agents: writing the tool, wiring it into the MCP server, and describing it in
 the prompt are three steps, and none of them makes it run.
 
+### A real fire, and the rule that didn't cover it (2026-09-09)
+
+The Steele Fire started at 16:59 UTC, 14.1 miles from the node in Napa County,
+and appeared in the CAL FIRE feed 50 minutes later — an unusually short
+publication lag. It is the first live test of the incident source, and the
+exact inverse of Angel Island: there, a detection with no incident; here, an
+incident that may never produce a detection.
+
+It exposed a gap the incident work had left. Every flag rule was
+hotspot-based, so a confirmed, named, actively-burning fire inside the
+unconditional 20-mile radius produced no flag at all unless FIRMS happened to
+see it — and a ten-acre fire may not, since VIIRS pixels are 375m across with
+two overpasses a day. The rules had been written when FIRMS was the only
+source and never revisited when a second one arrived.
+
+Adding a tool, wiring it into the server, and describing it in the prompt does
+not make it a criterion either. That is the same shape as the tool that was
+never called, one level up: the incident data was reaching the agent and still
+could not change the verdict.
+
+An active named incident within 20 miles now flags, in both the prompt
+criteria and `flag_rules.py`. It earns the same unconditional radius as a
+hotspot rather than a stricter one, because a confirmed fire is stronger
+evidence than an unattributed thermal anomaly, not weaker. The rule is guarded
+separately so a missing `incidents` table cannot take the other five down.
+
+The agent's charter was widened to match. It had said its "only job" was
+satellite-detected heat, which was true when written and wrong once a second
+source existed. It now states the question — is there a fire near Napa Valley
+right now — and names both sources along with how each fails: FIRMS is
+immediate but cannot identify what it sees and misses small fires; CAL FIRE
+names and confirms but lags publication and covers only a subset. A fire
+visible to one may be invisible to the other.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
