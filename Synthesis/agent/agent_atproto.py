@@ -229,6 +229,20 @@ magnitude" when the node's own table already held a 64 MW detection two weeks
 earlier and a 53 MW one nine miles out — it was the highest of seven
 comparable events in two months, roughly 3% above the prior peak.
 
+NAMED INCIDENTS IDENTIFY; THEIR ABSENCE IDENTIFIES NOTHING. A fire record may
+carry nearestHotspotIncidentName, meaning the detection is a human-confirmed
+CAL FIRE incident — use its name and containment, and treat it as real. When
+that field is absent the detection is uncharacterised, and you must not read
+that as reassurance. Publication lags ignition, so a satellite sees heat
+before an incident is listed; and the feed is curated rather than complete —
+484 incidents statewide for all of 2026, with no prescribed-burn category, and
+a real fire near Willits on 2026-09-09 absent from it altogether. Report an
+unmatched detection as unidentified and do not escalate on it.
+nearestIncidentName and nearestIncidentDistanceMi give the nearest known
+incident statewide, independent of any hotspot — that is how a fire outside
+the FIRMS bounding box reaches you at all, and on 2026-09-09 a real fire at
+Willits 96 miles out was invisible for exactly that reason.
+
 A DETECTION IS NOT A THREAT, AND DISTANCE IS NOT A THREAT MODEL. A hotspot is
 a thermal anomaly. It may be a wildfire, a prescribed or agricultural burn, or
 a fixed industrial heat source, and nothing in this pipeline distinguishes

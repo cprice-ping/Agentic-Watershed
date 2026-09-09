@@ -412,6 +412,7 @@ Required environment variables:
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python collector.py >> logs/collector.log 2>&1
+50 2,14 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python incidents_collector.py >> logs/incidents.log 2>&1
 
 # === Domain Agents (River/Weather/Fire 2x/day, AQI 4x/day) ===
 0 0,12 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1
@@ -1162,6 +1163,84 @@ The persistent fixed source that does exist in the data, and that nobody had
 noticed, is at 38.002/-121.934 — eight detections from 2026-07-18 to
 2026-09-08 averaging 0.8 MW at 28 miles, in the Pittsburg industrial corridor.
 It has never mattered because 0.8 MW triggers nothing.
+
+### CAL FIRE incidents as a second source (2026-09-09)
+
+Added after the Angel Island escalation, and the deferred fast-follow finally
+taken. `Fire/incidents_collector.py` polls
+`incidents.fire.ca.gov/umbraco/api/IncidentApi/List` hourly into an
+`incidents` table in `fire.db`, and the MCP server matches hotspots to named
+incidents.
+
+Matching is a POSITIVE identifier only. A match names a detection and gives
+its acreage and containment. An absence establishes nothing: not that the
+detection is harmless, not that it isn't a fire, only that no published
+incident corresponds. An incident must be reported, confirmed and published
+before it can appear, while a satellite sees the heat immediately, so there is
+always a window in which a real fire is detected and unlisted. Prescribed
+burns may never be listed at all. Every layer says this in those terms — the
+tool's `incident_note`, the lexicon description, and both prompts — because
+the tempting misreading is "unmatched, therefore fine", which would be a worse
+failure than the one being fixed.
+
+A correction worth recording in full, because the reasoning error is the
+recurring one here and the resolution is instructive.
+
+The first version said CAL FIRE "publishes notable incidents, not a census of
+fires", inferred from the Willits fire being absent from the feed. That
+inference was wrong: `?inactive=false` returns only currently-active
+incidents, so absence there was expected and proved nothing — the same shape
+as reading a Watch Duty check on the 9th as evidence about a detection from
+the 8th. The claim was rewritten to rest on publication lag alone, which holds
+regardless of coverage.
+
+Then the full feed settled it, and the original claim turned out to be true
+for a reason the original evidence never supported. `?inactive=true` returns
+484 incidents for all of 2026, 4 of them active, in a state with thousands of
+fires a year. The Willits fire is not in it at all — the nearest Willits-area
+record is the Ponderosa Fire, 5 acres, from nearly a month earlier. Types are
+Wildfire (472), Fire (11) and Hazmat (1); there is no prescribed-burn
+category, so a controlled burn can never match.
+
+So the caveat now names both gaps, because they are independent and either
+alone would be enough: publication lags ignition, and the feed is curated
+rather than complete. Being right for the wrong reason is still being wrong,
+and the fix was to go and get the data rather than to argue the inference.
+
+That correction changed the polling design too, and the two are the same
+decision. The collector polls `?inactive=true` rather than `?inactive=false`,
+because incidents drop out of the active feed the moment they close: polling
+active-only would have to run often enough to catch a short-lived fire inside
+its own lifetime and would still miss anything closed before the first run.
+Fetching everything makes each poll a complete picture rather than a sample,
+which is what lets the cadence match consumption — fire records are built
+twice a day, so the collector runs twice a day at 2:50 and 14:50 rather than
+hourly. The full feed is 321KB, so twice-daily costs nothing. Every record in
+it carried a 2026 start date, so the feed appears to be current-year only,
+which makes the local table the only place last year's incidents will survive
+a year rollover.
+
+Two details worth keeping. The match radius scales with the burn rather than
+being flat: an incident is a published point and a fire is an area, so the
+tolerance is the equivalent circular radius of the acreage plus fixed slop for
+the point being a label. Plaskett at 29,884 acres gets 8.9 miles; a one-acre
+incident gets 5.0. And rows are kept forever and upserted on CAL FIRE's
+`UniqueId`, because incidents drop out of the active feed once they close and
+a three-day-old hotspot must still be matchable against an incident that has
+since gone inactive. `first_seen_at` survives updates; acreage and containment
+take the latest value.
+
+`nearestIncidentName` and `nearestIncidentDistanceMi` are published
+independent of any hotspot, deliberately not bounded by the FIRMS box. That is
+the fix for the second half of the Angel Island day: the real fire at Willits
+was 96 miles out and outside the box, so the satellite feed could not see it
+at all.
+
+Each row also stores its raw JSON. This is a CMS endpoint, not a versioned
+API — the field names are whatever Umbraco serialises, `Name` arrives padded
+with a trailing space, and `PercentContained` is null on new incidents. If the
+mapping turns out wrong, the raw column means it can be corrected without
+re-polling history the active feed will no longer serve.
 
 ### What generalises, and what doesn't
 

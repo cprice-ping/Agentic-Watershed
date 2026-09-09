@@ -600,6 +600,80 @@ def _stale_cutoff(observed_at: str, hours: float) -> str:
     return (_anchor(observed_at) - timedelta(hours=hours)).isoformat()
 
 
+
+def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None) -> dict:
+    """Named CAL FIRE incident matching the nearest hotspot, plus the nearest
+    incident statewide.
+
+    The statewide figure is deliberately not bounded by the FIRMS box: on
+    2026-09-09 the nearest real wildfire was at Willits, 96 miles out and
+    outside the box, so the satellite feed could not see it. This is the only
+    field that carries such a fire into the record.
+
+    A match is a positive identifier only. No match emits no field at all
+    rather than an empty string, because absence here means "no published
+    incident corresponds", not "not a fire": publication lags ignition, and
+    the feed is a curated subset rather than a census — 484 incidents
+    statewide for all of 2026, with no prescribed-burn category.
+    """
+    db_path = DB_PATHS["fire"]
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT name, latitude, longitude, acres_burned,
+                      percent_contained, distance_mi
+               FROM incidents
+               WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+               ORDER BY distance_mi ASC"""
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return {}          # table absent until incidents_collector.py has run
+    if not rows:
+        return {}
+
+    result: dict = {}
+    nearest = rows[0]
+    if nearest["name"] and nearest["distance_mi"] is not None:
+        result["nearestIncidentName"] = nearest["name"]
+        result["nearestIncidentDistanceMi"] = _atproto_safe(nearest["distance_mi"])
+
+    if hotspot_lat is None or hotspot_lon is None:
+        return result
+    best = None
+    for inc in rows:
+        try:
+            d = _haversine_mi(float(hotspot_lat), float(hotspot_lon),
+                              float(inc["latitude"]), float(inc["longitude"]))
+        except (TypeError, ValueError):
+            continue
+        if d <= _FIRE_THRESHOLDS.incident_match_radius_mi(inc["acres_burned"]) and (
+                best is None or d < best[0]):
+            best = (d, inc)
+    if best is not None and best[1]["name"]:
+        result["nearestHotspotIncidentName"] = best[1]["name"]
+        if best[1]["percent_contained"] is not None:
+            result["nearestHotspotIncidentContainmentPct"] = int(
+                round(float(best[1]["percent_contained"])))
+    return result
+
+
+def _haversine_mi(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in miles. Same formula as Fire/collector.py; the
+    publisher ships in its own image and cannot import it."""
+    import math
+    r_mi = 3958.8
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = (math.sin(dphi / 2) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
+    return r_mi * 2 * math.asin(math.sqrt(a))
+
+
 def _fetch_fire_numerics(observed_at: str) -> dict:
     """Return the nearest currently-relevant hotspot's distance/confidence/FRP.
 
@@ -624,7 +698,7 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
         cutoff = _stale_cutoff(observed_at, NEAREST_HOTSPOT_MAX_AGE_HOURS)
         row = conn.execute(
             """
-            SELECT distance_mi, confidence, frp
+            SELECT distance_mi, confidence, frp, latitude, longitude
             FROM hotspots
             WHERE collected_at >= ? AND distance_mi IS NOT NULL
             ORDER BY distance_mi ASC
@@ -789,6 +863,8 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
         fire_block["nearestHotspotFrpPercentile"] = numerics["frpPercentile"]
     if "hotspotCount" in numerics:
         fire_block["hotspotCount"] = numerics["hotspotCount"]
+    fire_block.update(_fetch_incident_context(
+        observed_at, numerics.get("latitude"), numerics.get("longitude")))
 
     return {
         "$type": LEXICON,

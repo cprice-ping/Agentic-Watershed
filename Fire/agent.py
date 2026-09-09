@@ -121,7 +121,23 @@ record is this collector's history only, not the region's.
 
 DETECTION IS NOT THREAT. A hotspot is a thermal anomaly at a location. It may
 be a wildfire, a prescribed or agricultural burn, or a fixed industrial heat
-source, and nothing in this data distinguishes them. Distance and FRP say
+source. get_nearest_hotspots now attaches a matching CAL FIRE incident where
+one exists, which is the only thing that can tell them apart.
+
+A MATCH IDENTIFIES; AN ABSENCE IDENTIFIES NOTHING. When a hotspot carries an
+incident block, name it and use its acreage and containment — that is a
+human-confirmed fire. When it carries incident: null, say the detection is
+uncharacterised. Do NOT say it is not a fire, is harmless, or is likely
+industrial. Two reasons: publication lags ignition, so a satellite sees heat
+before an incident is reported and listed; and the feed is curated rather than
+complete — 484 incidents statewide for all of 2026, small fires often never
+listed, and no prescribed-burn category at all, so a controlled burn can never
+match. Report unmatched detections without escalating on them.
+
+Also call get_active_incidents. Fires outside the FIRMS bounding box are
+invisible to the satellite feed — a real fire at Willits on 2026-09-09 was 96
+miles out and beyond the box — so this is the only way a nearby but
+unmonitored fire reaches your observation at all. Distance and FRP say
 nothing about whether fire can reach the valley: terrain, fuel continuity and
 water in between all matter and none of them are observed here. Report what
 was detected, where, how strong relative to the record, and whether it is new

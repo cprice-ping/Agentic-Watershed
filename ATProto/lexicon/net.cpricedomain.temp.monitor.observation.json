@@ -255,6 +255,22 @@
           "type": "integer",
           "description": "Where nearestHotspotFrpMw sits in the publishing collector's own FRP history, 0-100. Present so a consumer can tell an ordinary reading from an unusual one without a raw MW figure it has no baseline for. Relative to this collector's record only, never to the fire history of the region."
         },
+        "nearestHotspotIncidentName": {
+          "type": "string",
+          "description": "Name of the CAL FIRE incident matching the nearest hotspot, if one does. Present means the detection is a human-confirmed named fire. ABSENT MEANS ONLY THAT NO PUBLISHED INCIDENT MATCHES — publication lags ignition, and the feed is a curated subset rather than a census (484 incidents statewide for all of 2026, no prescribed-burn category). Absence is not evidence that a detection is harmless or not a fire."
+        },
+        "nearestHotspotIncidentContainmentPct": {
+          "type": "integer",
+          "description": "Containment percentage of the matched incident, 0-100. Only present alongside nearestHotspotIncidentName."
+        },
+        "nearestIncidentName": {
+          "type": "string",
+          "description": "Nearest known CAL FIRE incident to the node, statewide and independent of any hotspot. Deliberately not limited to the FIRMS bounding box: a fire outside the monitored box is invisible to the satellite feed, so this is how it becomes visible at all."
+        },
+        "nearestIncidentDistanceMi": {
+          "type": "string",
+          "description": "Distance in miles to nearestIncidentName. Stringified — DAG-CBOR has no float type."
+        },
         "hotspotCount": {
           "type": "integer",
           "description": "Count of hotspots within the 6-hour window around observedAt."
