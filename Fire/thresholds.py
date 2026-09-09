@@ -38,6 +38,19 @@ FAR_DISTANCE_MI  = 50.0   # high-confidence only
 HIGH_CONFIDENCE_LETTER  = "h"
 HIGH_CONFIDENCE_NUMERIC = 80
 
+# A reading at or above this percentile of the collector's own FRP history is
+# worth calling unusual. Below it, it is an ordinary detection for this area
+# however large the raw number looks.
+#
+# This exists because the agent had no way to judge one. On 2026-09-09 it
+# described a 66 MW detection as "well beyond anything previously reported in
+# FRP magnitude" when the same table held 64.0 MW two weeks earlier and 53.2
+# MW at 9.8 miles before that — 66 was the highest of seven comparable events
+# in two months, about 3% above the prior peak. The tools returned a raw FRP
+# and no distribution to read it against, so the superlative was a guess.
+FRP_NOTABLE_PERCENTILE = 95.0
+
+
 
 def _n(value: float) -> str:
     return f"{value:g}"

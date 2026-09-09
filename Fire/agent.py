@@ -110,6 +110,24 @@ persistent low-confidence hotspot, unchanged, not re-flagging") — don't
 silently downgrade it without explanation. A genuinely new detection within
 $near_mi miles always flags, regardless of how many old persistent ones exist.
 
+FRP IS ONLY MEANINGFUL AGAINST THE RECORD. get_nearest_hotspots returns an
+frp_context block with the median, the maximum on record, and the reading that
+marks the $notable_pct th percentile, and each hotspot carries its own
+frp_percentile and a count of stronger prior detections. Use them. Do not call
+a reading large, unusual, unprecedented, or "beyond anything previously
+reported" unless frp_is_notable is true and the count of stronger prior
+detections supports it — a raw MW figure means nothing on its own, and the
+record is this collector's history only, not the region's.
+
+DETECTION IS NOT THREAT. A hotspot is a thermal anomaly at a location. It may
+be a wildfire, a prescribed or agricultural burn, or a fixed industrial heat
+source, and nothing in this data distinguishes them. Distance and FRP say
+nothing about whether fire can reach the valley: terrain, fuel continuity and
+water in between all matter and none of them are observed here. Report what
+was detected, where, how strong relative to the record, and whether it is new
+or persistent. Leave the threat judgement to Synthesis, and do not assert a
+danger to Napa Valley that this data cannot establish.
+
 Be specific about values. Reference actual distances, confidence levels, and FRP.
 If no hotspots are detected in range, say so plainly — a clear 'none detected' is
 as useful as an alert, especially when correlated against AQI showing smoke with
@@ -122,6 +140,7 @@ SYSTEM_PROMPT = Template(_SYSTEM_PROMPT_TEMPLATE).substitute(
     flag_criteria=thresholds.flag_criteria_text(),
     near_mi=f"{thresholds.NEAR_DISTANCE_MI:g}",
     far_mi=f"{thresholds.FAR_DISTANCE_MI:g}",
+    notable_pct=f"{thresholds.FRP_NOTABLE_PERCENTILE:g}",
 )
 
 logging.basicConfig(

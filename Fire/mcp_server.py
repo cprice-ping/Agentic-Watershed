@@ -192,6 +192,69 @@ def get_hotspots_since(hours_ago: float = 48.0) -> str:
     return json.dumps(_rows_to_dicts(rows), indent=2)
 
 
+def _frp_history(conn) -> list[float]:
+    """Every FRP reading this collector has ever recorded, ascending."""
+    return [r[0] for r in conn.execute(
+        "SELECT frp FROM hotspots WHERE frp IS NOT NULL ORDER BY frp ASC"
+    ).fetchall()]
+
+
+def _percentile(sorted_values: list[float], value: float) -> float:
+    """Percentage of *sorted_values* at or below *value*."""
+    if not sorted_values:
+        return 0.0
+    import bisect
+    return round(100.0 * bisect.bisect_right(sorted_values, value)
+                 / len(sorted_values), 1)
+
+
+def _frp_context(conn) -> dict:
+    """The distribution to read a single FRP reading against.
+
+    Without this the agent has a number and nothing to compare it to, and it
+    fills the gap by guessing — "well beyond anything previously reported"
+    about a reading 3% above the prior peak. A percentile and a count of
+    stronger prior detections make "is this unusual" answerable instead of
+    rhetorical.
+
+    Bounded by the record, like every other counter here: the answer is
+    always relative to what this collector has seen, never to the fire
+    history of the region.
+    """
+    values = _frp_history(conn)
+    span = conn.execute(
+        "SELECT MIN(acq_date) AS a, MAX(acq_date) AS b FROM hotspots"
+    ).fetchone()
+    ctx = {
+        "detections_with_frp": len(values),
+        "record_starts": span["a"] if span else None,
+        "record_ends": span["b"] if span else None,
+        "basis": ("percentiles are over this collector's own record only, "
+                  "not the fire history of the region"),
+    }
+    if values:
+        ctx["max_frp_on_record"] = round(values[-1], 1)
+        ctx["median_frp"] = round(values[len(values) // 2], 1)
+        ctx["notable_at_or_above_frp"] = round(
+            values[min(len(values) - 1,
+                       int(len(values) * thresholds.FRP_NOTABLE_PERCENTILE / 100))], 1)
+        ctx["notable_percentile"] = thresholds.FRP_NOTABLE_PERCENTILE
+    return ctx
+
+
+def _annotate_frp(hotspots: list[dict], values: list[float]) -> None:
+    """Attach each hotspot's standing in the FRP record, in place."""
+    for h in hotspots:
+        frp = h.get("frp")
+        if frp is None:
+            continue
+        pct = _percentile(values, frp)
+        stronger = sum(1 for v in values if v > frp)
+        h["frp_percentile"] = pct
+        h["frp_stronger_prior_detections"] = stronger
+        h["frp_is_notable"] = pct >= thresholds.FRP_NOTABLE_PERCENTILE
+
+
 @mcp.tool()
 def get_nearest_hotspots(n: int = 10) -> str:
     """
@@ -229,10 +292,14 @@ def get_nearest_hotspots(n: int = 10) -> str:
             (cutoff, n),
         ).fetchall()
 
+        frp_values = _frp_history(conn)
+        frp_ctx = _frp_context(conn)
+
     result = {
         "last_poll_at": last_poll["polled_at"] if last_poll else None,
         "last_poll_status": last_poll["status"] if last_poll else "never_polled",
         "currency_window_hours": NEAREST_HOTSPOT_MAX_AGE_HOURS,
+        "frp_context": frp_ctx,
     }
     if last_poll and last_poll["error_message"]:
         # Set on status="error" (every source failed) and also on a partial
@@ -247,7 +314,9 @@ def get_nearest_hotspots(n: int = 10) -> str:
             "— this means nothing current, not that older historical hotspots don't exist."
         )
     else:
-        result["nearest_hotspots"] = _rows_to_dicts(rows)
+        hotspots = _rows_to_dicts(rows)
+        _annotate_frp(hotspots, frp_values)
+        result["nearest_hotspots"] = hotspots
     return json.dumps(result, indent=2)
 
 

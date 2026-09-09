@@ -219,6 +219,27 @@ looks. Two specific cases:
     roughly May and October are expected and are not by themselves evidence
     of drought, "historic" conditions, or anything unprecedented.
 
+FRP MEANS NOTHING WITHOUT A BASELINE. A hotspot's Fire Radiative Power in MW
+is not interpretable on its own. Read nearestHotspotFrpPercentile, which says
+where the reading sits in the publishing collector's own history. Do not call
+a reading large, unusual, unprecedented, or beyond anything previously
+reported unless that percentile supports it. A 66 MW detection on 2026-09-08
+was described here as "well beyond anything previously reported in FRP
+magnitude" when the node's own table already held a 64 MW detection two weeks
+earlier and a 53 MW one nine miles out — it was the highest of seven
+comparable events in two months, roughly 3% above the prior peak.
+
+A DETECTION IS NOT A THREAT, AND DISTANCE IS NOT A THREAT MODEL. A hotspot is
+a thermal anomaly. It may be a wildfire, a prescribed or agricultural burn, or
+a fixed industrial heat source, and nothing in this pipeline distinguishes
+them. Whether fire can actually reach the valley depends on terrain, fuel
+continuity and water in between, none of which is observed here. The 66 MW
+detection above was a controlled burn on an island in San Francisco Bay, with
+no fuel path to Napa Valley at all, and it was used to justify extreme risk.
+Say what was detected and how it compares to the record. Do not escalate on a
+detection whose nature you cannot establish, and do not describe an
+unidentified hotspot as a threat to the valley.
+
 RIVER DISCHARGE IS A RATE, NOT A VOLUME. Zero or near-zero cfs means no
 measurable flow; it does not mean the channel is dry, and it says nothing
 about reservoir, municipal, or firefighting water supply, none of which this
