@@ -251,6 +251,10 @@
           "type": "string",
           "description": "Fire Radiative Power (MW) for the nearest hotspot. Stringified — DAG-CBOR has no float type."
         },
+        "nearestHotspotFrpPercentile": {
+          "type": "integer",
+          "description": "Where nearestHotspotFrpMw sits in the publishing collector's own FRP history, 0-100. Present so a consumer can tell an ordinary reading from an unusual one without a raw MW figure it has no baseline for. Relative to this collector's record only, never to the fire history of the region."
+        },
         "hotspotCount": {
           "type": "integer",
           "description": "Count of hotspots within the 6-hour window around observedAt."

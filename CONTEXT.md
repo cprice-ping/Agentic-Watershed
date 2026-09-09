@@ -1115,6 +1115,54 @@ is a rate and that water supply is outside what this system measures. The
 computed line is doing the real work: telling the agent not to infer something
 is weaker than showing it the number that contradicts the inference.
 
+### A controlled burn on an island justified extreme risk (2026-09-09)
+
+The clearest single demonstration of what this pipeline cannot do. FIRMS
+detected roughly fourteen VIIRS pixels on Angel Island in San Francisco Bay,
+peaking at 66 MW, one NOAA-21 overpass on 2026-09-08. Every part of the
+detection was correct: real fire, real thermal output, distance and confidence
+computed properly, inside the currency window. Synthesis escalated to extreme
+fire risk for Napa Valley on it.
+
+It was a controlled burn, on an island, with no fuel path to the valley at
+all. The nearest actual wildfire that day was a small one at Willits — 96
+miles north-northwest and outside the monitored bounding box entirely, so the
+system was structurally blind to it. The one real fire was invisible and the
+one non-threat drove the verdict.
+
+Two separate gaps, worth keeping distinct.
+
+The first is that a thermal anomaly has no type. A wildfire, a prescribed
+burn, an agricultural burn and a refinery flare are identical in this data.
+The fix is a second source — a named-incident feed — which was deliberately
+deferred when Fire was built, on the reasoning that it was worth doing "once
+FIRMS itself is proven in production". It is now proven, including proven to
+need corroboration.
+
+The second is that distance is not a threat model. The rules use 20 miles
+unconditional and 50 miles for high confidence, and those are reasonable
+*detection* bounds. Whether fire can reach the valley depends on terrain, fuel
+continuity and water in between, none of which is observed. An island thirty
+miles across open water and a ridge thirty miles upwind on continuous chaparral
+produce the same record. Rather than model propagation, both prompts now say
+plainly that a detection is not a threat and that the agents must not assert a
+danger this data cannot establish.
+
+A third, smaller finding came out of the same record: the agent called 66 MW
+"well beyond anything previously reported in FRP magnitude" when its own table
+held 64.0 MW two weeks earlier and 53.2 MW nine miles out. It was the highest
+of seven comparable readings in two months, about 3% above the prior peak. The
+tools returned a raw MW figure and no distribution, so the superlative was a
+guess — the same species as the drought counter. `get_nearest_hotspots` now
+returns an `frp_context` block and per-hotspot percentiles, and the publisher
+emits `nearestHotspotFrpPercentile` so Synthesis inherits the baseline instead
+of inventing one.
+
+The persistent fixed source that does exist in the data, and that nobody had
+noticed, is at 38.002/-121.934 — eight detections from 2026-07-18 to
+2026-09-08 averaging 0.8 MW at 28 miles, in the Pittsburg industrial corridor.
+It has never mattered because 0.8 MW triggers nothing.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

@@ -640,8 +640,24 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
             """,
             (observed_at, _FIRE_THRESHOLDS.HOTSPOT_COUNT_WINDOW_HOURS),
         ).fetchone()
+        # Where this reading sits in the collector's own FRP history, so a
+        # consumer has a baseline instead of a bare MW figure. Synthesis
+        # called a 66 MW detection "well beyond anything previously reported"
+        # when two comparable ones were already in this table.
+        frp_pct = None
+        if row and row["frp"] is not None:
+            dist = conn.execute(
+                "SELECT COUNT(*) AS n,"
+                " SUM(CASE WHEN frp <= ? THEN 1 ELSE 0 END) AS at_or_below"
+                " FROM hotspots WHERE frp IS NOT NULL",
+                (row["frp"],),
+            ).fetchone()
+            if dist and dist["n"]:
+                frp_pct = round(100.0 * (dist["at_or_below"] or 0) / dist["n"])
         conn.close()
         result = dict(row) if row else {}
+        if frp_pct is not None:
+            result["frpPercentile"] = frp_pct
         if count_row:
             result["hotspotCount"] = count_row["n"]
         return result
@@ -769,6 +785,8 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
         fire_block["nearestHotspotConfidence"] = numerics["confidence"]
     if "frp" in numerics and numerics["frp"] is not None:
         fire_block["nearestHotspotFrpMw"] = _atproto_safe(numerics["frp"])
+    if "frpPercentile" in numerics:
+        fire_block["nearestHotspotFrpPercentile"] = numerics["frpPercentile"]
     if "hotspotCount" in numerics:
         fire_block["hotspotCount"] = numerics["hotspotCount"]
 
