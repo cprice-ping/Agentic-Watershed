@@ -1402,6 +1402,37 @@ request, and repeating it changes nothing.
 
 This pairs with the exit-code change. Retry handles the blip; the non-zero
 exit handles a real outage. Before, both produced the same silent zero.
+### The numeric block described a later moment than the record (2026-09-09)
+
+An AQI record carried `pm25Aqi: 52` while its own summary said "PM2.5 AQI at
+43 ... as of 2026-09-09 06:00 UTC". Two separate causes, and the record only
+looked wrong because both landed at once.
+
+The numerics fetchers had a lower bound and no upper one: `collected_at >=
+cutoff`, then `ORDER BY ABS(collected_at - observedAt)`. A reading taken
+*after* observedAt could therefore win — from a 15:00:15 observation, a 15:15
+reading is fifteen minutes away and beats the 14:45 one the agent actually
+saw. The agent wrote 43 from what existed when it ran; the publisher, running
+an hour later, attached 52 from a reading that did not exist yet. All three
+fetchers are now bounded at observedAt, so a record can only contain data that
+existed at the moment it claims to describe.
+
+Worth noting the inconsistency that hid it: `_fetch_dry_spell` and
+`_fetch_active_alerts` were both written with an upper bound from the start.
+The three older fetchers were not, and nothing compared them.
+
+The second cause was a unit. AirNow's `HourObserved` is an integer in the
+reporting area's LOCAL time, exposed to the model as a bare `obs_hour`. The
+agent read 6 and wrote "06:00 UTC", moving the observation seven hours. Same
+failure as reading NWS `windSpeed` without its `unitCode`: a value handed over
+without its unit gets given the wrong one. The field is now
+`obs_hour_local`, the tool explains that `collected_at` is UTC and
+`obs_hour_local` is not, and the prompt says so too.
+
+The general rule this keeps producing: every timestamp and every measurement
+needs its frame attached at the point it leaves the database, not inferred
+downstream. Three separate bugs now — wind units, hotspot currency, AQI clocks
+— have been the same omission.
 
 ### What generalises, and what doesn't
 

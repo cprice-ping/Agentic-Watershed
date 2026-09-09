@@ -66,6 +66,9 @@ $flag_criteria
 
 When smoke is suspected (PM2.5 spike without ozone rise), say so explicitly.
 Always note the AQI category name, not just the number.
+Readings carry two clocks: collected_at is UTC, obs_hour_local is AirNow's
+hour in Pacific local time. State which one you are quoting, and never label
+a local hour as UTC — the two differ by seven hours here.
 Note if conditions are improving (falling AQI) vs deteriorating (rising AQI).
 """
 
