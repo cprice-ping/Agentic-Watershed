@@ -38,6 +38,7 @@ Cron (run after synthesis agent — 15 min after agent fires):
 """
 
 import argparse
+import json
 import logging
 import os
 import sqlite3
@@ -246,13 +247,47 @@ def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
             "airQualityRisk":  row.get("air_quality_risk", "none"),
             "overallRisk":     row.get("overall_risk", "none"),
             "synthesisDid":    synth_did,
-            "domainsObserved": ["watershed", "weather", "aqi", "fire"],
+            # What actually reached the run, recorded by the agent. This was
+            # hardcoded to all four domains, so the 2026-09-09T18:00Z record
+            # asserted watershed, weather, aqi and fire had all contributed to
+            # a run whose own reasoning opened "received no node observations
+            # at all". The prose was right and the structured field was not,
+            # which is the worse way round: a consumer parsing the record
+            # never reads the prose.
+            "domainsObserved": _domains_observed(row),
+            "nodeCount":       int(row["node_count"] or 0)
+                               if _has(row, "node_count") else 0,
             # Full cross-domain reasoning, not just the public-facing summary —
             # makes the ATProto record itself the complete, publicly auditable
             # source of truth rather than just what fits in a Bluesky post.
             "reasoning":       reasoning,
         },
     }
+
+
+def _has(row, key) -> bool:
+    """Whether a row carries a column — older synthesis.db files predate these."""
+    try:
+        return row[key] is not None
+    except (IndexError, KeyError):
+        return False
+
+
+def _domains_observed(row) -> list[str]:
+    """The domains that actually contributed, as recorded by the agent.
+
+    An empty list is a real assertion — it says nothing reached this run —
+    and is published as such rather than being padded out to look complete.
+    A row from before this column existed returns empty for the same reason:
+    the honest answer to "which domains contributed" is not "all of them".
+    """
+    if not _has(row, "domains_observed"):
+        return []
+    try:
+        value = json.loads(row["domains_observed"])
+    except (TypeError, ValueError):
+        return []
+    return [str(d) for d in value] if isinstance(value, list) else []
 
 
 def build_post(row: dict) -> tuple[str, list[str]]:

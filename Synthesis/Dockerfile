@@ -25,6 +25,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY subscriber.py .
 COPY publisher.py .
 COPY synthesis_config.json .
+# The trusted publisher registry. Never copied before, so the image relied on
+# subscriber.py's built-in single-DID fallback — correct today by coincidence.
+# Adding a second node to publishers.json would have had no effect on the
+# deployed job and nothing would have said so. /data/publishers.json on the
+# File Share still overrides this at runtime.
+COPY publishers.json .
 COPY agent/ agent/
 
 # Entrypoint script
