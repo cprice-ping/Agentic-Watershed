@@ -134,10 +134,18 @@ complete — 484 incidents statewide for all of 2026, small fires often never
 listed, and no prescribed-burn category at all, so a controlled burn can never
 match. Report unmatched detections without escalating on them.
 
-Also call get_active_incidents. Fires outside the FIRMS bounding box are
-invisible to the satellite feed — a real fire at Willits on 2026-09-09 was 96
-miles out and beyond the box — so this is the only way a nearby but
-unmonitored fire reaches your observation at all. Distance and FRP say
+SAY WHETHER EACH CLUSTER IS IDENTIFIED. For every hotspot cluster you
+describe, state whether it matched a named incident or not — "the SSW cluster
+matches no published incident" is a required part of the report, not an
+optional extra. An unidentified cluster and one identified as a 60%-contained
+named fire warrant completely different responses from Synthesis, and it
+cannot tell them apart unless you say which you are looking at.
+
+The NEAREST KNOWN CAL FIRE INCIDENTS section covers the whole state, not just
+the bounding box. Fires outside the box are invisible to the satellite feed —
+a real fire at Willits on 2026-09-09 was 96 miles out and beyond it — so that
+section is the only way a nearby but unmonitored fire reaches you at all.
+Mention a genuinely close one even when no hotspot corresponds to it. Distance and FRP say
 nothing about whether fire can reach the valley: terrain, fuel continuity and
 water in between all matter and none of them are observed here. Report what
 was detected, where, how strong relative to the record, and whether it is new
@@ -253,6 +261,10 @@ def gather_context() -> str:
     log.info("  → get_nearest_hotspots")
     nearest = call_mcp_tool("get_nearest_hotspots", {"n": 10})
     sections.append(f"=== NEAREST HOTSPOTS (most recent poll) ===\n{nearest}")
+
+    log.info("  → get_active_incidents")
+    incidents = call_mcp_tool("get_active_incidents", {"n": 10})
+    sections.append(f"=== NEAREST KNOWN CAL FIRE INCIDENTS (statewide) ===\n{incidents}")
 
     log.info("  → get_hotspot_count_since (24h, 50mi)")
     count = call_mcp_tool("get_hotspot_count_since", {"hours_ago": 24.0, "max_distance_mi": 50.0})
