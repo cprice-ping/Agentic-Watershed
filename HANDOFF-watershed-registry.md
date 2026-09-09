@@ -90,6 +90,23 @@ The `verify` call is cached with TTL in the client — no registry round-trip
 on every record. Trust becomes capability-aware: a known DID whose charter
 lacks `observe` is rejected even if its identity is valid.
 
+> **⚠ Blocker — resolve before implementing this section (found 2026-08-26).**
+> The snippet above passes `publisher_did` to `registry.verify()`, but those are
+> two different identifiers. `publisher_did` comes off the ATProto record and is a
+> `did:plc`; the registry mints `did:web` exclusively and has no ATProto concept at
+> all (grep `Agentic-DID-Registry` for `did:plc`/`atproto` — no hits). Note that
+> this document's own `NODE_DID` on line 99 is a `did:web`, while the value reaching
+> `verify()` here is `did:plc:ggztd5hjk3cnkhgzdk4rmqan`. The lookup cannot succeed
+> as written, and nothing currently binds an agent's two identifiers together.
+>
+> This also breaks the "identity layer only, lexicon unchanged" scoping: carrying a
+> `did:web` and a `registry.sign()` `proof` on the record needs lexicon fields that
+> don't exist yet.
+>
+> Full analysis, including why the PDS running `PDS_INVITE_REQUIRED=false` makes a
+> bare `did:plc` insufficient as evidence, is in `HANDOFF-ephemeral-agents.md`
+> under **Findings that outlive the shelving**.
+
 ---
 
 ## New environment variables
