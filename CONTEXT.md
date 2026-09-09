@@ -1368,6 +1368,41 @@ the built-in default.
 The common thread with the rest of this week: the failure was not that
 something broke, it was that nothing downstream could tell it had.
 
+### A one-second 502 cost a synthesis run (2026-09-09)
+
+The 18:00Z run's execution log settled what four other checks could not:
+
+```
+GET https://plc.directory/did:plc:ggztd5... "HTTP/1.1 200 OK"
+Fetching records from napa-node-01 via https://napa-node-01.watershed-agent.dev...
+GET .../listRecords?... "HTTP/1.1 502 Bad Gateway"
+Failed to fetch from napa-node-01: Server error '502 Bad Gateway'
+=== Fetch complete — 0 fetched, 0 new ===
+```
+
+Azure's egress was fine, DID resolution succeeded, and Cloudflare answered. A
+502 from a tunnel means the edge was reachable and the origin was not — the
+PDS on the Pi, or cloudflared's link to it, failed for one second at
+18:00:22Z. It was serving normally before and after.
+
+Worth recording that the diagnosis before the log was wrong. Having ruled out
+the PDS, the publisher, the record window and the DID, the conclusion drawn
+was "the fault is on Azure's side of the connection". It was the opposite end.
+Everything that had been eliminated was eliminated correctly; the remaining
+inference was still backwards, because "not any of the things I checked" is
+not the same as "the thing I did not check". The log took one query and
+settled it.
+
+The subscriber had no retry at all. A 502 is the canonical retryable case —
+the request was valid and the server could not answer it right then — and
+losing a twice-daily run to a one-second blip is the wrong trade. It now
+retries 5xx, 429 and transport errors up to four attempts with 2/4/8s backoff,
+and deliberately does not retry 4xx: a 400 or 404 is a statement about the
+request, and repeating it changes nothing.
+
+This pairs with the exit-code change. Retry handles the blip; the non-zero
+exit handles a real outage. Before, both produced the same silent zero.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

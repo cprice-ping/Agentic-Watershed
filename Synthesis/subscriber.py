@@ -189,6 +189,58 @@ def log_record(record: dict, node: str, is_new: bool) -> None:
 # Fetch mode (default) — pull from PDS via listRecords
 # ---------------------------------------------------------------------------
 
+# A Cloudflare tunnel returns 502 when the edge is reachable but the origin
+# is not, which for this node means the PDS on the Pi blinked. On
+# 2026-09-09T18:00:22Z exactly that happened: DID resolution succeeded, the
+# edge answered, listRecords returned 502 one second later, and the run
+# fetched nothing. The PDS was serving normally before and after.
+#
+# Losing a twice-daily synthesis run to a one-second origin blip is the wrong
+# trade, and 5xx is the canonical retryable case: the request was valid and
+# the server could not answer it right then. 4xx is not retried — a 400 or a
+# 404 means the request itself is wrong and repeating it just wastes time.
+RETRY_STATUSES = frozenset({502, 503, 504, 429})
+RETRY_ATTEMPTS = 4
+RETRY_BACKOFF_SECONDS = 2.0   # 2s, 4s, 8s between the four attempts
+
+
+def _get_with_retry(client: httpx.Client, url: str, params: dict, node_id: str):
+    """GET with backoff on transient server errors. Raises on final failure.
+
+    Deliberately narrow: only 5xx, 429 and transport errors are retried. A
+    4xx is a statement about the request and repeating it changes nothing.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            resp = client.get(url, params=params)
+            if resp.status_code in RETRY_STATUSES and attempt < RETRY_ATTEMPTS:
+                delay = RETRY_BACKOFF_SECONDS ** attempt
+                log.warning("%s: HTTP %d from the PDS (attempt %d/%d), "
+                            "retrying in %.0fs — the edge answered but the "
+                            "origin did not.",
+                            node_id, resp.status_code, attempt,
+                            RETRY_ATTEMPTS, delay)
+                time.sleep(delay)
+                continue
+            resp.raise_for_status()
+            if attempt > 1:
+                log.info("%s: recovered on attempt %d", node_id, attempt)
+            return resp
+        except httpx.TransportError as exc:
+            last_exc = exc
+            if attempt >= RETRY_ATTEMPTS:
+                break
+            delay = RETRY_BACKOFF_SECONDS ** attempt
+            log.warning("%s: %s (attempt %d/%d), retrying in %.0fs",
+                        node_id, type(exc).__name__, attempt,
+                        RETRY_ATTEMPTS, delay)
+            time.sleep(delay)
+    if last_exc is not None:
+        raise last_exc
+    return resp
+
+
 def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
                          lookback_hours: float) -> tuple[int, int]:
     """
@@ -213,9 +265,9 @@ def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
             if cursor:
                 params["cursor"] = cursor
 
-            resp = client.get(f"{pds_host}/xrpc/com.atproto.repo.listRecords",
-                              params=params)
-            resp.raise_for_status()
+            resp = _get_with_retry(client,
+                                   f"{pds_host}/xrpc/com.atproto.repo.listRecords",
+                                   params, node_id)
             data = resp.json()
 
             records = data.get("records", [])
