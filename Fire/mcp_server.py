@@ -265,7 +265,7 @@ def _incidents(conn) -> list[dict]:
         return [dict(r) for r in conn.execute(
             """SELECT name, county, location, latitude, longitude, acres_burned,
                       percent_contained, incident_type, is_active, started_at,
-                      updated_at, url, distance_mi
+                      updated_at, extinguished_at, url, distance_mi
                FROM incidents WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                ORDER BY distance_mi ASC"""
         ).fetchall()]
@@ -289,13 +289,71 @@ _UNMATCHED_NOTE = (
 )
 
 
+def _parse_dt(value):
+    """A CAL FIRE timestamp as an aware datetime, or None."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _hotspot_detected_at(h: dict):
+    """When the satellite saw it: acq_date plus acq_time (HHMM UTC)."""
+    dt = _parse_dt(h.get("acq_date"))
+    if dt is None:
+        return _parse_dt(h.get("collected_at"))
+    raw = str(h.get("acq_time") or "").strip().zfill(4)
+    if raw.isdigit() and len(raw) == 4:
+        dt = dt.replace(hour=int(raw[:2]) % 24, minute=int(raw[2:]) % 60)
+    return dt
+
+
+def _was_burning(inc: dict, when) -> bool:
+    """Could this incident have produced a detection at *when*?
+
+    Distance alone is not a match. On 2026-09-09 the five incidents nearest
+    Napa were all 100% contained, so a location test by itself would label a
+    fresh detection near any of them as a known, closed event.
+
+    Padded at both ends: a satellite sees heat before an incident is reported,
+    and ground stays hot after containment. An incident with no usable start
+    date is allowed through on distance alone rather than silently dropped —
+    it is still a named incident, and the caller shows the dates.
+    """
+    if when is None:
+        return True
+    start = _parse_dt(inc.get("started_at"))
+    if start is None:
+        return True
+    if when < start - timedelta(days=thresholds.INCIDENT_MATCH_LEAD_DAYS):
+        return False
+    if inc.get("is_active"):
+        return True
+    end = (_parse_dt(inc.get("extinguished_at"))
+           or _parse_dt(inc.get("updated_at")))
+    if end is None:
+        return True
+    return when <= end + timedelta(days=thresholds.INCIDENT_MATCH_TAIL_DAYS)
+
+
 def _match_incidents(hotspots: list[dict], incidents: list[dict]) -> None:
-    """Attach the nearest plausible named incident to each hotspot, in place."""
+    """Attach the nearest plausible named incident to each hotspot, in place.
+
+    Plausible means near it AND burning when it was detected. Both tests are
+    required; distance alone matches a detection today against a fire that
+    closed months ago.
+    """
     for h in hotspots:
         lat, lon = h.get("latitude"), h.get("longitude")
+        detected = _hotspot_detected_at(h)
         best = None
         if lat is not None and lon is not None:
             for inc in incidents:
+                if not _was_burning(inc, detected):
+                    continue
                 try:
                     d = haversine_mi(float(lat), float(lon),
                                      float(inc["latitude"]), float(inc["longitude"]))
@@ -394,7 +452,7 @@ def get_nearest_hotspots(n: int = 10) -> str:
         rows = conn.execute(
             """
             SELECT latitude, longitude, acq_date, acq_time, satellite,
-                   confidence, frp, daynight, distance_mi
+                   confidence, frp, daynight, distance_mi, collected_at
             FROM hotspots
             WHERE collected_at >= ?
             ORDER BY distance_mi ASC

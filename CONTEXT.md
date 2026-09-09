@@ -1242,6 +1242,33 @@ with a trailing space, and `PercentContained` is null on new incidents. If the
 mapping turns out wrong, the raw column means it can be corrected without
 re-polling history the active feed will no longer serve.
 
+### Distance alone was not a match (2026-09-09)
+
+The first real incident poll on node-01 exposed a defect the design review had
+missed. The five incidents nearest Napa in 2026 are all inside the 20-mile
+unconditional radius — Mason at 7.5 miles, then Lyon, Ruth, Pablo and Petersen
+between 16 and 17.6 — and every one is 100% contained.
+
+The matcher compared distance only. A new detection near any of those
+locations would have been published as "Mason Fire, 19.5 acres, 100%
+contained": a fresh fire wearing the identity of a closed one. That is the
+same failure as the five-day-old hotspot published as current, except pointed
+the other way — instead of manufacturing alarm it would have manufactured
+reassurance, which is worse.
+
+A hotspot must now fall inside the incident's burning period as well as near
+its location. The window is padded at both ends for opposite reasons: a
+satellite sees heat before an incident is reported and published, so a
+detection can legitimately precede the recorded start; and ground stays hot
+after containment, so one can legitimately follow the end. An incident with no
+usable start date is allowed through on distance alone rather than dropped,
+since it is still a named incident and the dates travel with the match.
+
+It also corrected an estimate. Before the data arrived, matching was expected
+to fire "rarely". Five incidents inside the unconditional radius in one year
+means local matching is common, which makes the temporal test load-bearing
+rather than defensive.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

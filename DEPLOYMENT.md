@@ -195,6 +195,98 @@ touching any production identity or history:
    as the dev/experimentation box — the MLX fine-tuning work, local model
    pilots, whatever comes next. It already has everything installed for that.
 
+## Deploying a code change to node-01 (venv + cron)
+
+node-01 still runs from a git checkout with per-stack venvs and cron, not
+from the containers above. Most merges need only a pull; the rest of this
+section is for the cases that need more.
+
+```bash
+cd /home/cprice/Agentic-Watershed && git pull
+```
+
+That is the whole deploy for a change to an agent prompt, an MCP tool, a
+collector's parsing, or the publisher. Cron picks it up on the next run.
+
+Check what is actually running rather than assuming the pull took. Every
+agent logs its commit at startup:
+
+```bash
+grep "Code version" */logs/agent.log | tail -4
+```
+
+This exists because a pull once reported "Already up to date" while the
+checkout sat on a detached commit, and Fire ran four weeks of stale code
+before anyone noticed.
+
+### When a change adds a new collector or a new table
+
+Two extra steps, in this order.
+
+Create the schema once, before cron can race it:
+
+```bash
+cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python incidents_collector.py --init
+```
+
+Then run it once by hand and read the output. This is the real check that
+parsing holds against the live API rather than against a payload someone
+pasted into a review:
+
+```bash
+cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python incidents_collector.py
+```
+
+Counts of zero, an empty nearest list, or every numeric field showing `None`
+mean the field mapping is wrong. Collectors that store a raw JSON column can
+be corrected after the fact without re-polling; those that do not cannot, so
+check this before walking away.
+
+Finally add the cron line. Every collector's own module docstring carries the
+line to use and the reasoning for its cadence — copy it from there rather
+than inventing a schedule, because the cadence is usually tied to when
+something downstream reads the data:
+
+```bash
+crontab -e
+```
+
+```cron
+50 2,14 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python incidents_collector.py >> logs/incidents.log 2>&1
+```
+
+`. /etc/environment &&` is not optional. Cron does not source it, so without
+that prefix every API key and credential is missing and the collector fails
+on its first request. The full current crontab is in `CONTEXT.md` under
+"Cron (current)".
+
+### When a change adds a migration
+
+Migrations run from the collector's `init_db` on every startup and are
+guarded by the `schema_migrations` table, so they apply on the next
+scheduled run with no manual step. To apply one immediately rather than
+waiting for cron:
+
+```bash
+cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python collector.py --init
+```
+
+Watch the log for the migration's own line — the wind unit correction, for
+instance, logs `Corrected N historical observation rows`. Seeing it once is
+the confirmation; seeing it twice means the guard is broken and the data has
+been double-corrected.
+
+### When a change adds a Python dependency
+
+Each stack has its own venv and they are independent:
+
+```bash
+cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/pip install -r requirements.txt
+```
+
+Note that `sqlite3` is in the standard library, so ad-hoc DB queries need
+no venv at all — only outbound HTTP (`httpx`) and the Anthropic SDK do.
+
 ## Why `node_config.json` is committed to git (and what that means)
 
 It's tracked so the *default* node (napa-node-01) works out of the box

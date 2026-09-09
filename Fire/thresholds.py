@@ -62,6 +62,22 @@ INCIDENT_MATCH_BASE_MI = 5.0
 ACRES_PER_SQ_MI = 640.0
 
 
+# A hotspot must also fall inside the incident's burning period, not merely
+# near its location. Distance alone matches a detection today against a fire
+# that closed months ago: the first real poll on 2026-09-09 found five
+# incidents within 17.6 miles of Napa, every one 100% contained, so a new
+# detection near any of them would have been published as a known, handled
+# event. That is the stale-record-makes-a-current-signal-look-understood
+# failure, in the direction that hides a real fire.
+#
+# The window is padded at both ends, for opposite reasons. A satellite sees
+# heat before an incident is reported and published, so a detection can
+# legitimately precede the recorded start. And ground stays hot after
+# containment, so a detection can legitimately follow the end.
+INCIDENT_MATCH_LEAD_DAYS = 1.0    # detection before the incident was reported
+INCIDENT_MATCH_TAIL_DAYS = 3.0    # residual heat after it closed
+
+
 def incident_match_radius_mi(acres_burned) -> float:
     """How far from an incident's published point a hotspot may sit and still
     plausibly belong to it: the equivalent circular radius of the burned area,
