@@ -601,7 +601,43 @@ def _stale_cutoff(observed_at: str, hours: float) -> str:
 
 
 
-def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None) -> dict:
+def _hotspot_detected_at(numerics: dict) -> datetime | None:
+    """When the satellite saw the nearest hotspot: acq_date plus acq_time."""
+    dt = _parse_iso(numerics.get("acq_date"))
+    if dt is None:
+        return None
+    raw = str(numerics.get("acq_time") or "").strip().zfill(4)
+    if raw.isdigit() and len(raw) == 4:
+        dt = dt.replace(hour=int(raw[:2]) % 24, minute=int(raw[2:]) % 60)
+    return dt
+
+
+def _was_burning(inc, when) -> bool:
+    """Could this incident have produced a detection at *when*?
+
+    Mirrors Fire/mcp_server._was_burning, and exists separately because the
+    publisher ships in its own image. Distance alone is not a match: on
+    2026-09-09 the five incidents nearest Napa were all 100% contained, so a
+    location-only test would publish a fresh detection as a known, closed
+    event — which is the direction that hides a real fire.
+    """
+    if when is None:
+        return True
+    start = _parse_iso(inc["started_at"])
+    if start is None:
+        return True
+    if when < start - timedelta(days=_FIRE_THRESHOLDS.INCIDENT_MATCH_LEAD_DAYS):
+        return False
+    if inc["is_active"]:
+        return True
+    end = _parse_iso(inc["extinguished_at"]) or _parse_iso(inc["updated_at"])
+    if end is None:
+        return True
+    return when <= end + timedelta(days=_FIRE_THRESHOLDS.INCIDENT_MATCH_TAIL_DAYS)
+
+
+def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None,
+                            detected_at: datetime | None = None) -> dict:
     """Named CAL FIRE incident matching the nearest hotspot, plus the nearest
     incident statewide.
 
@@ -624,7 +660,8 @@ def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """SELECT name, latitude, longitude, acres_burned,
-                      percent_contained, distance_mi
+                      percent_contained, distance_mi, started_at, updated_at,
+                      extinguished_at, is_active
                FROM incidents
                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                ORDER BY distance_mi ASC"""
@@ -645,6 +682,8 @@ def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None
         return result
     best = None
     for inc in rows:
+        if not _was_burning(inc, detected_at):
+            continue
         try:
             d = _haversine_mi(float(hotspot_lat), float(hotspot_lon),
                               float(inc["latitude"]), float(inc["longitude"]))
@@ -698,7 +737,8 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
         cutoff = _stale_cutoff(observed_at, NEAREST_HOTSPOT_MAX_AGE_HOURS)
         row = conn.execute(
             """
-            SELECT distance_mi, confidence, frp, latitude, longitude
+            SELECT distance_mi, confidence, frp, latitude, longitude,
+                   acq_date, acq_time
             FROM hotspots
             WHERE collected_at >= ? AND distance_mi IS NOT NULL
             ORDER BY distance_mi ASC
@@ -864,7 +904,8 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
     if "hotspotCount" in numerics:
         fire_block["hotspotCount"] = numerics["hotspotCount"]
     fire_block.update(_fetch_incident_context(
-        observed_at, numerics.get("latitude"), numerics.get("longitude")))
+        observed_at, numerics.get("latitude"), numerics.get("longitude"),
+        _hotspot_detected_at(numerics)))
 
     return {
         "$type": LEXICON,
