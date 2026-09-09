@@ -50,6 +50,32 @@ HIGH_CONFIDENCE_NUMERIC = 80
 # and no distribution to read it against, so the superlative was a guess.
 FRP_NOTABLE_PERCENTILE = 95.0
 
+# Matching a hotspot to a named CAL FIRE incident.
+#
+# An incident is published as a single point; a fire is an area. The Plaskett
+# Fire was 29,884 acres when checked, which is 46.7 square miles — if roughly
+# circular, its perimeter sits about 3.9 miles from any centre point. A flat
+# radius would either miss large fires or swallow unrelated detections near
+# small ones, so the tolerance grows with the burned area and only the slop in
+# the point location itself is fixed.
+INCIDENT_MATCH_BASE_MI = 5.0
+ACRES_PER_SQ_MI = 640.0
+
+
+def incident_match_radius_mi(acres_burned) -> float:
+    """How far from an incident's published point a hotspot may sit and still
+    plausibly belong to it: the equivalent circular radius of the burned area,
+    plus fixed slop for the point being a label rather than a centroid."""
+    import math
+    try:
+        acres = float(acres_burned)
+    except (TypeError, ValueError):
+        return INCIDENT_MATCH_BASE_MI
+    if acres <= 0:
+        return INCIDENT_MATCH_BASE_MI
+    return round(INCIDENT_MATCH_BASE_MI
+                 + math.sqrt((acres / ACRES_PER_SQ_MI) / math.pi), 2)
+
 
 
 def _n(value: float) -> str:

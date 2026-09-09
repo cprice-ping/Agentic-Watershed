@@ -7,7 +7,10 @@ MCP tools that an agent harness can call via the Model Context Protocol.
 Tools:
   get_recent_hotspots(n)              Last N hotspot detections
   get_hotspots_since(hours_ago)       Hotspots detected in the last N hours
-  get_nearest_hotspots(n)             Closest N hotspots to home_lat/home_lon
+  get_nearest_hotspots(n)             Closest N hotspots, with FRP standing
+                                      and any matching CAL FIRE incident
+  get_active_incidents(n)             Nearest named CAL FIRE incidents,
+                                      statewide (not limited to the bbox)
   get_hotspot_count_since(hours_ago)  Quick count — is anything nearby at all
   write_agent_observation(...)        Agent writes its own reasoning back to DB
 
@@ -34,6 +37,7 @@ from mcp.server.fastmcp import FastMCP
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flag_rules  # noqa: E402
 import thresholds  # noqa: E402
+from collector import haversine_mi  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config — points at the same DB the collector writes to
@@ -255,6 +259,113 @@ def _annotate_frp(hotspots: list[dict], values: list[float]) -> None:
         h["frp_is_notable"] = pct >= thresholds.FRP_NOTABLE_PERCENTILE
 
 
+def _incidents(conn) -> list[dict]:
+    """Known CAL FIRE incidents with usable coordinates, nearest first."""
+    try:
+        return [dict(r) for r in conn.execute(
+            """SELECT name, county, location, latitude, longitude, acres_burned,
+                      percent_contained, incident_type, is_active, started_at,
+                      updated_at, url, distance_mi
+               FROM incidents WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+               ORDER BY distance_mi ASC"""
+        ).fetchall()]
+    except sqlite3.Error:
+        # Table absent until incidents_collector.py has run at least once.
+        return []
+
+
+# A match identifies a detection. An absence identifies nothing, for two
+# independent reasons: publication lags ignition, and the feed is a curated
+# subset (484 incidents for all of 2026, no prescribed-burn category, and a
+# real fire near Willits on 2026-09-09 absent from it entirely). This wording
+# is load-bearing: an unmatched hotspot is uncharacterised, never cleared.
+_UNMATCHED_NOTE = (
+    "No published CAL FIRE incident corresponds to this detection. That does "
+    "NOT mean it is not a fire and does NOT mean it is harmless. Publication "
+    "lags ignition — a satellite sees the heat before an incident is reported "
+    "and published — and the feed is a curated subset rather than a census: "
+    "484 incidents statewide for all of 2026, small fires often never listed, "
+    "and no prescribed-burn category at all. This detection is uncharacterised."
+)
+
+
+def _match_incidents(hotspots: list[dict], incidents: list[dict]) -> None:
+    """Attach the nearest plausible named incident to each hotspot, in place."""
+    for h in hotspots:
+        lat, lon = h.get("latitude"), h.get("longitude")
+        best = None
+        if lat is not None and lon is not None:
+            for inc in incidents:
+                try:
+                    d = haversine_mi(float(lat), float(lon),
+                                     float(inc["latitude"]), float(inc["longitude"]))
+                except (TypeError, ValueError):
+                    continue
+                if d <= thresholds.incident_match_radius_mi(inc["acres_burned"]) and (
+                        best is None or d < best[0]):
+                    best = (d, inc)
+        if best is None:
+            h["incident"] = None
+            h["incident_note"] = _UNMATCHED_NOTE
+        else:
+            d, inc = best
+            h["incident"] = {
+                "name": inc["name"],
+                "type": inc["incident_type"],
+                "county": inc["county"],
+                "acres_burned": inc["acres_burned"],
+                "percent_contained": inc["percent_contained"],
+                "is_active": bool(inc["is_active"]),
+                "started_at": inc["started_at"],
+                "miles_from_hotspot": round(d, 1),
+                "url": inc["url"],
+            }
+
+
+@mcp.tool()
+def get_active_incidents(n: int = 10) -> str:
+    """
+    Return the nearest known CAL FIRE incidents to Napa Valley, statewide.
+
+    Deliberately not limited to the FIRMS bounding box. On 2026-09-09 the
+    nearest actual wildfire was at Willits, 96 miles away and outside the box
+    entirely, so the satellite feed could not see it at all. This tool is how
+    a fire beyond the monitored area becomes visible.
+
+    Coverage caveat, which matters for how you read an empty or short list:
+    an incident appears only once reported and published, so a fire burning
+    right now may not be listed yet, and the feed is curated rather than
+    complete — 484 incidents statewide for all of 2026. Absence is not
+    evidence of nothing burning.
+
+    Args:
+        n: Number of nearest incidents to return (default 10)
+    """
+    with _db() as conn:
+        incidents = _incidents(conn)
+        stale = conn.execute(
+            "SELECT MAX(last_seen_at) AS t FROM incidents"
+        ).fetchone() if incidents else None
+
+    if not incidents:
+        return json.dumps({
+            "incidents": [],
+            "note": ("No incident data. Either incidents_collector.py has not "
+                     "run, or CAL FIRE currently lists no active incidents. "
+                     "These are very different — check the collector before "
+                     "concluding anything from an empty list."),
+        }, indent=2)
+
+    return json.dumps({
+        "incident_data_last_updated": stale["t"] if stale else None,
+        "coverage": ("CAL FIRE published incidents statewide, not limited to "
+                     "the FIRMS bounding box. Publication lags ignition, and "
+                     "the feed is curated rather than complete — a small fire "
+                     "may never be listed. Absence is not evidence of quiet."),
+        "nearest_incidents": incidents[:n],
+    }, indent=2)
+
+
 @mcp.tool()
 def get_nearest_hotspots(n: int = 10) -> str:
     """
@@ -294,6 +405,7 @@ def get_nearest_hotspots(n: int = 10) -> str:
 
         frp_values = _frp_history(conn)
         frp_ctx = _frp_context(conn)
+        incidents = _incidents(conn)
 
     result = {
         "last_poll_at": last_poll["polled_at"] if last_poll else None,
@@ -316,6 +428,7 @@ def get_nearest_hotspots(n: int = 10) -> str:
     else:
         hotspots = _rows_to_dicts(rows)
         _annotate_frp(hotspots, frp_values)
+        _match_incidents(hotspots, incidents)
         result["nearest_hotspots"] = hotspots
     return json.dumps(result, indent=2)
 
