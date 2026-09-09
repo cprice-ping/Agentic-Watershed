@@ -1269,6 +1269,28 @@ to fire "rarely". Five incidents inside the unconditional radius in one year
 means local matching is common, which makes the temporal test load-bearing
 rather than defensive.
 
+### A prompt cannot ask for a tool call these agents can't make (2026-09-09)
+
+The incident cross-reference shipped with `get_active_incidents` never being
+invoked. The Fire prompt said "Also call get_active_incidents", which reads
+fine and does nothing: these agents assemble their own context in
+`gather_context()` and hand the model a single forced `submit_assessment`
+tool. The model has no free tool choice, so an instruction to call something
+is inert. The first dry run after deploy showed five tools in the log and no
+incident section anywhere in the output.
+
+Fixed by calling it in `gather_context()` and rewriting the prompt to
+reference the section header the model actually receives rather than a tool
+name it cannot act on.
+
+Now a checked invariant: every `get_*` tool named in an agent prompt must
+appear in that agent's `call_mcp_tool` list. River, Weather and AQI name none
+and were never affected; Fire names two and calls seven.
+
+The general shape is worth remembering when adding a tool to any of these
+agents: writing the tool, wiring it into the MCP server, and describing it in
+the prompt are three steps, and none of them makes it run.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
