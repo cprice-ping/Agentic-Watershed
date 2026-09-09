@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 import argparse
 from datetime import datetime, timedelta, timezone
@@ -284,23 +285,56 @@ def fetch_from_publisher(conn: sqlite3.Connection, did: str, node_id: str,
     return fetched, stored
 
 
-def run_fetch(conn: sqlite3.Connection, lookback_hours: float) -> None:
-    """Fetch from all trusted publishers and exit."""
+def run_fetch(conn: sqlite3.Connection, lookback_hours: float) -> int:
+    """Fetch from all trusted publishers. Returns a process exit code.
+
+    Non-zero when any publisher could not be reached. entrypoint.sh runs
+    under `set -e`, so that halts the pipeline before the agent reasons from
+    an empty database and the publisher posts an advisory built on nothing —
+    which is what happened on 2026-09-09T18:00Z. That run fetched zero
+    records, exited 0, and published a public risk assessment whose own
+    reasoning opened "received no node observations at all".
+
+    A failure and a genuinely quiet window are deliberately distinguished. An
+    unreachable publisher means we do not know what is happening and must not
+    guess; an empty window from publishers we did reach is a fact about the
+    world, and is passed through so the record can state it. Collapsing the
+    two is the bug: it made a network fault indistinguishable from calm.
+    """
     log.info("=== ATProto Subscriber (fetch mode) ===")
     log.info("Trusted publishers: %s", list(TRUSTED_PUBLISHERS.values()))
+    log.info("Publisher registry: %s", _PUBLISHERS_PATH
+             if _PUBLISHERS_PATH.exists() else "NONE FOUND — using built-in default")
     log.info("Lexicon: %s  |  Lookback: %.0fh", LEXICON, lookback_hours)
 
     total_fetched = total_stored = 0
+    failed: list[str] = []
     for did, node_id in TRUSTED_PUBLISHERS.items():
         try:
             fetched, stored = fetch_from_publisher(conn, did, node_id, lookback_hours)
             total_fetched += fetched
             total_stored += stored
             log.info("%s: %d fetched, %d new", node_id, fetched, stored)
-        except httpx.HTTPError as exc:
-            log.error("Failed to fetch from %s: %s", node_id, exc)
+        except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
+            failed.append(node_id)
+            log.error("Failed to fetch from %s: %s: %s",
+                      node_id, type(exc).__name__, exc)
 
     log.info("=== Fetch complete — %d fetched, %d new ===", total_fetched, total_stored)
+
+    if failed:
+        log.error("Could not reach %d of %d trusted publisher(s): %s. "
+                  "Exiting non-zero so the pipeline stops rather than "
+                  "synthesising from whatever happened to arrive.",
+                  len(failed), len(TRUSTED_PUBLISHERS), ", ".join(failed))
+        return 1
+    if total_fetched == 0:
+        log.warning("Every publisher was reachable and none had an observation "
+                    "in the last %.0fh. That is a real emptiness, not a fetch "
+                    "failure, so the run continues — but with four domains "
+                    "publishing several times a day it usually means the node "
+                    "stopped publishing.", lookback_hours)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +449,7 @@ def main() -> None:
         stop_after = args.timeout if args.once else None
         run_firehose(conn, stop_after=stop_after)
     else:
-        run_fetch(conn, lookback_hours=args.lookback)
+        sys.exit(run_fetch(conn, lookback_hours=args.lookback))
 
 
 if __name__ == "__main__":

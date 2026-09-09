@@ -1325,6 +1325,49 @@ immediate but cannot identify what it sees and misses small fires; CAL FIRE
 names and confirms but lags publication and covers only a subset. A fire
 visible to one may be invisible to the other.
 
+### A public advisory published from no data (2026-09-09)
+
+The 18:00Z synthesis run received zero observations. Its reasoning was the
+best this system has produced — it identified five of its own prior errors by
+name, refused to carry the invented drought counter forward, correctly
+reattributed the Angel Island detection, and cited the ledger expiring a
+prediction rather than auto-confirming it, which was the first honest
+resolution. All of that was reasoning about its own history, because it had
+no present to reason about.
+
+Three defects turned a transient fetch failure into a published risk
+assessment, and none of them was the fetch failure itself.
+
+The subscriber exited 0 having fetched nothing. `entrypoint.sh` runs under
+`set -e`, so a non-zero exit would have halted the pipeline before the agent
+ran; instead the agent synthesised from an empty database and the publisher
+posted an advisory to Bluesky. A network fault and a quiet afternoon were
+indistinguishable to every layer above. `run_fetch` now returns an exit code
+and distinguishes the two deliberately: an unreachable publisher means we do
+not know and must not guess, so the pipeline stops; an empty window from
+publishers we did reach is a fact about the world and passes through, loudly
+logged, so the record can state it.
+
+`domainsObserved` was hardcoded to all four domains. The record therefore
+asserted watershed, weather, aqi and fire had all contributed to a run whose
+own prose opened "received no node observations at all". The prose was right
+and the structured field was not, which is the worse way round: a consumer
+parsing the record never reads the prose. The agent now records which domains
+actually arrived and how many nodes they came from, and the publisher reports
+those. An empty list is a real assertion and is published as one. Rows from
+before the columns existed also report empty, because the honest answer to
+"which domains contributed" is never "all of them".
+
+`publishers.json` was never copied into the Synthesis image. It worked only
+because `subscriber.py` falls back to a single hardcoded DID that happens to
+be correct. Adding a second node to that file would have changed nothing in
+the deployed job and nothing would have said so. Now copied, and the
+subscriber logs which registry it loaded — or that it found none and is using
+the built-in default.
+
+The common thread with the rest of this week: the failure was not that
+something broke, it was that nothing downstream could tell it had.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

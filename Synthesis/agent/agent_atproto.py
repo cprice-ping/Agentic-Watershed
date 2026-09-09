@@ -1252,7 +1252,17 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
 
 def write_observation(obs: dict, dry_run: bool = False,
                       synthesis_db: Path = _DEFAULT_SYNTHESIS_DB,
-                      model: str | None = None) -> None:
+                      model: str | None = None,
+                      grouped: dict | None = None) -> None:
+    """Persist the run. *grouped* is what the subscriber actually delivered.
+
+    Recorded rather than assumed: the published record's domainsObserved was
+    hardcoded to all four domains, so the 2026-09-09T18:00Z record asserted
+    watershed, weather, aqi and fire had contributed to a run whose own
+    reasoning began "received no node observations at all". The prose was
+    right and the structured field was not, which is the worse way round —
+    a consumer parsing the record never reads the prose.
+    """
     if dry_run:
         log.info("[DRY RUN] Would write synthesis observation:")
         log.info("  Summary:      %s", obs.get("summary", ""))
@@ -1271,14 +1281,24 @@ def write_observation(obs: dict, dry_run: bool = False,
             air_quality_risk TEXT, overall_risk TEXT,
             flagged INTEGER NOT NULL DEFAULT 0,
             flag_reason TEXT, reasoning TEXT,
-            model TEXT, input_tokens INTEGER, output_tokens INTEGER
+            model TEXT, input_tokens INTEGER, output_tokens INTEGER,
+            -- What actually reached this run, as opposed to what the record
+            -- used to assert unconditionally. domains_observed was hardcoded
+            -- to all four in the publisher, so the 2026-09-09T18:00Z record
+            -- claimed watershed, weather, aqi and fire all contributed to a
+            -- run whose own reasoning opened "received no node observations
+            -- at all". A consumer reading the structured field got the
+            -- opposite of the prose.
+            domains_observed TEXT, node_count INTEGER
         )
     """)
     # Older synthesis.db files predate the model column.
     cols = {r[1] for r in conn.execute("PRAGMA table_info(synthesis_observations)")}
     for _name, _decl in (("model", "TEXT"),
                          ("input_tokens", "INTEGER"),
-                         ("output_tokens", "INTEGER")):
+                         ("output_tokens", "INTEGER"),
+                         ("domains_observed", "TEXT"),
+                         ("node_count", "INTEGER")):
         if _name not in cols:
             conn.execute(f"ALTER TABLE synthesis_observations ADD COLUMN {_name} {_decl}")
     now = datetime.now(timezone.utc).isoformat()
@@ -1287,8 +1307,8 @@ def write_observation(obs: dict, dry_run: bool = False,
         INSERT INTO synthesis_observations (
             observed_at, summary, fire_risk, flood_risk,
             air_quality_risk, overall_risk, flagged, flag_reason, reasoning, model,
-            input_tokens, output_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            input_tokens, output_tokens, domains_observed, node_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             now, obs.get("summary", ""),
@@ -1297,6 +1317,8 @@ def write_observation(obs: dict, dry_run: bool = False,
             int(obs.get("flagged", False)),
             obs.get("flag_reason", ""), obs.get("reasoning", ""), model,
             _LAST_USAGE["input_tokens"], _LAST_USAGE["output_tokens"],
+            json.dumps(sorted((grouped or {}).keys())),
+            len({r.get("node_id") for rs in (grouped or {}).values() for r in rs}),
         ),
     )
     conn.commit()
@@ -1338,6 +1360,14 @@ def main() -> None:
                              subscriber_db=subscriber_db,
                              synthesis_db=synthesis_db,
                              dry_run=args.dry_run)
+
+    # What actually arrived, read back so the record can state it rather than
+    # assume it. Cheap, and subscriber.db does not change during a run.
+    grouped = read_recent_observations(args.lookback, subscriber_db=subscriber_db)
+    if not grouped:
+        log.warning("No observations reached this run — the published record "
+                    "will say so (domainsObserved empty, nodeCount 0).")
+
     observation = reason(context, args.model, verbose=args.verbose)
 
     log.info("--- Synthesis conclusion ---")
@@ -1352,6 +1382,7 @@ def main() -> None:
     # even if the container is interrupted before publisher.py runs.
     write_predictions(observation, synthesis_db=synthesis_db, dry_run=args.dry_run)
     write_observation(observation, dry_run=args.dry_run, synthesis_db=synthesis_db,
+                      grouped=grouped,
                       model=MODELS[args.model])
     log.info("=== Synthesis Agent (ATProto) run complete ===")
 
