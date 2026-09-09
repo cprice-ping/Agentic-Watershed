@@ -220,11 +220,11 @@ def _fetch_weather_numerics(observed_at: str) -> dict:
             SELECT temperature_f, humidity_pct, wind_speed_mph,
                    wind_direction_deg, wind_gust_mph, precip_24h_mm
             FROM observations
-            WHERE collected_at >= ?
+            WHERE collected_at >= ? AND collected_at <= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
             LIMIT 1
             """,
-            (cutoff, observed_at),
+            (cutoff, observed_at, observed_at),
         ).fetchone()
         conn.close()
     except sqlite3.Error:
@@ -401,10 +401,10 @@ def _fetch_watershed_numerics(observed_at: str) -> dict:
             SELECT station_id, parameter_code, value
             FROM readings
             WHERE parameter_code IN ('00060', '00065') AND value IS NOT NULL
-              AND collected_at >= ?
+              AND collected_at >= ? AND collected_at <= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
             """,
-            (cutoff, observed_at),
+            (cutoff, observed_at, observed_at),
         ).fetchall()
         conn.close()
     except sqlite3.Error:
@@ -516,11 +516,11 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
             SELECT parameter, aqi
             FROM observations
             WHERE parameter IN ('PM2.5', 'OZONE') AND aqi IS NOT NULL
-              AND collected_at >= ?
+              AND collected_at >= ? AND collected_at <= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
             LIMIT 10
             """,
-            (cutoff, observed_at),
+            (cutoff, observed_at, observed_at),
         ).fetchall()
         conn.close()
         result = {}

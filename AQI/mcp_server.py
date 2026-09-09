@@ -131,13 +131,26 @@ def get_current_aqi() -> str:
     """
     Return the most recent AQI reading for each parameter (PM2.5 and Ozone).
     This is your orientation tool — call it first each run.
-    Includes the AQI value, category name, and when the observation was taken.
+
+    Two different clocks appear in the reply and they are not interchangeable.
+    collected_at is when this node polled AirNow, in UTC. obs_hour_local is
+    AirNow's own hour for the reading, an integer in the reporting area's
+    LOCAL time — Pacific here, so obs_hour_local 6 is 06:00 PDT, which is
+    13:00 UTC. Quote it as local or convert it; do not report it as UTC. On
+    2026-09-09 a summary read "as of 2026-09-09 06:00 UTC" from an
+    obs_hour_local of 6, moving the observation seven hours.
+
+    AirNow also lags: the hour observed is normally an hour or two behind the
+    poll, so a reading can be current and still describe a slightly earlier
+    hour. That gap is real and worth stating, rather than presenting the
+    reading as if it were taken at poll time.
     """
     with _db() as conn:
         rows = conn.execute(
             """
             SELECT parameter, aqi, category_number, category_name,
-                   obs_date, obs_hour, reporting_area, collected_at
+                   obs_date, obs_hour AS obs_hour_local, reporting_area,
+                   collected_at
             FROM observations
             GROUP BY parameter
             HAVING collected_at = MAX(collected_at)
@@ -163,7 +176,8 @@ def get_aqi_since(hours_ago: float = 24.0) -> str:
     with _db() as conn:
         rows = conn.execute(
             """
-            SELECT collected_at, parameter, aqi, category_name, obs_date, obs_hour
+            SELECT collected_at, parameter, aqi, category_name, obs_date,
+                   obs_hour AS obs_hour_local
             FROM observations
             WHERE collected_at >= ?
             ORDER BY parameter, collected_at ASC
@@ -235,7 +249,8 @@ def get_smoke_indicators() -> str:
         # Latest PM2.5
         current = conn.execute(
             """
-            SELECT aqi, category_number, category_name, collected_at, obs_hour
+            SELECT aqi, category_number, category_name, collected_at,
+                   obs_hour AS obs_hour_local
             FROM observations
             WHERE parameter = 'PM2.5'
             ORDER BY collected_at DESC LIMIT 1
