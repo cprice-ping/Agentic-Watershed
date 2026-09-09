@@ -115,4 +115,10 @@ def flag_criteria_text() -> str:
         f"  trigger (that requirement only applies to the separate "
         f"{_n(FAR_DISTANCE_MI)}-mile rule below).",
         f"- Any high-confidence hotspot within {_n(FAR_DISTANCE_MI)} miles",
+        f"- Any actively burning named CAL FIRE incident within "
+        f"{_n(NEAR_DISTANCE_MI)} miles. This does not require a satellite\n"
+        f"  detection and does not wait for one: a small fire may never "
+        f"produce a\n  hotspot at all, and a confirmed active incident "
+        f"inside the unconditional\n  radius is stronger evidence than an "
+        f"unattributed thermal anomaly.",
     ])

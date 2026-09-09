@@ -137,7 +137,42 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
             v.fire("new_hotspot_since_last_run",
                    f"{row['n']} new, nearest {row['nearest']:.1f}mi")
 
-    # Rule 5 — the collector could not refresh. A data-quality flag, distinct
+    # Rule 5 — a named CAL FIRE incident actively burning inside the
+    # unconditional radius. Every other rule requires a satellite detection,
+    # and a small fire may never produce one: VIIRS pixels are 375m and the
+    # overpasses are twice daily, so a ten-acre fire can burn without ever
+    # reaching the hotspots table. The Steele Fire on 2026-09-09 started 14.1
+    # miles from home and appeared in the incident feed 50 minutes later,
+    # while nothing in these rules could have flagged on it.
+    #
+    # A confirmed, named, actively-burning incident is stronger evidence than
+    # an unattributed thermal anomaly, so it earns the same unconditional
+    # radius rather than a stricter one.
+    #
+    # Guarded separately: the incidents table does not exist until
+    # incidents_collector.py has run, and a missing table must not take the
+    # other rules down with it.
+    try:
+        row = conn.execute(
+            """
+            SELECT name, distance_mi, acres_burned, percent_contained
+            FROM incidents
+            WHERE is_active = 1 AND distance_mi IS NOT NULL
+              AND distance_mi <= ?
+            ORDER BY distance_mi ASC LIMIT 1
+            """,
+            (NEAR_DISTANCE_MI,),
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    if row:
+        contained = ("unknown" if row["percent_contained"] is None
+                     else f"{row['percent_contained']:.0f}%")
+        v.fire("active_incident_within_20mi",
+               f"{row['name']} at {row['distance_mi']:.1f}mi, "
+               f"{row['acres_burned']} acres, {contained} contained")
+
+    # Rule 6 — the collector could not refresh. A data-quality flag, distinct
     # from a fire finding: it means the absence of hotspots is uninformative.
     row = conn.execute(
         "SELECT status, error_message FROM polls ORDER BY polled_at DESC LIMIT 1"
