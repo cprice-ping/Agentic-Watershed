@@ -287,6 +287,68 @@ cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/pip install -r requirements.
 Note that `sqlite3` is in the standard library, so ad-hoc DB queries need
 no venv at all — only outbound HTTP (`httpx`) and the Anthropic SDK do.
 
+### Editing the crontab without taking the node down
+
+Every cron line begins `. /etc/environment && cd ... && .venv/bin/python ...`.
+Three properties of that prefix are load-bearing and none of them are
+obvious. All three were established by breaking them on 2026-09-09, which
+stopped every collector and agent on node-01 with no error anywhere.
+
+**The leading `. ` is not decoration.** Without it the line reads
+`/etc/environment && cd ...`, which asks the shell to *execute* a 644 data
+file. It fails, and `&&` short-circuits the rest, so the job silently never
+runs. There is no log line, no mail, no non-zero exit anyone sees — the node
+just stops producing records.
+
+**`/etc/environment` must carry `export` on every line.** Cron runs jobs
+under `/bin/sh`, which is dash, and sourcing a file of plain `KEY=value`
+pairs sets shell variables that are never inherited by the python process:
+
+```bash
+$ /bin/sh -c '. ./env && python3 -c "import os;print(os.environ.get(\"K\"))"'
+None     # file contained  K=v
+v        # file contained  export K=v
+```
+
+This is why the keys live there with `export` rather than as bare
+assignments, and why they must not be moved to a crontab-level
+`KEY=value` block "for tidiness" — cron exports those itself, so both work,
+but only one of them survives being read from a file.
+
+**`/etc/environment` must stay readable by the cron user.** It holds API
+keys, so 644 is too open; but `chmod 600` locks out `cprice`, whose cron jobs
+source it, reproducing the same silent short-circuit. Use group read:
+
+```bash
+sudo chown root:cprice /etc/environment && sudo chmod 640 /etc/environment
+```
+
+Edit the crontab as a file rather than with `crontab -e`, which needs a
+terminal that can host a full-screen editor and hangs where one is not
+available:
+
+```bash
+crontab -l > ~/cron.bak
+cp ~/cron.bak ~/cron.new     # edit ~/cron.new
+diff ~/cron.bak ~/cron.new   # read this before installing
+crontab ~/cron.new && crontab -l | grep -v '^\s*#'
+crontab ~/cron.bak           # revert
+```
+
+Then confirm a job actually ran rather than trusting the text. River is the
+fastest signal at 15-minute intervals:
+
+```bash
+date; tail -3 /home/cprice/Agentic-Watershed/River/logs/collector.log
+```
+
+To test a line the way cron will run it — dash, sourcing, no interactive
+shell — rather than the way your login shell would:
+
+```bash
+/bin/sh -c '. /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python collector.py' && echo OK
+```
+
 ## Why `node_config.json` is committed to git (and what that means)
 
 It's tracked so the *default* node (napa-node-01) works out of the box

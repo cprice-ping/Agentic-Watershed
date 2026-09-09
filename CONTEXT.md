@@ -1431,8 +1431,55 @@ without its unit gets given the wrong one. The field is now
 
 The general rule this keeps producing: every timestamp and every measurement
 needs its frame attached at the point it leaves the database, not inferred
-downstream. Three separate bugs now — wind units, hotspot currency, AQI clocks
-— have been the same omission.
+downstream. Four separate bugs now — wind units, hotspot currency, AQI clocks,
+and USGS qualifier codes — have been the same omission.
+
+### The fourth instance: USGS qualifiers and escaped labels (2026-09-09)
+
+Two River defects, both visible in one line of collector log that had been
+printing unremarked for months:
+
+```
+Napa River near Napa | Streamflow, ft&#179;/s | 0.14 ft3/s ⚠️
+```
+
+`ft&#179;/s` is USGS's `variableName` arriving HTML-escaped and stored
+verbatim. It was never confined to the log: `mcp_server.py` returns
+`parameter_name` from four of its five queries, so `&#179;` was reaching the
+agent's context as raw markup and the model had to infer it meant a cubed
+superscript. Fixed with `html.unescape` at the parse site plus a
+`schema_migrations`-guarded backfill, the same shape as the wind-unit
+correction — the decode is exact and reversible, so leaving old rows would
+only mean a trend window treating `ft&#179;/s` and `ft³/s` as two units.
+
+The ⚠️ was worse for being subtler. It was keyed off `bool(qualifier)`, and
+every real-time USGS value carries `P` for provisional, so the marker fired on
+every reading and therefore meant nothing — while `Ice`, `Eqp` and `Bkw`, the
+codes that say the measurement itself is compromised, rendered identically to
+routine data. The codes also reached the agent as bare letters with no
+glossary in any tool docstring, prompt, or output: the model was being asked
+to know NWIS conventions from memory. `River/qualifiers.py` now holds the
+routine/condition split once, read by the collector's log and by
+`_rows_to_dicts`, which annotates every row with `qualifier_meaning`. An
+unrecognised code passes through verbatim and counts as notable — the same
+"never guess" rule Weather applies to an unfamiliar `unitCode`.
+
+Worth noting how both were found. Neither came from a check; they came from a
+reboot. The Pi was rebooted after a sluggish afternoon, the Viewer failed, and
+four rounds of diagnosis proved every hop healthy — the tunnel had started on
+boot, the PDS was serving, plc.directory and bsky.social both answered, and a
+hard refresh fixed it. The defects surfaced only because a collector log was
+on screen for an unrelated reason. That is now the pattern for every defect
+found here: a human looked at real output.
+
+The same session produced an operational lesson worth keeping. `crontab -e`
+hung, the crontab was hand-edited instead, and nine lines lost the leading
+`. ` of `. /etc/environment` — leaving `/etc/environment && cd ...`, which
+tries to execute a 644 data file, fails, and short-circuits the whole job on
+`&&`. Every collector and agent stopped. Nothing reported it; the node simply
+produced no records, and the only reason it was caught within the hour is that
+someone was already looking. A node that cannot say it has stopped is the
+same gap as an agent that cannot say its input was missing.
 
 ### What generalises, and what doesn't
 

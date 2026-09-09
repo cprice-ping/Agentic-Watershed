@@ -27,6 +27,10 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+# Shared with collector.py — the same routine/condition split decides which
+# readings its log marks and which qualifiers these tools spell out.
+import qualifiers
+
 # ---------------------------------------------------------------------------
 # Config — points at the same DB the collector writes to
 # ---------------------------------------------------------------------------
@@ -39,7 +43,13 @@ mcp = FastMCP(
         "You have access to real-time and historical Napa River gauge data "
         "from two USGS monitoring stations. Use these tools to understand "
         "current river conditions, identify anomalies, and record your "
-        "observations. Always call get_recent_readings first to orient yourself."
+        "observations. Always call get_recent_readings first to orient yourself. "
+        "Readings carry a USGS `qualifier` code, spelled out in "
+        "`qualifier_meaning` where one is present. Most readings are qualified "
+        "'P' (provisional), which is USGS's review state and says nothing about "
+        "the river — it is not a reason to doubt a value. Codes such as Ice, "
+        "Eqp or Bkw do describe the measurement, and a value carrying one may "
+        "be wrong in a way its magnitude alone will not reveal."
     ),
 )
 
@@ -96,7 +106,23 @@ def _db() -> sqlite3.Connection:
 
 
 def _rows_to_dicts(rows) -> list[dict]:
-    return [dict(r) for r in rows]
+    """Convert result rows to dicts, decoding any qualifier codes.
+
+    Every tool below returns through here, which is why the annotation lives
+    at this one point rather than in five queries. Before it, a row carried
+    `"qualifier": "P"` or `"qualifier": "Ice"` and nothing in any docstring,
+    prompt or tool output said what those letters meant — the agent was being
+    asked to know NWIS conventions from memory. `qualifier_meaning` states it
+    instead.
+    """
+    out = []
+    for r in rows:
+        d = dict(r)
+        meaning = qualifiers.describe(d.get("qualifier"))
+        if meaning:
+            d["qualifier_meaning"] = meaning
+        out.append(d)
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import html
 import json
 import logging
 import sqlite3
@@ -29,6 +30,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+
+# The routine/condition split for USGS qualifier codes, shared with
+# mcp_server.py so the log and the agent's evidence agree about which
+# readings are unremarkable.
+import qualifiers
 
 # ---------------------------------------------------------------------------
 # Configuration  (location-specific values come from node_config.json)
@@ -99,7 +105,77 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
     """)
     conn.commit()
+    _migrate(conn)
     log.info("Database initialised at %s", DB_PATH)
+
+
+# Text columns USGS populates from its own labels, which arrive HTML-escaped.
+_TEXT_COLUMNS = ("parameter_name", "station_name", "unit")
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent data migrations, run from init_db on every startup.
+
+    Currently one: decode HTML entities in the stored USGS labels.
+
+    USGS returns `variableName` already escaped — "Streamflow, ft&#179;/s" —
+    and the collector stored it verbatim. That string is not confined to the
+    log it was noticed in: mcp_server.py returns `parameter_name` from four
+    of its five queries, so `&#179;` was reaching the agent's context as raw
+    markup, leaving the model to infer that it meant a cubed superscript.
+
+    Correcting in place rather than only fixing new rows, because the decode
+    is exact and reversible — the stored text is the true label with a known
+    encoding applied — and because leaving it would keep a trend window
+    mixing "ft&#179;/s" and "ft³/s" as if they were two different units.
+
+    Guarded by schema_migrations because html.unescape is not idempotent:
+    a label containing a literal "&amp;#179;" would decode a second time.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            name       TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL,
+            note       TEXT
+        )
+    """)
+    conn.commit()
+
+    name = "2026-09-09-unescape-usgs-html-entities"
+    if conn.execute("SELECT 1 FROM schema_migrations WHERE name = ?",
+                    (name,)).fetchone():
+        return
+
+    # Distinct values only — there are a handful of labels across tens of
+    # thousands of rows, so this is a few UPDATEs rather than a row scan.
+    changed = 0
+    for column in _TEXT_COLUMNS:
+        rows = conn.execute(
+            f"SELECT DISTINCT {column} FROM readings WHERE {column} IS NOT NULL"
+        ).fetchall()
+        for (stored,) in rows:
+            decoded = html.unescape(stored)
+            if decoded == stored:
+                continue
+            cur = conn.execute(
+                f"UPDATE readings SET {column} = ? WHERE {column} = ?",
+                (decoded, stored),
+            )
+            changed += cur.rowcount
+
+    conn.execute(
+        "INSERT INTO schema_migrations (name, applied_at, note) VALUES (?, ?, ?)",
+        (name, datetime.now(timezone.utc).isoformat(),
+         f"decoded HTML entities in {changed} rows across {_TEXT_COLUMNS}"),
+    )
+    conn.commit()
+    if changed:
+        log.warning(
+            "Decoded HTML entities in %d historical reading(s) — USGS labels "
+            "such as 'ft&#179;/s' were stored escaped and were reaching the "
+            "agent as raw markup. Agent observations and published ATProto "
+            "records written before this point still quote the escaped form "
+            "and are not rewritten.", changed)
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +212,15 @@ def parse_usgs_response(data: dict) -> list[dict]:
 
     for ts in time_series_list:
         site_code = ts["sourceInfo"]["siteCode"][0]["value"]
-        site_name = ts["sourceInfo"]["siteName"]
         param_code = ts["variable"]["variableCode"][0]["value"]
-        param_name = ts["variable"]["variableName"]
-        unit = ts["variable"]["unit"]["unitCode"]
+
+        # USGS sends these labels HTML-escaped: variableName arrives as
+        # "Streamflow, ft&#179;/s". They are stored, then handed to the agent
+        # by mcp_server.py, so decoding here keeps raw markup out of the
+        # evidence the model reasons over. See _migrate for the backfill.
+        site_name = html.unescape(ts["sourceInfo"]["siteName"])
+        param_name = html.unescape(ts["variable"]["variableName"])
+        unit = html.unescape(ts["variable"]["unit"]["unitCode"])
 
         # Take the most recent value only
         values = ts.get("values", [{}])[0].get("value", [])
@@ -209,7 +290,11 @@ def poll(conn: sqlite3.Connection) -> None:
     log.info("Stored %d reading(s)", count)
 
     for row in rows:
-        flag = " ⚠️" if row["qualifier"] else ""
+        # Only condition qualifiers earn the marker. Every real-time USGS
+        # value is provisional, so keying this off `bool(qualifier)` fired on
+        # all of them and made Ice indistinguishable from routine data.
+        flag = (f" ⚠️ {qualifiers.describe(row['qualifier'])}"
+                if qualifiers.is_notable(row["qualifier"]) else "")
         val = f"{row['value']:.2f}" if row["value"] is not None else "N/A"
         log.info(
             "  %s | %s | %s %s%s",
