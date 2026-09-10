@@ -1571,6 +1571,39 @@ readings, the one supporting its standing conclusion. Prose saying 33.5 MW
 while the numerics say 7.47 is exactly that fork. Publishing the peak removes
 the fork rather than adding an opinion.
 
+The same review turned up the architectural reason this matters, which is
+worth stating plainly because it is easy to get backwards. Synthesis does not
+receive the underlying data — that is tens of thousands of SQLite rows on the
+Pi, reachable only through the domain agent's MCP tools. It receives a digest
+of a dozen fields. The important property of that digest is authorship:
+`build_fire_record` takes `summary` and `flagged` from the model's output,
+then calls `_fetch_fire_numerics` and queries the database itself. One record,
+two authors — the model wrote the prose, code wrote the numbers, and the model
+cannot touch the numbers.
+
+By the mirror test that runs through this file, that makes the numeric block
+the only real check Synthesis has. Every other input it reads — domain
+summaries, its own memory, its own prior records — was written by a model, so
+agreement among them establishes only that models agree.
+
+The Steele record shows both sides. Haiku's fire summary is clean: Steele,
+the ENE cluster, the SSW cluster, no mention of Mason. It was closest to the
+data and it was right. Sonnet read `nearestIncidentName: Mason Fire` out of
+the numeric block and wrote "multiple active fire signatures in the region".
+The failure was not that Synthesis had the numbers; it was that it treated a
+field as a finding rather than as something to reconcile against the domain
+agent's account. The domain agent had the context to ignore a field that made
+no sense, and Synthesis could not.
+
+Hence the two-authors rule now in the prompt: when a field and a summary
+conflict, state both and say they disagree, rather than picking the one that
+supports the standing conclusion. That last habit is documented here already —
+34.2% humidity restated as "below fire-weather thresholds" against its own 25%
+threshold, and 190-280° winds called "offshore/Diablo" against a prompt
+defining Diablo as NE/E. Both errors moved the same direction. The rule makes
+the disagreement itself a reportable output, so the model is not forced to
+resolve something it cannot resolve.
+
 Still open from the same record: `flagged: true` with `flagReason: ""` on an
 observation whose summary opens "ACTIVE WILDFIRE". Anyone filtering the
 firehose on flagReason gets an empty string for the most consequential fire
