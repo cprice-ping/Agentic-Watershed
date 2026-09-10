@@ -265,7 +265,7 @@
         },
         "nearestIncidentName": {
           "type": "string",
-          "description": "Nearest known CAL FIRE incident to the node, statewide and independent of any hotspot. Deliberately not limited to the FIRMS bounding box: a fire outside the monitored box is invisible to the satellite feed, so this is how it becomes visible at all."
+          "description": "Nearest CAL FIRE incident ACTIVELY BURNING at observedAt, statewide and independent of any hotspot. Deliberately not limited to the FIRMS bounding box: a fire outside the monitored box is invisible to the satellite feed, so this is how it becomes visible at all. Extinguished incidents are excluded - CAL FIRE's feed carries the whole year, so an unfiltered nearest-by-distance sort names a closed fire on nearly every run. Absence means no incident is listed as burning, not that none is."
         },
         "nearestIncidentDistanceMi": {
           "type": "string",
@@ -284,19 +284,23 @@
       "properties": {
         "fireRisk": {
           "type": "string",
-          "knownValues": ["none", "low", "moderate", "high", "extreme"]
+          "knownValues": ["unknown", "none", "low", "moderate", "high", "extreme"],
+          "description": "Fire risk across the region. The value 'unknown' means the domain was not observed this run. It is not a severity level, and it is the required value when the domain is absent from domainsObserved. Without it the vocabulary forced a synthesis agent to assert a level for a domain it never saw, and the least alarming option was 'none': the 2026-09-10 record set floodRisk to 'none' and described the watershed as being at normal seasonal late-summer lows, from zero watershed observations."
         },
         "floodRisk": {
           "type": "string",
-          "knownValues": ["none", "low", "moderate", "high", "extreme"]
+          "knownValues": ["unknown", "none", "low", "moderate", "high", "extreme"],
+          "description": "Flood risk across the region. The value 'unknown' means the domain was not observed this run. It is not a severity level, and it is the required value when the domain is absent from domainsObserved. Without it the vocabulary forced a synthesis agent to assert a level for a domain it never saw, and the least alarming option was 'none': the 2026-09-10 record set floodRisk to 'none' and described the watershed as being at normal seasonal late-summer lows, from zero watershed observations."
         },
         "airQualityRisk": {
           "type": "string",
-          "knownValues": ["none", "low", "moderate", "high", "extreme"]
+          "knownValues": ["unknown", "none", "low", "moderate", "high", "extreme"],
+          "description": "Air quality risk across the region. The value 'unknown' means the domain was not observed this run. It is not a severity level, and it is the required value when the domain is absent from domainsObserved. Without it the vocabulary forced a synthesis agent to assert a level for a domain it never saw, and the least alarming option was 'none': the 2026-09-10 record set floodRisk to 'none' and described the watershed as being at normal seasonal late-summer lows, from zero watershed observations."
         },
         "overallRisk": {
           "type": "string",
-          "knownValues": ["none", "low", "moderate", "high", "extreme"]
+          "knownValues": ["unknown", "none", "low", "moderate", "high", "extreme"],
+          "description": "Highest-severity view across the domains actually assessed. The value 'unknown' means the domain was not observed this run. It is not a severity level, and it is the required value when the domain is absent from domainsObserved. Without it the vocabulary forced a synthesis agent to assert a level for a domain it never saw, and the least alarming option was 'none': the 2026-09-10 record set floodRisk to 'none' and described the watershed as being at normal seasonal late-summer lows, from zero watershed observations."
         },
         "domainsObserved": {
           "type": "array",

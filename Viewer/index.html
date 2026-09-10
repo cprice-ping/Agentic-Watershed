@@ -178,6 +178,7 @@ h1.eyebrow, h2.eyebrow {
   font-size: .82rem;
   letter-spacing: .02em;
 }
+.risk-value.unknown { color: var(--text-3); font-style: italic; }
 .risk-value.none, .risk-value.low { color: var(--ok); }
 .risk-value.moderate { color: var(--warn); }
 .risk-value.high, .risk-value.extreme { color: var(--bad); }
@@ -434,7 +435,7 @@ input[type=text]:focus { border-color: rgba(86,180,233,.45); outline: none; }
   body { background: #fff; }
   .card { border-color: rgba(0,0,0,.25); box-shadow: none; break-inside: avoid; }
   .flagged-banner, .error { background: #fff; }
-  .raw, .trace, .risk-value.none, .risk-value.low, .risk-value.moderate, .risk-value.high, .risk-value.extreme { color: #111; }
+  .raw, .trace, .risk-value.unknown, .risk-value.none, .risk-value.low, .risk-value.moderate, .risk-value.high, .risk-value.extreme { color: #111; }
   .masthead svg.contour, .domain-icon svg, .foot a[href^="http"] { color: #036; }
   .btn, .raw-record, .at-uri-chip { display: none; }
 }
@@ -762,8 +763,12 @@ function renderNumericFields(block) {
   return items.length ? `<div class="numerics">${items.join("")}</div>` : "";
 }
 
+// A missing risk value is not "none". Rendering it that way was the same
+// defect the lexicon had: absence of an assessment shown as the calmest
+// possible reading. "unknown" is a real value in the vocabulary now, and
+// an absent one falls back to it rather than to reassurance.
 function riskValue(value) {
-  const v = (value || "none").toLowerCase();
+  const v = (value || "unknown").toLowerCase();
   return `<span class="risk-value ${esc(v)}">${esc(v)}</span>`;
 }
 

@@ -242,10 +242,13 @@ def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
         "flagReason": _fit(flag_reason, FLAG_REASON_MAX_BYTES),
         "agentModel": row.get("model") or "unknown",
         "synthesis": {
-            "fireRisk":        row.get("fire_risk", "none"),
-            "floodRisk":       row.get("flood_risk", "none"),
-            "airQualityRisk":  row.get("air_quality_risk", "none"),
-            "overallRisk":     row.get("overall_risk", "none"),
+            # Default "unknown", not "none": a row missing a risk value
+            # has no assessment for that domain, and "none" would publish
+            # that gap as an all-clear.
+            "fireRisk":        row.get("fire_risk", "unknown"),
+            "floodRisk":       row.get("flood_risk", "unknown"),
+            "airQualityRisk":  row.get("air_quality_risk", "unknown"),
+            "overallRisk":     row.get("overall_risk", "unknown"),
             "synthesisDid":    synth_did,
             # What actually reached the run, recorded by the agent. This was
             # hardcoded to all four domains, so the 2026-09-09T18:00Z record

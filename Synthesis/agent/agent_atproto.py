@@ -238,10 +238,20 @@ before an incident is listed; and the feed is curated rather than complete —
 484 incidents statewide for all of 2026, with no prescribed-burn category, and
 a real fire near Willits on 2026-09-09 absent from it altogether. Report an
 unmatched detection as unidentified and do not escalate on it.
-nearestIncidentName and nearestIncidentDistanceMi give the nearest known
-incident statewide, independent of any hotspot — that is how a fire outside
-the FIRMS bounding box reaches you at all, and on 2026-09-09 a real fire at
-Willits 96 miles out was invisible for exactly that reason.
+nearestIncidentName and nearestIncidentDistanceMi give the nearest incident
+ACTIVELY BURNING at observedAt, statewide and independent of any hotspot —
+that is how a fire outside the FIRMS bounding box reaches you at all, and on
+2026-09-09 a real fire at Willits 96 miles out was invisible for exactly that
+reason. Extinguished incidents are excluded, so a name here is a fire burning
+now, not a burn scar. Absence means no incident is listed as burning, which
+is not the same as none burning — the same publication lag applies.
+
+It is one incident, not a survey. A second name at a different distance is
+another fire, not corroboration of the first, and two named fires are not
+evidence of a third. On 2026-09-10 this field was unfiltered and carried the
+Mason Fire at 7.45 miles — out since June — which was read as confirming
+"multiple active fire signatures in the region". Report what each field says
+about itself and let the count be the count.
 
 A DETECTION IS NOT A THREAT, AND DISTANCE IS NOT A THREAT MODEL. A hotspot is
 a thermal anomaly. It may be a wildfire, a prescribed or agricultural burn, or
@@ -270,10 +280,10 @@ TRAJECTORY SIGNALS to look for across your recent history:
 You must respond in this exact JSON format (no markdown, no extra text):
 {
   "summary": "3-4 sentence cross-domain summary suitable for a public Bluesky post",
-  "fire_risk": "none|low|moderate|high|extreme",
-  "flood_risk": "none|low|moderate|high|extreme",
-  "air_quality_risk": "none|low|moderate|high|extreme",
-  "overall_risk": "none|low|moderate|high|extreme",
+  "fire_risk": "unknown|none|low|moderate|high|extreme",
+  "flood_risk": "unknown|none|low|moderate|high|extreme",
+  "air_quality_risk": "unknown|none|low|moderate|high|extreme",
+  "overall_risk": "unknown|none|low|moderate|high|extreme",
   "flagged": true or false,
   "flag_reason": "one-line label if flagged (200 chars max), empty string if not — analysis goes in reasoning, not here",
   "reasoning": "Full cross-domain reasoning including trajectory assessment and seasonal context"
@@ -291,6 +301,20 @@ risk. Focus on honest risk assessment; outcome tracking is handled externally.
 
 flagged=true if overall_risk is moderate or higher, OR if any single domain is high/extreme,
 OR if a concerning trajectory is developing even if current conditions are still benign.
+"unknown" is not a level and never triggers or suppresses a flag on its own.
+
+A DOMAIN YOU DID NOT RECEIVE GETS "unknown", NOT A LEVEL. The DOMAIN COVERAGE section
+names every domain and says whether observations arrived this run. For any domain listed
+as not received, the risk value is "unknown" and your summary must not describe that
+domain's conditions at all — not its state, not its trend, not that it is normal for the
+season. "No flood risk; watershed at normal seasonal late-summer lows" is a claim about
+the river, and if no watershed observation arrived you have not seen the river. Saying
+nothing is the correct output; the record has a field for exactly this and consumers can
+read it. Absence of data is not evidence of calm, and a reader cannot tell the difference
+between "we looked and it was fine" and "we did not look" unless you make it.
+
+set overall_risk from the domains you actually assessed. If every domain is "unknown",
+overall_risk is "unknown" too.
 """
 
 logging.basicConfig(
@@ -983,9 +1007,9 @@ def write_predictions(obs: dict,
     to_predict = [
         (domain, level)
         for domain, level in (
-            ("fire",        obs.get("fire_risk", "none")),
-            ("flood",       obs.get("flood_risk", "none")),
-            ("air_quality", obs.get("air_quality_risk", "none")),
+            ("fire",        obs.get("fire_risk", "unknown")),
+            ("flood",       obs.get("flood_risk", "unknown")),
+            ("air_quality", obs.get("air_quality_risk", "unknown")),
         )
         if level in PREDICTION_RISK_LEVELS
     ]
@@ -1110,6 +1134,25 @@ def gather_context(lookback_hours: float = 24.0,
             "Check that the subscriber daemon is running and nodes are publishing."
         )
     else:
+        # Say explicitly which domains did not arrive. Previously the prompt
+        # simply had no section for them, and a missing section is not a fact
+        # a reader can act on — the 2026-09-10 record asserted the watershed
+        # was "at normal seasonal late-summer lows" with no watershed
+        # observation in the run at all. An absent domain now has a line of
+        # its own saying so.
+        received = [d for d in KNOWN_DOMAINS if grouped.get(d)]
+        missing = [d for d in KNOWN_DOMAINS if not grouped.get(d)]
+        coverage = "=== DOMAIN COVERAGE ===\n"
+        coverage += f"Received this run: {', '.join(received) if received else 'none'}\n"
+        if missing:
+            coverage += (
+                f"NOT received this run: {', '.join(missing)}\n"
+                "Assess each of those as \"unknown\" and say nothing about its conditions.\n"
+            )
+        else:
+            coverage += "All known domains reported.\n"
+        sections.append(coverage)
+
         for obs_type, records in grouped.items():
             log.info("  %s: %d observation(s)", obs_type, len(records))
 
@@ -1168,7 +1211,19 @@ def gather_context(lookback_hours: float = 24.0,
 # then a well-formed JSON object, which the previous brace-scanning parser
 # had to work around after the fact). Forcing the tool call eliminates the
 # whole class of failure at the source instead of parsing around it.
-_RISK_ENUM = ["none", "low", "moderate", "high", "extreme"]
+# "unknown" is not a severity — it is the answer for a domain this run never
+# received. Until 2026-09-10 the enum had no such value, so the API itself
+# forbade the honest answer and the model had to pick a level for a domain it
+# had not seen; "none" being the least alarming, that is what it picked. The
+# 2026-09-10 record set flood_risk "none" and wrote "watershed at normal
+# seasonal late-summer lows" with watershed absent from domainsObserved
+# entirely. That was a vocabulary defect, not a model one.
+_RISK_ENUM = ["unknown", "none", "low", "moderate", "high", "extreme"]
+
+# The domains a synthesis run can receive. Named here so the prompt can state
+# which ones did NOT arrive: an absent section is not a salient fact, and
+# asking a model to notice a gap is asking it to observe nothing.
+KNOWN_DOMAINS = ("watershed", "weather", "aqi", "fire")
 
 _ASSESSMENT_TOOL = {
     "name": "submit_assessment",
@@ -1242,8 +1297,11 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
         log.error("No tool_use block in response despite forced tool_choice: %s", message.content)
         return {
             "summary": "Synthesis agent run failed: model did not return a tool call.",
-            "fire_risk": "none", "flood_risk": "none",
-            "air_quality_risk": "none", "overall_risk": "none",
+            # A failed run asserts nothing. These were "none", which reads
+            # as "we checked and all is calm" — the most reassuring possible
+            # output for a run that produced no assessment at all.
+            "fire_risk": "unknown", "flood_risk": "unknown",
+            "air_quality_risk": "unknown", "overall_risk": "unknown",
             "flagged": True, "flag_reason": "No tool_use block in response",
             "reasoning": f"Raw content blocks: {message.content}",
         }
@@ -1312,8 +1370,8 @@ def write_observation(obs: dict, dry_run: bool = False,
         """,
         (
             now, obs.get("summary", ""),
-            obs.get("fire_risk", "none"), obs.get("flood_risk", "none"),
-            obs.get("air_quality_risk", "none"), obs.get("overall_risk", "none"),
+            obs.get("fire_risk", "unknown"), obs.get("flood_risk", "unknown"),
+            obs.get("air_quality_risk", "unknown"), obs.get("overall_risk", "unknown"),
             int(obs.get("flagged", False)),
             obs.get("flag_reason", ""), obs.get("reasoning", ""), model,
             _LAST_USAGE["input_tokens"], _LAST_USAGE["output_tokens"],
