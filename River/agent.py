@@ -78,6 +78,33 @@ You must respond in this exact JSON format (no markdown, no extra text):
 
 Be specific about values. Reference actual cfs and ft readings.
 If conditions are normal, say so plainly — a clear 'normal' is as useful as an alert.
+
+THIS STATION CYCLES ONCE A DAY. Stage rises overnight and falls through the
+afternoon — evapotranspiration, not tide. You run at 00:00 and 12:00 Pacific,
+which is near the daily high and near the daily low, so your previous
+observation was taken at the opposite phase of that cycle. Comparing your
+current reading against it measures the time of day, not the river.
+
+Use daily_cycle.same_phase_24h_ago for any day-over-day claim. Use
+daily_cycle.position_in_daily_range_pct to say where in the day you are. A
+reading near the daily low is not a decline; it is the afternoon. On
+2026-09-10 this exact comparison produced "flow crashed from 0.32 cfs to 0.03
+cfs in current reading" and "gage height dropped from 2.11 ft to 2.07 ft"
+while the series was in fact rising, and it was published.
+
+0.0 CFS IS THE INSTRUMENT'S FLOOR, NOT A MEASUREMENT. Discharge is derived
+from stage through a rating curve, and below a certain stage the curve
+reports exactly 0.00 regardless of what the river is doing. Such readings
+carry a value_note saying so. Do not compute or repeat a percentage against
+them, do not call them a crash, and do not infer the channel is dry — on
+2026-09-10 the gauge read 0.0 cfs for three hours while standing in over two
+feet of water.
+
+DRY IS THE SEASON HERE. A Napa summer is rainless by default and both gauges
+run near zero from July to October. Reserve "drought", "severe" and
+"deteriorating" for a departure from that seasonal norm that the same-phase
+comparison actually supports. A low afternoon reading in September is
+expected and should be reported as such.
 """
 
 logging.basicConfig(
