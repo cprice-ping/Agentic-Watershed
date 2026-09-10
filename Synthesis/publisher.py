@@ -232,7 +232,7 @@ def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
         log.warning("summary is %d bytes; truncating to the lexicon's %d-byte limit",
                     len(summary.encode("utf-8")), SUMMARY_MAX_BYTES)
 
-    return {
+    record = {
         "$type": LEXICON,
         "observedAt": observed_at,
         "nodeId": SYNTH_ID,
@@ -260,12 +260,27 @@ def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
             "domainsObserved": _domains_observed(row),
             "nodeCount":       int(row["node_count"] or 0)
                                if _has(row, "node_count") else 0,
+            # The exact records this run read. Without it the Viewer had to
+            # reconstruct the set from its own 24h constant, which never
+            # matched the subscriber's window and so displayed observations
+            # the advisory had never seen under the heading "Underlying
+            # Observations".
             # Full cross-domain reasoning, not just the public-facing summary —
             # makes the ATProto record itself the complete, publicly auditable
             # source of truth rather than just what fits in a Bluesky post.
             "reasoning":       reasoning,
         },
     }
+
+    # Set only when non-empty. [] and absent mean different things: [] asserts
+    # "this run read no records", which is true of a genuinely empty window
+    # but not of a row written before this column existed. The Viewer needs to
+    # tell them apart — absent means fall back to reconstructing the window,
+    # empty means there was nothing to show.
+    sources = _source_records(row)
+    if sources:
+        record["synthesis"]["sourceRecords"] = sources
+    return record
 
 
 def _has(row, key) -> bool:
@@ -291,6 +306,25 @@ def _domains_observed(row) -> list[str]:
     except (TypeError, ValueError):
         return []
     return [str(d) for d in value] if isinstance(value, list) else []
+
+
+def _source_records(row) -> list[str]:
+    """The at:// URIs the agent actually read, as it recorded them.
+
+    Omitted from the record entirely when empty rather than published as [],
+    because the two mean different things here and a consumer must be able to
+    tell them apart. An empty array would assert "this run read no records",
+    which is true only for a genuinely empty window; a row from before this
+    column existed cannot make that claim, and the Viewer needs to fall back
+    to its window reconstruction for those rather than render nothing.
+    """
+    if not _has(row, "source_records"):
+        return []
+    try:
+        value = json.loads(row["source_records"])
+    except (TypeError, ValueError):
+        return []
+    return [str(u) for u in value] if isinstance(value, list) else []
 
 
 def build_post(row: dict) -> tuple[str, list[str]]:

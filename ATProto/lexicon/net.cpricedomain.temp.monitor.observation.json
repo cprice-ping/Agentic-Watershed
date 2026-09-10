@@ -318,6 +318,11 @@
           "knownValues": ["unknown", "none", "low", "moderate", "high", "extreme"],
           "description": "Highest-severity view across the domains actually assessed. The value 'unknown' means the domain was not observed this run. It is not a severity level, and it is the required value when the domain is absent from domainsObserved. Without it the vocabulary forced a synthesis agent to assert a level for a domain it never saw, and the least alarming option was 'none': the 2026-09-10 record set floodRisk to 'none' and described the watershed as being at normal seasonal late-summer lows, from zero watershed observations."
         },
+        "sourceRecords": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The at:// URIs of the node observations this synthesis actually read. Present so a consumer can resolve the exact evidence behind an advisory rather than reconstructing it from a time window. The Viewer did the latter, using its own 24h constant against a subscriber that fetched 15h, and so displayed records the advisory had never seen under the heading 'Underlying Observations'. ABSENT means the publishing agent predates this field and the set is unknown; an EMPTY array would mean the run genuinely read nothing, so the two are not interchangeable and absent is never published as empty."
+        },
         "domainsObserved": {
           "type": "array",
           "items": { "type": "string" },

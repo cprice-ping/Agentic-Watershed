@@ -548,7 +548,13 @@ input[type=text]:focus { border-color: rgba(86,180,233,.45); outline: none; }
 // ---------------------------------------------------------------------------
 
 const LEXICON = "net.cpricedomain.temp.monitor.observation";
-const LOOKBACK_HOURS = 24; // matches Synthesis's default fetch lookback window
+// Fallback only. Synthesis records now carry sourceRecords — the at:// URIs
+// the run actually read — and those are used verbatim when present. This
+// window reconstructs the set for older records that predate that field, and
+// it has never been exactly right: it claimed to match the subscriber, which
+// was fetching 15h at the time and 27h since, so it showed observations the
+// advisory had not seen. Reconstruction is a guess; sourceRecords is a fact.
+const LOOKBACK_HOURS = 24;
 const PLC_DIRECTORY = "https://plc.directory";
 
 // napa-synth-01 — the synthesis identity that publishes advisory records.
@@ -861,17 +867,19 @@ async function render(uri) {
     chip.addEventListener("click", () => chip.classList.toggle("open"));
   }
 
-  // Underlying domain records this synthesis run drew from — approximated by
-  // matching observedAt within the same lookback window Synthesis itself
-  // used, since individual source records aren't referenced by URI in the
-  // synthesis record.
+  // Underlying domain records this synthesis run drew from. sourceRecords
+  // names them exactly; the lookback window below is only for records
+  // published before that field existed.
+  const sourceUris = Array.isArray(synth.sourceRecords) ? synth.sourceRecords : null;
   const domainSection = document.createElement("section");
   domainSection.className = "card rise rise-3";
   domainSection.setAttribute("aria-label", "Underlying domain observations");
   domainSection.innerHTML = `
     <div class="card-head">
       <h2 class="eyebrow">Underlying Observations</h2>
-      <span class="head-meta">last ${LOOKBACK_HOURS}h · newest first</span>
+      <span class="head-meta">${sourceUris && sourceUris.length
+        ? `${sourceUris.length} record${sourceUris.length === 1 ? "" : "s"} this run read`
+        : `last ${LOOKBACK_HOURS}h (estimated)`} · newest first</span>
     </div>
     <div class="state" style="padding:12px 0;"><div class="trace" id="trace-2"></div></div>`;
   app.appendChild(domainSection);
@@ -891,7 +899,13 @@ async function render(uri) {
       allDomainRecords.push(...records.filter(r => (r.value || {}).observationType !== `${LEXICON}#synthesis`));
     }
 
-    if (upper !== null) {
+    // Prefer the record's own account of what it read. Filtering the already
+    // fetched list by URI costs no extra round trips and, unlike the window,
+    // cannot include something the advisory never saw or omit something it did.
+    if (sourceUris && sourceUris.length) {
+      const wanted = new Set(sourceUris);
+      allDomainRecords = allDomainRecords.filter(r => wanted.has(r.uri));
+    } else if (upper !== null) {
       allDomainRecords = allDomainRecords.filter(r => {
         const t = new Date((r.value || {}).observedAt || 0).getTime();
         return t <= upper && t >= cutoff;
@@ -902,12 +916,16 @@ async function render(uri) {
       domainSection.innerHTML = `
         <div class="card-head">
           <h2 class="eyebrow">Underlying Observations</h2>
-          <span class="head-meta">last ${LOOKBACK_HOURS}h</span>
+          <span class="head-meta">${sourceUris && sourceUris.length
+            ? "none resolved" : `last ${LOOKBACK_HOURS}h (estimated)`}</span>
         </div>
         <div class="empty">
           ${ICONS.droplet}
-          <p>No domain records in the ${LOOKBACK_HOURS}h window before this observation.<br>
-          They may have aged out, or the node hadn't published yet.</p>
+          <p>${sourceUris && sourceUris.length
+            ? `This advisory names ${sourceUris.length} source record${sourceUris.length === 1 ? "" : "s"}, but none could be
+               retrieved — they may have been deleted, or their PDS may be unreachable from this browser.`
+            : `No domain records in the ${LOOKBACK_HOURS}h window before this observation.<br>
+               They may have aged out, or the node hadn't published yet.`}</p>
         </div>`;
       return;
     }
@@ -940,12 +958,27 @@ async function render(uri) {
       blocks += `</div>`;
     });
 
+    // A named record that no longer resolves must be said out loud, not
+    // quietly dropped. Showing 12 blocks when the advisory cited 15 would
+    // look complete while being short, which is the failure this whole
+    // section exists to prevent.
+    const shortfall = sourceUris && sourceUris.length
+      ? sourceUris.length - allDomainRecords.length : 0;
+    const shortfallNote = shortfall > 0
+      ? `<p class="empty" style="padding:10px 0 0; text-align:left;">
+           ${shortfall} of the ${sourceUris.length} record${sourceUris.length === 1 ? "" : "s"}
+           this advisory cited could not be retrieved. They may have been deleted,
+           or their PDS may be unreachable from this browser.</p>`
+      : "";
+
     domainSection.innerHTML = `
       <div class="card-head">
         <h2 class="eyebrow">Underlying Observations</h2>
-        <span class="head-meta">last ${LOOKBACK_HOURS}h · newest first</span>
+        <span class="head-meta">${sourceUris && sourceUris.length
+          ? `${allDomainRecords.length} of ${sourceUris.length} this run read`
+          : `last ${LOOKBACK_HOURS}h (estimated)`} · newest first</span>
       </div>
-      ${blocks}`;
+      ${blocks}${shortfallNote}`;
     traceEl = null;
 
     for (const chip of domainSection.querySelectorAll(".at-uri-chip")) {
