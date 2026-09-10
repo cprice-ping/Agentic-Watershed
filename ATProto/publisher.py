@@ -636,15 +636,57 @@ def _was_burning(inc, when) -> bool:
     return when <= end + timedelta(days=_FIRE_THRESHOLDS.INCIDENT_MATCH_TAIL_DAYS)
 
 
+def _is_burning_at(inc, when) -> bool:
+    """Is this incident burning at *when*?
+
+    Distinct from _was_burning, which asks whether an incident could have
+    produced a detection at a given moment and therefore allows a tail after
+    containment — a satellite sees heat in a scar. This asks the narrower
+    question the standalone nearest-incident field needs: is there fire there
+    now. No tail, because a fire that closed yesterday is not a nearby fire.
+
+    An incident whose end time is unknown counts as burning. That errs toward
+    reporting a fire rather than hiding one, the same direction _was_burning
+    chose.
+    """
+    if when is None:
+        return bool(inc["is_active"])
+    start = _parse_iso(inc["started_at"])
+    if start is not None and when < start:
+        return False
+    if inc["is_active"]:
+        return True
+    end = _parse_iso(inc["extinguished_at"]) or _parse_iso(inc["updated_at"])
+    if end is None:
+        return True
+    return when <= end
+
+
 def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None,
                             detected_at: datetime | None = None) -> dict:
     """Named CAL FIRE incident matching the nearest hotspot, plus the nearest
-    incident statewide.
+    incident actively burning at observedAt.
 
     The statewide figure is deliberately not bounded by the FIRMS box: on
     2026-09-09 the nearest real wildfire was at Willits, 96 miles out and
     outside the box, so the satellite feed could not see it. This is the only
     field that carries such a fire into the record.
+
+    It is filtered to incidents actually burning, which it was not until
+    2026-09-10, and the omission made the field worse than useless. CAL FIRE's
+    feed holds every incident of the year — 483 closed against typically zero
+    or one active — so an unfiltered nearest-by-distance sort names a dead
+    fire on essentially every run. The 2026-09-10 synthesis record read
+    `nearestIncidentName: Mason Fire` at 7.45 miles as corroborating evidence
+    of current fire activity and wrote "multiple active fire signatures in the
+    region"; the Mason Fire burned for eight hours on 2026-06-18 and had been
+    out for three months.
+
+    Worse, the field could never have served the purpose it was added for. A
+    nearest-by-distance sort across all history puts a long-extinguished local
+    fire ahead of a distant burning one, so Willits at 96 miles would have
+    lost to Mason at 7.45 every time. Filtering is what makes the Willits case
+    work at all, not a restriction on it.
 
     A match is a positive identifier only. No match emits no field at all
     rather than an empty string, because absence here means "no published
@@ -673,8 +715,11 @@ def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None
         return {}
 
     result: dict = {}
-    nearest = rows[0]
-    if nearest["name"] and nearest["distance_mi"] is not None:
+    # rows is already ordered by distance, so the first burning one is the
+    # nearest burning one.
+    as_of = _parse_iso(observed_at)
+    nearest = next((r for r in rows if _is_burning_at(r, as_of)), None)
+    if nearest is not None and nearest["name"] and nearest["distance_mi"] is not None:
         result["nearestIncidentName"] = nearest["name"]
         result["nearestIncidentDistanceMi"] = _atproto_safe(nearest["distance_mi"])
 

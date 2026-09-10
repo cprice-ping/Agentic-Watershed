@@ -1481,6 +1481,58 @@ produced no records, and the only reason it was caught within the hour is that
 someone was already looking. A node that cannot say it has stopped is the
 same gap as an agent that cannot say its input was missing.
 
+### A field that never worked, and a word that didn't exist (2026-09-10)
+
+Two defects in the 2026-09-10 06:07 synthesis record, both structural.
+
+`nearestIncidentName` was selected by `rows[0]` over every incident in the
+table, ordered by distance, with no state filter. CAL FIRE's feed holds the
+whole year — 483 closed incidents against typically zero or one burning — so
+it named a dead fire on essentially every run. That run reported the Mason
+Fire at 7.45 miles as evidence of "multiple active fire signatures in the
+region". The Mason Fire burned for eight hours on 2026-06-18 and had been out
+for three months.
+
+The field could never have done its job. It was added for the Willits case:
+a real fire 96 miles out, outside the FIRMS box, invisible to the satellite
+feed. But nearest-by-distance across all history puts any nearby old fire
+ahead of a distant burning one, so Mason at 7.45 always beat Willits at 96.
+Filtering to burning incidents is not a restriction on that purpose, it is
+what makes it possible — there is now a test asserting exactly that ordering.
+
+Note what the same function already did correctly. `nearestHotspotIncidentName`
+filtered through `_was_burning` twelve lines below. The temporal check existed
+and was applied to one field and not the other. The new `_is_burning_at` is
+deliberately separate rather than a reuse: `_was_burning` allows a tail after
+containment because a satellite can see heat in a scar, which is right for
+matching a detection and wrong for "is there a fire there now".
+
+The second defect was in the vocabulary. `floodRisk` had `knownValues` of
+none/low/moderate/high/extreme and the `submit_assessment` tool carried the
+same list as a hard `enum`, so the API itself forbade the honest answer. With
+`domainsObserved` reading `["aqi", "fire"]`, the agent still had to emit a
+flood level, and the least alarming available was `none` — so the record said
+"No flood risk; watershed at normal seasonal late-summer lows" having seen no
+watershed data at all. The reasoning shows it half-caught this, declining to
+cite a drought day-count "not in the observations" while asserting the river's
+state in the same breath. It was not being careless. It had no way to say
+nothing.
+
+`unknown` is now in the enum, the lexicon, the prompt, the persistence
+defaults, the failed-run fallback, and the Viewer. That last one mattered more
+than it looks: `riskValue()` rendered a missing value as `none`, so even a
+correct `unknown` would have displayed as the calmest reading on the page.
+
+The prompt gained a DOMAIN COVERAGE section that names every domain and says
+whether it arrived. Previously an absent domain simply had no section, and a
+missing section is not a fact — asking a model to notice a gap is asking it to
+observe nothing. The two fixes are the same fix at different layers: make
+absence something the system states rather than something a reader must infer.
+
+Both were found the same way as everything else here — a human read a
+published record. The shadow rules could not have caught either, because both
+fields were internally consistent with the data they were built from.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
