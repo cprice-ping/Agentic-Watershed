@@ -1610,6 +1610,54 @@ firehose on flagReason gets an empty string for the most consequential fire
 record the system has produced. That remains parked pending shadow-verdict
 divergence data, but this is the strongest case yet for unparking it.
 
+### Two windows, one of them imaginary (2026-09-10)
+
+`domainsObserved: ["aqi", "fire"]` on the 06:07 record raised the obvious
+question, and the execution log answered it twice over.
+
+The immediate cause was the node, not Synthesis. The subscriber fetched at
+06:06 UTC with a 15-hour window opening at 15:06 on the 9th and got exactly
+three records — aqi 21:00, fire 22:00, aqi 03:00 — matching "3 fetched, 3
+new" and "skipped 763 record(s) outside the 15h window". Watershed runs at
+07:00 and 19:00 UTC and weather at 08:00 and 20:00; the 19:00 and 20:00 runs
+were *inside* that window, so had they published they would have been
+fetched. They didn't exist. Those are 12:00 and 13:00 Pacific — the reboot at
+12:32 and the crontab break after it. The outage cost each domain one run,
+and their earlier 07:00/08:00 records were already outside the window.
+
+The structural finding was in the same log, two lines apart:
+
+```
+Lexicon: ...  |  Lookback: 15h                      ← subscriber, fetching
+Model: sonnet  |  Dry run: False  |  Lookback: 24h  ← agent, reading
+```
+
+`entrypoint.sh` ran the subscriber with `--lookback 15` and invoked the agent
+with no flag at all, so it took its `24.0` argparse default. And subscriber.db
+is deliberately ephemeral — the entrypoint restores synthesis.db and
+synth_publisher.db from the file share, not that one — so nothing accumulates
+between runs. The agent's "last 24 hours" was reading a database that had
+never contained more than 15. The 24 was not a window, it was a number in a
+log line. A third figure sat in the comment above the call: "since ~13h ago".
+
+Both are now the same value, and it is 27 rather than 15. Watershed, weather
+and fire all run on a 12-hour agent cadence, so 15 hours left three hours of
+slack and a single missed run erased a domain — which is precisely what
+happened. 27 tolerates one missed run per domain.
+
+Making them one variable is not enough on its own, because that is a
+convention and conventions drift. The subscriber now writes the window it
+actually fetched into a `fetch_meta` row, and the agent reads that and takes
+the smaller of it and its own flag, logging when it clamps. So the figure the
+agent prints is the figure it can support, whatever anyone passes. Same move
+as `domainsObserved` replacing a hardcoded domain list: stop asserting a
+number that can be measured.
+
+Worth separating what each half fixed. #77 made a missing domain honest —
+`unknown` instead of a fabricated all-clear. This makes it rarer. The system
+was already going to say it hadn't seen the river; now it will usually have
+seen it.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
