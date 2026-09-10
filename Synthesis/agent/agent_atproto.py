@@ -426,7 +426,7 @@ def read_recent_observations(lookback_hours: float = 24.0,
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT observation_type, publisher_did, node_id,
+            SELECT at_uri, observation_type, publisher_did, node_id,
                    observed_at, received_at, summary, flagged,
                    flag_reason, agent_model, raw_record
             FROM observations
@@ -1426,7 +1426,11 @@ def write_observation(obs: dict, dry_run: bool = False,
             -- run whose own reasoning opened "received no node observations
             -- at all". A consumer reading the structured field got the
             -- opposite of the prose.
-            domains_observed TEXT, node_count INTEGER
+            domains_observed TEXT, node_count INTEGER,
+            -- The at:// URIs of the records this run actually read. The
+            -- Viewer previously reconstructed this from its own 24h constant
+            -- and showed observations the advisory never saw.
+            source_records TEXT
         )
     """)
     # Older synthesis.db files predate the model column.
@@ -1435,7 +1439,8 @@ def write_observation(obs: dict, dry_run: bool = False,
                          ("input_tokens", "INTEGER"),
                          ("output_tokens", "INTEGER"),
                          ("domains_observed", "TEXT"),
-                         ("node_count", "INTEGER")):
+                         ("node_count", "INTEGER"),
+                         ("source_records", "TEXT")):
         if _name not in cols:
             conn.execute(f"ALTER TABLE synthesis_observations ADD COLUMN {_name} {_decl}")
     now = datetime.now(timezone.utc).isoformat()
@@ -1444,8 +1449,9 @@ def write_observation(obs: dict, dry_run: bool = False,
         INSERT INTO synthesis_observations (
             observed_at, summary, fire_risk, flood_risk,
             air_quality_risk, overall_risk, flagged, flag_reason, reasoning, model,
-            input_tokens, output_tokens, domains_observed, node_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            input_tokens, output_tokens, domains_observed, node_count,
+            source_records
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             now, obs.get("summary", ""),
@@ -1456,6 +1462,12 @@ def write_observation(obs: dict, dry_run: bool = False,
             _LAST_USAGE["input_tokens"], _LAST_USAGE["output_tokens"],
             json.dumps(sorted((grouped or {}).keys())),
             len({r.get("node_id") for rs in (grouped or {}).values() for r in rs}),
+            # Sorted so the array is stable run to run and diffable; the
+            # Viewer orders by observedAt for display anyway.
+            json.dumps(sorted(
+                r["at_uri"] for rs in (grouped or {}).values() for r in rs
+                if r.get("at_uri")
+            )),
         ),
     )
     conn.commit()

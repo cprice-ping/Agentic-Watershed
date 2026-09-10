@@ -1658,6 +1658,49 @@ Worth separating what each half fixed. #77 made a missing domain honest —
 was already going to say it hadn't seen the river; now it will usually have
 seen it.
 
+### Provenance was a reconstruction (2026-09-10)
+
+PRODUCT.md says the Viewer's job is "record-level provenance for every
+advisory", for a reader arriving from a Bluesky post asking whether they can
+trust it. It was not doing that. It fetched every record from every trusted
+publisher and kept whatever had an `observedAt` inside 24 hours of the
+synthesis record's own, using a constant in `Viewer/index.html` whose comment
+read "matches Synthesis's default fetch lookback window". That comment was
+never true: the subscriber was fetching 15 hours, and 27 after the previous
+fix. A third copy of the same number, in a third language, asserting an
+agreement no code checked.
+
+The consequence was false provenance, in the place designed to establish it.
+For the 2026-09-10 record Synthesis read three observations — aqi 21:00, fire
+22:00, aqi 03:00 — while the Viewer's 24-hour window would additionally
+display watershed 07:00, weather 08:00, aqi 09:00, fire 10:00 and aqi 15:00
+under the heading "Underlying Observations". A reader checking whether to
+believe "watershed at normal seasonal late-summer lows" would have found a
+watershed record apparently supporting it, on a page that renders
+`domainsObserved: ["aqi", "fire"]` a few hundred pixels above. The page
+contradicted the record it was displaying.
+
+The fix is not to sync the constant. Synthesis records now carry
+`sourceRecords`, the `at://` URIs of what the run actually read, and the
+Viewer filters the records it already fetched by that set — no extra round
+trips, and no window at all. The URIs were available the whole time: `at_uri`
+is a column in the subscriber's `observations` table that
+`read_recent_observations` simply never SELECTed.
+
+Two distinctions the implementation turns on. Absent and empty are not the
+same: `[]` asserts "this run read nothing", which a record written before the
+field existed cannot claim, so an empty set is omitted rather than published
+as `[]` and the Viewer falls back to the window only when the field is truly
+absent. And a cited URI that fails to resolve is now stated — "3 of the 15
+records this advisory cited could not be retrieved" — because showing twelve
+blocks where fifteen were claimed looks complete while being short.
+
+Third instance today of the same root: `fetch_meta` replaced an assumed
+window, `domainsObserved` replaced a hardcoded domain list, and now
+`sourceRecords` replaces an inferred evidence set. Each was a number or a set
+that could be recorded and was instead recomputed downstream by something
+that could not see whether it had got it right.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
