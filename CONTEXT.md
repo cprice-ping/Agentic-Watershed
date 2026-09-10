@@ -1701,6 +1701,60 @@ window, `domainsObserved` replaced a hardcoded domain list, and now
 that could be recorded and was instead recomputed downstream by something
 that could not see whether it had got it right.
 
+### Four ways to disappear, none of them audible (2026-09-10)
+
+Tracing why one synthesis record said `domainsObserved: ["aqi", "fire"]`
+turned up four distinct causes over two days, all presenting identically as
+a domain missing from synthesis:
+
+  1. a hand-edited crontab that lost the leading `. ` on nine lines, so every
+     job short-circuited on `&&` and produced nothing
+  2. an unclean reboot 75 seconds into a River agent run — cron's own log
+     shows the CMD, then `-- Boot --`, and the agent's log line was lost with
+     the unflushed write
+  3. roughly eleven hours of machine downtime overnight
+  4. a Weather MCP subprocess that answered and then failed to exit
+
+Not one announced itself. `proc.communicate(..., timeout=30)` was called bare
+in all four agents: a timeout raised straight out of `gather_context()`,
+ended the run, wrote nothing, and — since `communicate` does not kill on
+timeout — left the hung server behind to be leaked again next run. The
+Weather agent had already fetched one tool's output successfully and threw it
+away.
+
+The publisher then logged `[weather] Nothing new to publish`, which is the
+same line it logs for a healthy domain with nothing new. A crashed agent and
+a quiet one were indistinguishable from outside the box, and that is the real
+defect — the timeout was only what triggered it. The only reason any of this
+surfaced is that a synthesis record said `unknown` and a human asked why,
+which is #77 working as the last line of defence with nothing in front of it.
+
+Three changes. `agent_runtime.py` at the repo root now holds the MCP client
+once instead of four near-identical copies (the same drift `thresholds.py`
+was created to stop — the copies had already diverged cosmetically and all
+four carried the same unguarded timeout). It retries once, kills the hung
+child, and raises `MCPUnavailable` rather than letting a bare
+`TimeoutExpired` escape. A malformed reply is *not* retried and no longer
+returns `"[Tool call failed: name]"` — that string reads as data and reached
+the model as if it were evidence.
+
+A failed run now writes an `agent_observations` row with `status='failed'`
+and the reason, so the gap carries its own cause. It is recorded rather than
+merely logged because a log line lives on one machine and is read by a human
+who already suspects something, whereas this row is read by the publisher —
+the component that noticed nothing for two days. `flagged` stays 0: a run
+that computed no assessment must never be able to raise an alert.
+
+And the publisher now distinguishes the two cases in the one place it was
+silent, logging the failure and its reason at ERROR, and appending "the agent
+has not completed a run since the failure above" to what would otherwise be
+the reassuring line. Failure rows are never published — an assessment that
+does not exist has no business in the lexicon.
+
+`status` NULL means success throughout, because before this existed a failed
+run wrote nothing at all, so every pre-existing row is by definition a
+completed one.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

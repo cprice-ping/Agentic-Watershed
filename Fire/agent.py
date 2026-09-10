@@ -50,6 +50,15 @@ import thresholds  # noqa: E402
 # ---------------------------------------------------------------------------
 
 MCP_SERVER_PATH = Path(__file__).parent / "mcp_server.py"
+DB_PATH = Path(__file__).parent / "data" / "fire.db"
+
+# Shared MCP client and run-outcome recording. At the repo root rather than
+# copied per domain: four private copies of this is how the flag thresholds
+# drifted, and all four had the same unguarded 30s timeout.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from agent_runtime import (  # noqa: E402
+    call_mcp_tool as _call_mcp_tool, record_failed_run, MCPUnavailable,
+)
 
 _NODE_CFG = json.loads((Path(__file__).parent.parent / "node_config.json").read_text())
 
@@ -186,65 +195,13 @@ log = logging.getLogger("fire.agent")
 # MCP client — calls tools by spawning the MCP server as a subprocess
 # ---------------------------------------------------------------------------
 
+
 def call_mcp_tool(tool_name: str, arguments: dict = None) -> str:
-    """Call a tool on the fire MCP server via stdio subprocess. Returns the
-    tool result as a string."""
-    arguments = arguments or {}
-
-    request = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": tool_name,
-            "arguments": arguments,
-        },
-    }
-
-    init_request = {
-        "jsonrpc": "2.0",
-        "id": 0,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "fire-agent", "version": "1.0"},
-        },
-    }
-
-    proc = subprocess.Popen(
-        [sys.executable, str(MCP_SERVER_PATH)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    stdin_data = (
-        json.dumps(init_request) + "\n" +
-        json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n" +
-        json.dumps(request) + "\n"
-    )
-
-    stdout, stderr = proc.communicate(stdin_data, timeout=30)
-
-    for line in reversed(stdout.strip().splitlines()):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            response = json.loads(line)
-            if response.get("id") == 1:
-                result = response.get("result", {})
-                content = result.get("content", [])
-                if content:
-                    return content[0].get("text", "")
-        except json.JSONDecodeError:
-            continue
-
-    if stderr:
-        log.debug("MCP server stderr: %s", stderr[:500])
-    return f"[Tool call failed: no valid response for {tool_name}]"
+    """Delegate to the shared client, which retries once on timeout and
+    raises MCPUnavailable rather than letting a bare TimeoutExpired end the
+    run with no record of why."""
+    return _call_mcp_tool(MCP_SERVER_PATH, tool_name, arguments,
+                          client_name="fire-agent", log=log)
 
 
 # ---------------------------------------------------------------------------
@@ -408,4 +365,21 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # A crashed run used to leave nothing behind: no row, no record, and a
+    # publisher that logged "Nothing new to publish" — the same line it logs
+    # for a domain that ran fine and had nothing new. Weather and watershed
+    # were absent from synthesis for two days on 2026-09-09/10 and nothing in
+    # the system said so. The failure row makes the gap self-describing.
+    #
+    # SystemExit and KeyboardInterrupt deliberately propagate untouched: an
+    # operator stopping a run is not a fault, and --dry-run exits cleanly.
+    try:
+        main()
+    except MCPUnavailable as exc:
+        record_failed_run(DB_PATH, str(exc), log=log)
+        log.error("=== Agent run FAILED: %s ===", exc)
+        sys.exit(1)
+    except Exception as exc:
+        record_failed_run(DB_PATH, f"{type(exc).__name__}: {exc}", log=log)
+        log.exception("=== Agent run FAILED ===")
+        sys.exit(1)

@@ -1056,12 +1056,18 @@ DOMAIN_CONFIG = {
 }
 
 
-def get_unpublished(domain: str, pub_conn: sqlite3.Connection) -> list[dict]:
-    """Get observations from domain DB that haven't been published yet."""
+def get_unpublished(domain: str, pub_conn: sqlite3.Connection
+                    ) -> tuple[list[dict], list[dict]]:
+    """Unpublished rows from a domain DB, split into observations and failures.
+
+    Two lists rather than one, because a failed agent run is now recorded as
+    a row and the two must not be conflated: an observation gets published, a
+    failure gets reported in the log and never leaves the node.
+    """
     db_path = DB_PATHS[domain]
     if not db_path.exists():
         log.warning("DB not found for domain '%s': %s", domain, db_path)
-        return []
+        return [], []
 
     config = DOMAIN_CONFIG[domain]
     try:
@@ -1085,22 +1091,62 @@ def get_unpublished(domain: str, pub_conn: sqlite3.Connection) -> list[dict]:
         conn.close()
     except sqlite3.Error as exc:
         log.error("Failed to read %s DB: %s", domain, exc)
-        return []
+        return [], []
 
     unpublished = []
+    failures = []
     for row in rows:
         source_id = row["source_id"]
-        if not already_published(pub_conn, domain, source_id):
-            unpublished.append(dict(row) | {"_source_id": source_id})
+        if already_published(pub_conn, domain, source_id):
+            continue
+        # A failed run is recorded as a row so the gap has a cause attached,
+        # but it is not an observation and must never be published: it holds
+        # no assessment, and publishing it would put "Agent run failed" into
+        # the lexicon as if it were a reading. It is surfaced in the log
+        # instead — see publish_domain.
+        if _is_failed_row(row):
+            failures.append(dict(row) | {"_source_id": source_id})
+            continue
+        unpublished.append(dict(row) | {"_source_id": source_id})
 
-    return unpublished
+    return unpublished, failures
+
+
+def _is_failed_row(row) -> bool:
+    """Whether a domain row records a failed agent run.
+
+    NULL status means a row written before agent_runtime added the column,
+    which is a successful run by definition: before it existed, a failed run
+    wrote nothing at all.
+    """
+    try:
+        return (row["status"] or "").lower() == "failed"
+    except (IndexError, KeyError, TypeError):
+        return False
 
 
 def publish_domain(domain: str, session: BlueskySession,
                    pub_conn: sqlite3.Connection, dry_run: bool) -> int:
-    unpublished = get_unpublished(domain, pub_conn)
+    unpublished, failures = get_unpublished(domain, pub_conn)
+
+    # Say when a domain is quiet because its agent broke. "Nothing new to
+    # publish" was logged identically for a healthy domain with no new
+    # observation and for one whose agent had been crashing for two days,
+    # which is how the 2026-09-09/10 Weather and watershed outage stayed
+    # invisible: this log was the only place it would have shown, and it said
+    # the reassuring thing.
+    if failures:
+        newest = failures[0]
+        log.error("[%s] Last agent run FAILED at %s: %s%s",
+                  domain, newest.get("observed_at", "unknown"),
+                  newest.get("error") or "no reason recorded",
+                  f" ({len(failures)} failed run(s) since the last success)"
+                  if len(failures) > 1 else "")
+
     if not unpublished:
-        log.info("[%s] Nothing new to publish", domain)
+        log.info("[%s] Nothing new to publish%s", domain,
+                 " — the agent has not completed a run since the failure above"
+                 if failures else "")
         return 0
 
     config = DOMAIN_CONFIG[domain]
