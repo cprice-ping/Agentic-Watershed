@@ -1755,6 +1755,76 @@ does not exist has no business in the lexicon.
 run wrote nothing at all, so every pre-existing row is by definition a
 completed one.
 
+### The agent was reading the time of day (2026-09-10)
+
+The River record published on 2026-09-10 said "flow crashed from 0.32 cfs to
+0.03 cfs in current reading", "gage height dropped from 2.11 ft to 2.07 ft",
+"severe anomalous drying pattern", "severe drought conditions emerging", and
+flagged. The readings behind it:
+
+```
+20:15  2.04 ft  0.0 cfs        23:00  2.06 ft  0.0
+21:30  2.05 ft  0.0            23:15  2.07 ft  0.03
+22:15  2.06 ft  0.0
+```
+
+Stage was rising, monotonically. Discharge sat at exactly 0.0 for eleven
+consecutive readings and then ticked *up* to 0.03. Both headline numbers were
+directionally wrong.
+
+Two causes, and the second is the interesting one.
+
+**The rating floor.** Discharge is not measured; it is derived from stage
+through a rating curve, and below a certain stage the curve reports exactly
+0.00 regardless of the river. Eleven readings of 0.0 spanned a 0.02 ft range
+of stage, then one more hundredth of a foot produced 0.03 cfs. `get_anomalies`
+divided a 0.0 by a 30-day mean of 0.826 cfs, called it "100% deviation", and
+that number became "severe drought conditions emerging" in a published record.
+A percentage against a floor reading describes the instrument, not the water.
+
+**A twice-daily agent sampling a once-daily cycle.** Plotting 72 hours of
+stage shows one peak per day — maximum before dawn, minimum in the afternoon,
+total range 0.11 ft:
+
+```
+Sep 8   peak 2.12 @ 05:45   trough 2.08 @ 15:00
+Sep 9   peak 2.13 @ 01:45   trough 2.07 @ 16:45
+Sep 10  peak 2.14 @ 05:45   trough 2.03 @ ~20:00
+```
+
+That is evapotranspiration, not tide: tide in this reach is mixed
+semidiurnal, two peaks a day, amplitude in feet. The troughs deepening while
+the peaks hold tracks the 98.6°F heat wave the Weather agent recorded on the
+9th.
+
+The River agent runs at 00:00 and 12:00 Pacific — near the peak and near the
+trough — and compared each run against its own previous observation. Every
+consecutive pair therefore straddles opposite phases: peak-to-trough reads as
+collapse, trough-to-peak reads as recovery, forever, and neither is a trend.
+It passed unnoticed for weeks only because the absolute numbers were small
+enough that the swing looked like noise. Once the trough crossed the rating
+floor, the same comparison produced a 100% change.
+
+`River/hydrology.py` now holds both facts once. Floor-pinned discharge is
+labelled and never scored — `get_anomalies` returns those readings in a
+separate `at_rating_floor` list with a note saying why they carry no
+percentage. And `get_station_summary` attaches a `daily_cycle` block to each
+latest reading: the day's min and max, where this reading sits between them,
+and the reading from the same point in yesterday's cycle, which is the only
+like-for-like comparison available. A collector gap that removes the
+same-phase reading is stated as such rather than silently falling back to the
+nearest available point.
+
+Note what the record got *right*, because the fix should not erase it: flow at
+Near Napa really has reached zero in the afternoons, and St Helena has been
+dry for weeks. The decline is real. What was wrong was the direction of the
+current move, the magnitude, and the language.
+
+This is the same correction as wind units, hotspot currency, AQI clocks and
+USGS qualifiers, now applied to a comparison rather than a value: the frame
+has to travel with the number. A reading needs its unit, its clock, its
+provenance — and, at a station that breathes once a day, its phase.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

@@ -31,6 +31,11 @@ from mcp.server.fastmcp import FastMCP
 # readings its log marks and which qualifiers these tools spell out.
 import qualifiers
 
+# The rating floor and the diel cycle. Both are properties of this station
+# that a bare number cannot carry, and both produced a wrong published
+# record on 2026-09-10.
+import hydrology
+
 # ---------------------------------------------------------------------------
 # Config — points at the same DB the collector writes to
 # ---------------------------------------------------------------------------
@@ -121,6 +126,9 @@ def _rows_to_dicts(rows) -> list[dict]:
         meaning = qualifiers.describe(d.get("qualifier"))
         if meaning:
             d["qualifier_meaning"] = meaning
+        note = hydrology.floor_note(d.get("parameter_name"), d.get("value"))
+        if note:
+            d["value_note"] = note
         out.append(d)
     return out
 
@@ -186,6 +194,17 @@ def get_station_summary(station_id: str = "11458000") -> str:
     Return the latest reading for each parameter at a single station,
     plus a 7-day min/mean/max for context.
 
+    Each latest reading carries a `daily_cycle` block giving the last 24
+    hours' min and max, where this reading sits between them, and the reading
+    from the same point in yesterday's cycle. Use that last figure for any
+    day-over-day statement: this station cycles once daily, so two readings
+    taken at different times of day differ because of the hour, not because
+    the river changed.
+
+    A discharge reading of 0.0 carries a `value_note` saying it is at the
+    rating curve's floor. That is not a measurement of zero flow and does not
+    mean the channel is dry.
+
     Args:
         station_id: USGS station ID. Known stations:
                     11458000 = Napa River near Napa (default)
@@ -224,10 +243,43 @@ def get_station_summary(station_id: str = "11458000") -> str:
     if not latest:
         return f"No data found for station {station_id}."
 
+    # Place each latest reading inside the last 24 hours of its own
+    # parameter. Without this the agent compared each run against its own
+    # previous observation — and since runs are 12 hours apart while this
+    # station cycles once a day, every comparison straddled opposite phases.
+    # On 2026-09-10 an afternoon trough was compared against the previous
+    # midnight's peak and published as "flow crashed... in current reading",
+    # when the series was in fact rising.
+    with _db() as conn:
+        day_rows = conn.execute(
+            """
+            SELECT collected_at, parameter_name, value
+            FROM readings
+            WHERE station_id = ? AND collected_at >= ? AND value IS NOT NULL
+            """,
+            (station_id, (datetime.now(timezone.utc)
+                          - timedelta(hours=hydrology.DIEL_PERIOD_HOURS * 1.2)
+                          ).isoformat()),
+        ).fetchall()
+
+    latest_out = _rows_to_dicts(latest)
+    for d in latest_out:
+        frame = hydrology.diel_frame(day_rows, d.get("parameter_name"),
+                                     d.get("value"), d.get("collected_at"))
+        if frame:
+            d["daily_cycle"] = frame
+
     result = {
         "station_id": station_id,
-        "latest": _rows_to_dicts(latest),
+        "latest": latest_out,
         "seven_day_stats": _rows_to_dicts(stats),
+        "reading_this_station": (
+            "Stage here rises overnight and falls through the afternoon — a "
+            "once-daily evapotranspiration cycle, not tide. Use "
+            "daily_cycle.same_phase_24h_ago for any day-over-day claim; "
+            "comparing against the previous agent run compares different "
+            "times of day, not different days."
+        ),
     }
     return json.dumps(result, indent=2)
 
@@ -278,10 +330,26 @@ def get_anomalies(threshold_pct: float = 50.0, lookback_days: int = 30) -> str:
     }
 
     anomalies = []
+    floor_pinned = []
     for row in recent:
         key = (row["station_id"], row["parameter_code"])
         mean = baseline_map.get(key)
         if mean is None or mean == 0:
+            continue
+        # A reading at the rating floor is reported, never scored. Dividing
+        # by a 30-day mean of 0.826 cfs gave "100% deviation" for a 0.0 that
+        # is the instrument's floor, and that number reached a published
+        # record as "severe drought conditions emerging".
+        if hydrology.at_floor(row["parameter_name"], row["value"]):
+            d = dict(row)
+            d["baseline_mean"] = round(mean, 3)
+            d["value_note"] = hydrology.floor_note(row["parameter_name"],
+                                                   row["value"])
+            d["deviation_note"] = (
+                "No deviation percentage is given: this reading is at the "
+                "rating floor, so a percentage against the baseline would "
+                "describe the gauge rather than the river.")
+            floor_pinned.append(d)
             continue
         deviation_pct = abs(row["value"] - mean) / abs(mean) * 100
         if deviation_pct >= threshold_pct:
@@ -290,11 +358,17 @@ def get_anomalies(threshold_pct: float = 50.0, lookback_days: int = 30) -> str:
             d["deviation_pct"] = round(deviation_pct, 1)
             anomalies.append(d)
 
-    if not anomalies:
-        return f"No anomalies detected (>{threshold_pct}% deviation) in the last 24 hours."
-
     anomalies.sort(key=lambda x: x["deviation_pct"], reverse=True)
-    return json.dumps(anomalies, indent=2)
+    result = {"anomalies": anomalies}
+    if floor_pinned:
+        result["at_rating_floor"] = floor_pinned
+    if not anomalies:
+        result["note"] = (
+            f"No scored anomalies (>{threshold_pct}% deviation) in the last "
+            f"24 hours."
+            + (" Readings at the rating floor are listed separately and are "
+               "deliberately unscored." if floor_pinned else ""))
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
