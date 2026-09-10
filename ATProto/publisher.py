@@ -758,8 +758,28 @@ def _haversine_mi(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return r_mi * 2 * math.asin(math.sqrt(a))
 
 
+def _frp_percentile(conn: sqlite3.Connection, frp) -> int | None:
+    """Where an FRP reading sits in this collector's own history, 0-100.
+
+    Its own history, never the region's: this node has been collecting for
+    months, not decades, so the percentile says "unusual for us" and cannot
+    say "unusual for Napa". The lexicon carries that caveat too.
+    """
+    if frp is None:
+        return None
+    dist = conn.execute(
+        "SELECT COUNT(*) AS n,"
+        " SUM(CASE WHEN frp <= ? THEN 1 ELSE 0 END) AS at_or_below"
+        " FROM hotspots WHERE frp IS NOT NULL",
+        (frp,),
+    ).fetchone()
+    if dist and dist["n"]:
+        return round(100.0 * (dist["at_or_below"] or 0) / dist["n"])
+    return None
+
+
 def _fetch_fire_numerics(observed_at: str) -> dict:
-    """Return the nearest currently-relevant hotspot's distance/confidence/FRP.
+    """Return the nearest currently-relevant hotspot, and the most energetic.
 
     "Nearest" means nearest in distance among hotspots still inside the
     currency window — the same set the agent saw via get_nearest_hotspots, so
@@ -767,6 +787,25 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
     lexicon defines nearestHotspotDistanceMi as "the nearest hotspot used in
     this observation", and that is only true if both sides apply the same
     window.
+
+    The peak is published alongside it because nearest is not a proxy for
+    most significant, and within a cluster it is close to arbitrary which
+    detection happens to be nearest. On 2026-09-09 22:00 the Steele Fire
+    record carried nearestHotspotFrpMw 7.47 at the 79th percentile with
+    confidence "n", while its own summary described the same 14.0-14.4 mile
+    cluster as holding four high-confidence detections at 24.1-33.5 MW and
+    the 96th-98th percentiles. Both were true of different hotspots 0.4 miles
+    apart, and a consumer reading only the structured fields got the calm
+    version of an active wildfire.
+
+    This publishes a measurement, not a judgement. What the peak means is the
+    reader's to decide — the record's job is to not make them infer a number
+    the collector already has.
+
+    The peak is drawn from exactly the population the nearest comes from —
+    same currency window, same NOT NULL filter — because two numbers taken
+    from different sets cannot be compared, which was the original defect in
+    another form.
 
     Returns no distance/confidence/frp at all when nothing is current, so
     build_fire_record omits those fields rather than publishing a stale
@@ -799,24 +838,41 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
             """,
             (observed_at, _FIRE_THRESHOLDS.HOTSPOT_COUNT_WINDOW_HOURS),
         ).fetchone()
+        # The most energetic hotspot in the same window. Ordered by FRP rather
+        # than distance; ties break on the nearer one so the field is stable
+        # across runs instead of picking arbitrarily among equals.
+        peak = conn.execute(
+            """
+            SELECT distance_mi, confidence, frp
+            FROM hotspots
+            WHERE collected_at >= ? AND distance_mi IS NOT NULL
+              AND frp IS NOT NULL
+            ORDER BY frp DESC, distance_mi ASC
+            LIMIT 1
+            """,
+            (cutoff,),
+        ).fetchone()
+
         # Where this reading sits in the collector's own FRP history, so a
         # consumer has a baseline instead of a bare MW figure. Synthesis
         # called a 66 MW detection "well beyond anything previously reported"
         # when two comparable ones were already in this table.
-        frp_pct = None
-        if row and row["frp"] is not None:
-            dist = conn.execute(
-                "SELECT COUNT(*) AS n,"
-                " SUM(CASE WHEN frp <= ? THEN 1 ELSE 0 END) AS at_or_below"
-                " FROM hotspots WHERE frp IS NOT NULL",
-                (row["frp"],),
-            ).fetchone()
-            if dist and dist["n"]:
-                frp_pct = round(100.0 * (dist["at_or_below"] or 0) / dist["n"])
+        frp_pct = _frp_percentile(conn, row["frp"]) if row else None
+        peak_pct = _frp_percentile(conn, peak["frp"]) if peak else None
         conn.close()
         result = dict(row) if row else {}
         if frp_pct is not None:
             result["frpPercentile"] = frp_pct
+        if peak is not None:
+            # Emitted even when the peak IS the nearest hotspot. Omitting it
+            # then would make absence mean "same as nearest", which is a fact
+            # the reader would have to infer — the thing this record keeps
+            # getting wrong.
+            result["maxFrp"] = peak["frp"]
+            result["maxFrpDistanceMi"] = peak["distance_mi"]
+            result["maxFrpConfidence"] = peak["confidence"]
+            if peak_pct is not None:
+                result["maxFrpPercentile"] = peak_pct
         if count_row:
             result["hotspotCount"] = count_row["n"]
         return result
@@ -946,6 +1002,13 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
         fire_block["nearestHotspotFrpMw"] = _atproto_safe(numerics["frp"])
     if "frpPercentile" in numerics:
         fire_block["nearestHotspotFrpPercentile"] = numerics["frpPercentile"]
+    if numerics.get("maxFrp") is not None:
+        fire_block["maxHotspotFrpMw"] = _atproto_safe(numerics["maxFrp"])
+        fire_block["maxHotspotDistanceMi"] = _atproto_safe(numerics["maxFrpDistanceMi"])
+        if numerics.get("maxFrpConfidence"):
+            fire_block["maxHotspotConfidence"] = numerics["maxFrpConfidence"]
+        if "maxFrpPercentile" in numerics:
+            fire_block["maxHotspotFrpPercentile"] = numerics["maxFrpPercentile"]
     if "hotspotCount" in numerics:
         fire_block["hotspotCount"] = numerics["hotspotCount"]
     fire_block.update(_fetch_incident_context(

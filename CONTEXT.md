@@ -1533,6 +1533,83 @@ Both were found the same way as everything else here — a human read a
 published record. The shadow rules could not have caught either, because both
 fields were internally consistent with the data they were built from.
 
+### Nearest is not strongest (2026-09-10)
+
+The Steele Fire record at 2026-09-09 22:00 published `nearestHotspotFrpMw`
+7.47 at the 79th percentile with confidence `n`, while its own summary
+described the same 14.0-14.4 mile cluster as holding four high-confidence
+detections at 24.1-33.5 MW and the 96th-98th percentiles. Both were true.
+They were different hotspots four tenths of a mile apart.
+
+Every structured fire number was keyed to the single nearest-by-distance
+detection, and within a cluster which one is nearest is close to arbitrary.
+So the machine-readable half of the record understated an active wildfire by
+4.5x in FRP and 19 percentile points relative to the prose half, and a
+consumer reading only the fields — the Viewer, a third party, any future code
+path — got the calm version. `maxHotspotFrpMw` and its distance, confidence
+and percentile are now published from exactly the population `nearest` is
+drawn from.
+
+The scope constraint is the point, not a detail: two numbers taken from
+different sets cannot be compared, which is the AQI clock bug in another
+form. The peak is emitted even when it *is* the nearest hotspot, because
+omitting it then would make absence mean "same as nearest" — a fact the
+reader would have to infer, which is the failure this whole file is about.
+
+Worth recording the objection that shaped it. The first proposal was larger,
+and the push-back was "isn't synthesis's job to take the domain observations
+and reason?" That is right, and it draws the line: a record publishes what
+was measured and leaves what it means to the consumer. `maxHotspotFrpMw` is a
+number already sitting in the collector's table. A field like
+`fireIntensity: "high"` would be a conclusion, and would move Synthesis's job
+into the publisher. The test for a new field is whether a human with the
+database could disagree with it — a measurement, no; a judgement, yes.
+
+There is a second reason to prefer the measured number here, specific to this
+system. This file already records the agent choosing, among two available
+readings, the one supporting its standing conclusion. Prose saying 33.5 MW
+while the numerics say 7.47 is exactly that fork. Publishing the peak removes
+the fork rather than adding an opinion.
+
+The same review turned up the architectural reason this matters, which is
+worth stating plainly because it is easy to get backwards. Synthesis does not
+receive the underlying data — that is tens of thousands of SQLite rows on the
+Pi, reachable only through the domain agent's MCP tools. It receives a digest
+of a dozen fields. The important property of that digest is authorship:
+`build_fire_record` takes `summary` and `flagged` from the model's output,
+then calls `_fetch_fire_numerics` and queries the database itself. One record,
+two authors — the model wrote the prose, code wrote the numbers, and the model
+cannot touch the numbers.
+
+By the mirror test that runs through this file, that makes the numeric block
+the only real check Synthesis has. Every other input it reads — domain
+summaries, its own memory, its own prior records — was written by a model, so
+agreement among them establishes only that models agree.
+
+The Steele record shows both sides. Haiku's fire summary is clean: Steele,
+the ENE cluster, the SSW cluster, no mention of Mason. It was closest to the
+data and it was right. Sonnet read `nearestIncidentName: Mason Fire` out of
+the numeric block and wrote "multiple active fire signatures in the region".
+The failure was not that Synthesis had the numbers; it was that it treated a
+field as a finding rather than as something to reconcile against the domain
+agent's account. The domain agent had the context to ignore a field that made
+no sense, and Synthesis could not.
+
+Hence the two-authors rule now in the prompt: when a field and a summary
+conflict, state both and say they disagree, rather than picking the one that
+supports the standing conclusion. That last habit is documented here already —
+34.2% humidity restated as "below fire-weather thresholds" against its own 25%
+threshold, and 190-280° winds called "offshore/Diablo" against a prompt
+defining Diablo as NE/E. Both errors moved the same direction. The rule makes
+the disagreement itself a reportable output, so the model is not forced to
+resolve something it cannot resolve.
+
+Still open from the same record: `flagged: true` with `flagReason: ""` on an
+observation whose summary opens "ACTIVE WILDFIRE". Anyone filtering the
+firehose on flagReason gets an empty string for the most consequential fire
+record the system has produced. That remains parked pending shadow-verdict
+divergence data, but this is the strongest case yet for unparking it.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
