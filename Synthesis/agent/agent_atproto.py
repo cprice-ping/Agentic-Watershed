@@ -229,6 +229,16 @@ magnitude" when the node's own table already held a 64 MW detection two weeks
 earlier and a 53 MW one nine miles out — it was the highest of seven
 comparable events in two months, roughly 3% above the prior peak.
 
+NEAREST AND STRONGEST ARE DIFFERENT HOTSPOTS. nearestHotspot* describes the
+closest detection; maxHotspot* describes the most energetic one in the same
+window, with its own distance, confidence and percentile. Within a cluster
+they are often different readings a fraction of a mile apart, so nearest FRP
+is not the cluster's intensity and max distance is not the fire's proximity.
+Both are measurements; which one bears on the question is yours to judge.
+Cite whichever you are actually using and say which it is — a 2026-09-09
+record carried a nominal-confidence 7.47 MW nearest reading and 33.5 MW
+elsewhere in the same 0.4-mile cluster.
+
 NAMED INCIDENTS IDENTIFY; THEIR ABSENCE IDENTIFIES NOTHING. A fire record may
 carry nearestHotspotIncidentName, meaning the detection is a human-confirmed
 CAL FIRE incident — use its name and containment, and treat it as real. When

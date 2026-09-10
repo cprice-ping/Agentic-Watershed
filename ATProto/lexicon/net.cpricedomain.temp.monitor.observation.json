@@ -251,6 +251,22 @@
           "type": "string",
           "description": "Fire Radiative Power (MW) for the nearest hotspot. Stringified — DAG-CBOR has no float type."
         },
+        "maxHotspotFrpMw": {
+          "type": "string",
+          "description": "Highest Fire Radiative Power in MW among hotspots in the same currency window the nearestHotspot fields are drawn from. Published because nearest is not a proxy for most significant: within a cluster it is close to arbitrary which detection is nearest, and on 2026-09-09 a record carried nearestHotspotFrpMw 7.47 at the 79th percentile while its own summary described the same 0.4-mile cluster as holding detections at 24.1-33.5 MW and the 96th-98th percentiles. Stringified - DAG-CBOR has no float type."
+        },
+        "maxHotspotDistanceMi": {
+          "type": "string",
+          "description": "Distance in miles to the hotspot reported in maxHotspotFrpMw. May be the same hotspot as nearestHotspotDistanceMi; the fields are always both present so a reader never has to infer that from an omission. Stringified - DAG-CBOR has no float type."
+        },
+        "maxHotspotConfidence": {
+          "type": "string",
+          "description": "Confidence of the hotspot reported in maxHotspotFrpMw, in FIRMS's own encoding (l/n/h or 0-100). The most energetic detection is not necessarily the nearest one, so this can differ from nearestHotspotConfidence."
+        },
+        "maxHotspotFrpPercentile": {
+          "type": "integer",
+          "description": "Where maxHotspotFrpMw sits in the publishing collector's own FRP history, 0-100. Same baseline and same caveat as nearestHotspotFrpPercentile: relative to this collector's record only, never to the fire history of the region."
+        },
         "nearestHotspotFrpPercentile": {
           "type": "integer",
           "description": "Where nearestHotspotFrpMw sits in the publishing collector's own FRP history, 0-100. Present so a consumer can tell an ordinary reading from an unusual one without a raw MW figure it has no baseline for. Relative to this collector's record only, never to the fire history of the region."
