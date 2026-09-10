@@ -1792,10 +1792,22 @@ Sep 9   peak 2.13 @ 01:45   trough 2.07 @ 16:45
 Sep 10  peak 2.14 @ 05:45   trough 2.03 @ ~20:00
 ```
 
-That is evapotranspiration, not tide: tide in this reach is mixed
-semidiurnal, two peaks a day, amplitude in feet. The troughs deepening while
-the peaks hold tracks the 98.6°F heat wave the Weather agent recorded on the
-9th.
+The single daily peak and the 0.11 ft amplitude rule out tide, which in this
+reach would be mixed semidiurnal with two peaks a day and a range in feet.
+Beyond that the cause is not established. An afternoon minimum fits
+evapotranspiration; it fits a daily irrigation withdrawal equally well in an
+agricultural valley, and a stage series cannot separate them. The troughs
+deepening while the peaks hold does track the 98.6°F heat wave the Weather
+agent recorded on the 9th, which is suggestive of ET and still not proof.
+
+The first version of this fix asserted evapotranspiration in the tool output
+and the system prompt — agent-facing text, which the agent would have
+repeated as fact in published records. That is the same unearned assertion
+this file exists to catalogue, committed while fixing one. The shipped
+version states the measured cycle, states that tide is ruled out, and
+explicitly instructs the agent not to name a cause. The fix never depended on
+knowing one: what matters is that the cycle exists and the agent was sampling
+it blind.
 
 The River agent runs at 00:00 and 12:00 Pacific — near the peak and near the
 trough — and compared each run against its own previous observation. Every

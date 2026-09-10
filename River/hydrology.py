@@ -16,11 +16,19 @@ baseline of 0.826 cfs" from exactly this, and the agent reported "severe
 drought conditions emerging".
 
 THE DIEL CYCLE. Stage at this station oscillates once a day: maximum before
-dawn, minimum in the afternoon. That is evapotranspiration — riparian
-vegetation drawing the channel down through the day, the water table
-recovering overnight — and it is not tide, which in this reach would be mixed
-semidiurnal with two peaks a day and an amplitude in feet rather than the
-0.11 ft observed across 2026-09-08 to 09-10.
+dawn, minimum in the afternoon, range about 0.11 ft across 2026-09-08 to
+09-10. The cycle is measured. Its cause is not.
+
+What the data does establish is that it is not tide: tide in this reach would
+be mixed semidiurnal, two peaks a day, amplitude in feet. Beyond that, an
+afternoon minimum is consistent with evapotranspiration and equally
+consistent with a daily irrigation withdrawal — this is an agricultural
+valley — and nothing in a stage series separates them. No cause is named in
+anything the agent reads, deliberately: an explanation it cannot verify is an
+explanation it will publish as fact.
+
+The cause does not matter for the fix. What matters is that the cycle exists
+and the agent was sampling it blind.
 
 That cycle matters because the agent samples it at 00:00 and 12:00 Pacific,
 which is near the peak and near the trough. Every consecutive pair of
