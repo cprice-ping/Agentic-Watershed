@@ -138,9 +138,37 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
         CREATE INDEX IF NOT EXISTS idx_obs_publisher
             ON observations (publisher_did, received_at DESC);
+
+        -- What window this database actually covers. The agent reads its own
+        -- lookback from a flag, and on 2026-09-10 that flag said 24h while
+        -- the subscriber had fetched 15h, so the agent logged and reasoned
+        -- over a window a third larger than anything it could contain.
+        -- Recording the real figure means the agent can read it instead of
+        -- being told.
+        CREATE TABLE IF NOT EXISTS fetch_meta (
+            id             INTEGER PRIMARY KEY CHECK (id = 1),
+            fetched_at     TEXT NOT NULL,
+            lookback_hours REAL NOT NULL
+        );
     """)
     conn.commit()
     return conn
+
+
+def record_fetch_window(conn: sqlite3.Connection, lookback_hours: float) -> None:
+    """Store the window this fetch covered, replacing any prior row.
+
+    One row, enforced by the CHECK constraint: subscriber.db is rebuilt from
+    scratch on every run (entrypoint.sh restores synthesis.db and
+    synth_publisher.db from the file share, deliberately not this one), so
+    there is exactly one fetch per database and a history would be fiction.
+    """
+    conn.execute(
+        "INSERT OR REPLACE INTO fetch_meta (id, fetched_at, lookback_hours)"
+        " VALUES (1, ?, ?)",
+        (datetime.now(timezone.utc).isoformat(), float(lookback_hours)),
+    )
+    conn.commit()
 
 
 def store_observation(conn: sqlite3.Connection, at_uri: str,
@@ -358,6 +386,9 @@ def run_fetch(conn: sqlite3.Connection, lookback_hours: float) -> int:
     log.info("Publisher registry: %s", _PUBLISHERS_PATH
              if _PUBLISHERS_PATH.exists() else "NONE FOUND — using built-in default")
     log.info("Lexicon: %s  |  Lookback: %.0fh", LEXICON, lookback_hours)
+    # Written before fetching, not after, so the window is on record even if
+    # a publisher fails and this returns non-zero.
+    record_fetch_window(conn, lookback_hours)
 
     total_fetched = total_stored = 0
     failed: list[str] = []

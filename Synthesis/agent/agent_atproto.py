@@ -367,6 +367,46 @@ log = logging.getLogger("synthesis.agent_atproto")
 # Read from subscriber DB
 # ---------------------------------------------------------------------------
 
+def effective_lookback(requested_hours: float,
+                       subscriber_db: Path = _DEFAULT_SUBSCRIBER_DB) -> float:
+    """The window this agent can actually see, not the one it was asked for.
+
+    subscriber.db is rebuilt from scratch every run, so it contains exactly
+    what the last fetch pulled and nothing older. Asking it for 24 hours when
+    the fetch covered 15 does not produce 24 hours of data — it produces 15
+    hours and a log line claiming 24.
+
+    That is not hypothetical. On 2026-09-10 entrypoint.sh ran the subscriber
+    with --lookback 15 and the agent with no flag at all, so the agent took
+    its 24.0 default and printed "Lookback: 24h" one line below the
+    subscriber's "Lookback: 15h". Both numbers were in the same log and the
+    smaller one was the truth.
+
+    The subscriber now records the window it fetched, so this reads the fact
+    rather than the request and returns the smaller of the two. A database
+    with no fetch_meta row predates that change; the request is honoured
+    then, because refusing to run on an older database would be worse than
+    reporting a window that might be optimistic.
+    """
+    try:
+        conn = sqlite3.connect(subscriber_db)
+        row = conn.execute(
+            "SELECT lookback_hours FROM fetch_meta WHERE id = 1").fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return requested_hours
+    if not row or row[0] is None:
+        return requested_hours
+    fetched = float(row[0])
+    if fetched < requested_hours:
+        log.warning(
+            "Requested a %.0fh window but the subscriber fetched %.0fh — "
+            "reading %.0fh, which is all this database can contain.",
+            requested_hours, fetched, fetched)
+        return fetched
+    return requested_hours
+
+
 def read_recent_observations(lookback_hours: float = 24.0,
                              subscriber_db: Path = _DEFAULT_SUBSCRIBER_DB) -> dict[str, list[dict]]:
     """
@@ -378,6 +418,7 @@ def read_recent_observations(lookback_hours: float = 24.0,
         log.warning("Is the firehose subscriber running?")
         return {}
 
+    lookback_hours = effective_lookback(lookback_hours, subscriber_db)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
 
     try:
@@ -1446,8 +1487,11 @@ def main() -> None:
     synthesis_db  = args.synthesis_db
 
     log.info("=== Synthesis Agent (ATProto) starting ===")
+    # Log what will actually be read, not what was asked for. The previous
+    # line printed the request and was wrong by nine hours.
     log.info("Model: %s  |  Dry run: %s  |  Lookback: %.0fh",
-             args.model, args.dry_run, args.lookback)
+             args.model, args.dry_run,
+             effective_lookback(args.lookback, subscriber_db))
     log.info("Subscriber DB: %s", subscriber_db)
     log.info("Synthesis DB:  %s", synthesis_db)
 
