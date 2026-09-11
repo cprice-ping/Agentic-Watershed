@@ -274,11 +274,15 @@ def get_station_summary(station_id: str = "11458000") -> str:
         "latest": latest_out,
         "seven_day_stats": _rows_to_dicts(stats),
         "reading_this_station": (
-            "Stage here rises overnight and falls through the afternoon — a "
-            "once-daily evapotranspiration cycle, not tide. Use "
-            "daily_cycle.same_phase_24h_ago for any day-over-day claim; "
-            "comparing against the previous agent run compares different "
-            "times of day, not different days."
+            "Stage here follows a once-daily cycle: highest before dawn, "
+            "lowest in the afternoon, with a range of roughly 0.1 ft. That "
+            "pattern is measured, not inferred. Its cause is NOT established "
+            "— the single daily peak and the small amplitude rule out tide, "
+            "but nothing here distinguishes evapotranspiration from an "
+            "irrigation withdrawal schedule or anything else, so do not name "
+            "a cause. Use daily_cycle.same_phase_24h_ago for any day-over-day "
+            "claim; comparing against the previous agent run compares "
+            "different times of day, not different days."
         ),
     }
     return json.dumps(result, indent=2)
