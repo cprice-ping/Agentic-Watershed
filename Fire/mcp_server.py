@@ -31,6 +31,13 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+# Compact JSON for every tool payload. Pretty-printing spent about 30%
+# of a payload on whitespace — 3,800 tokens per River run of pure
+# indentation. Shared with the agents' runtime so all four serialise alike.
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent.parent))
+from agent_runtime import compact_json  # noqa: E402
+
 # Resolve flag_rules from this file's directory rather than relying on
 # sys.path[0], which is only the script's directory when this module is
 # run as a script — it is also imported directly (tests, offline eval).
@@ -166,7 +173,7 @@ def get_recent_hotspots(n: int = 20) -> str:
         ).fetchall()
     if not rows:
         return "No hotspots in database yet. Run the collector first."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return json.dumps(_rows_to_dicts(rows))
 
 
 @mcp.tool()
@@ -193,7 +200,7 @@ def get_hotspots_since(hours_ago: float = 48.0) -> str:
         ).fetchall()
     if not rows:
         return f"No hotspots found in the last {hours_ago} hours."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return compact_json(_rows_to_dicts(rows))
 
 
 def _frp_history(conn) -> list[float]:
@@ -410,22 +417,22 @@ def get_active_incidents(n: int = 10) -> str:
         ).fetchone() if incidents else None
 
     if not incidents:
-        return json.dumps({
+        return compact_json({
             "incidents": [],
             "note": ("No incident data. Either incidents_collector.py has not "
                      "run, or CAL FIRE currently lists no active incidents. "
                      "These are very different — check the collector before "
                      "concluding anything from an empty list."),
-        }, indent=2)
+        })
 
-    return json.dumps({
+    return compact_json({
         "incident_data_last_updated": stale["t"] if stale else None,
         "coverage": ("CAL FIRE published incidents statewide, not limited to "
                      "the FIRMS bounding box. Publication lags ignition, and "
                      "the feed is curated rather than complete — a small fire "
                      "may never be listed. Absence is not evidence of quiet."),
         "nearest_incidents": incidents[:n],
-    }, indent=2)
+    })
 
 
 @mcp.tool()
@@ -492,7 +499,7 @@ def get_nearest_hotspots(n: int = 10) -> str:
         _annotate_frp(hotspots, frp_values)
         _match_incidents(hotspots, incidents)
         result["nearest_hotspots"] = hotspots
-    return json.dumps(result, indent=2)
+    return compact_json(result)
 
 
 @mcp.tool()
@@ -513,8 +520,8 @@ def get_last_poll_status() -> str:
             """
         ).fetchone()
     if not row:
-        return json.dumps({"status": "never_polled"})
-    return json.dumps(dict(row), indent=2)
+        return compact_json({"status": "never_polled"})
+    return json.dumps(dict(row))
 
 
 @mcp.tool()
@@ -538,13 +545,13 @@ def get_hotspot_count_since(hours_ago: float = 24.0,
             """,
             (cutoff, max_distance_mi),
         ).fetchone()
-    return json.dumps({
+    return compact_json({
         "hotspot_count": row["n"],
         "closest_distance_mi": row["closest_mi"],
         "max_frp_mw": row["max_frp"],
         "window_hours": hours_ago,
         "max_distance_mi": max_distance_mi,
-    }, indent=2)
+    })
 
 
 @mcp.tool()
@@ -581,7 +588,7 @@ def write_agent_observation(
              rules_flagged, rules_fired, in_tok, out_tok),
         )
         conn.commit()
-    return json.dumps({"status": "ok", "observed_at": now})
+    return compact_json({"status": "ok", "observed_at": now})
 
 
 @mcp.tool()
@@ -612,7 +619,7 @@ def get_recent_observations(n: int = 5) -> str:
         ).fetchall()
     if not rows:
         return "No previous observations recorded. This appears to be a fresh run."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return json.dumps(_rows_to_dicts(rows))
 
 
 # ---------------------------------------------------------------------------

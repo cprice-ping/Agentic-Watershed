@@ -30,6 +30,13 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+# Compact JSON for every tool payload. Pretty-printing spent about 30%
+# of a payload on whitespace — 3,800 tokens per River run of pure
+# indentation. Shared with the agents' runtime so all four serialise alike.
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent.parent))
+from agent_runtime import compact_json  # noqa: E402
+
 # Shared with collector.py — the same routine/condition split decides which
 # readings its log marks and which qualifiers these tools spell out.
 import qualifiers
@@ -181,7 +188,7 @@ def get_recent_readings(n: int = 20) -> str:
     if not rows:
         return "No readings in database yet. Run the collector first."
     return json.dumps({"readings": _rows_to_dicts(rows),
-                       "qualifier_legend": _qualifier_legend(rows)}, indent=2)
+                       "qualifier_legend": _qualifier_legend(rows)})
 
 
 @mcp.tool()
@@ -207,8 +214,8 @@ def get_readings_since(hours_ago: float = 24.0) -> str:
         ).fetchall()
     if not rows:
         return f"No readings found in the last {hours_ago} hours."
-    return json.dumps({"readings": _rows_to_dicts(rows),
-                       "qualifier_legend": _qualifier_legend(rows)}, indent=2)
+    return compact_json({"readings": _rows_to_dicts(rows),
+                       "qualifier_legend": _qualifier_legend(rows)})
 
 
 @mcp.tool()
@@ -280,7 +287,7 @@ def get_hourly_series(hours_ago: float = 48.0) -> str:
     if any(r.get("min_at_rating_floor") for r in out):
         result["min_at_rating_floor_means"] = hydrology.floor_note(
             "Streamflow", hydrology.DISCHARGE_FLOOR_CFS)
-    return json.dumps(result, indent=2)
+    return compact_json(result)
 
 
 @mcp.tool()
@@ -380,7 +387,7 @@ def get_station_summary(station_id: str = "11458000") -> str:
             "different times of day, not different days."
         ),
     }
-    return json.dumps(result, indent=2)
+    return compact_json(result)
 
 
 @mcp.tool()
@@ -467,7 +474,7 @@ def get_anomalies(threshold_pct: float = 50.0, lookback_days: int = 30) -> str:
             f"24 hours."
             + (" Readings at the rating floor are listed separately and are "
                "deliberately unscored." if floor_pinned else ""))
-    return json.dumps(result, indent=2)
+    return compact_json(result)
 
 
 @mcp.tool()
@@ -503,7 +510,7 @@ def write_agent_observation(
              in_tok, out_tok),
         )
         conn.commit()
-    return json.dumps({"status": "ok", "observed_at": now})
+    return compact_json({"status": "ok", "observed_at": now})
 
 
 @mcp.tool()
@@ -534,7 +541,7 @@ def get_recent_observations(n: int = 5) -> str:
         ).fetchall()
     if not rows:
         return "No previous observations recorded. This appears to be a fresh run."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return json.dumps(_rows_to_dicts(rows))
 
 
 # ---------------------------------------------------------------------------

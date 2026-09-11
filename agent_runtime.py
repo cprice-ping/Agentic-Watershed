@@ -40,6 +40,21 @@ MCP_TIMEOUT_SECONDS = 30
 MCP_ATTEMPTS = 2
 
 
+def compact_json(obj) -> str:
+    """JSON for a model to read, without the whitespace a human would want.
+
+    `json.dumps(indent=2)` spends roughly 30% of a tool payload on spaces and
+    newlines — measured on River's hourly series, 51,118 characters against
+    35,801 compact. A model reads either form equally well, so the pretty
+    version was 3,800 tokens per River run of pure indentation.
+
+    Kept out of the offline tools deliberately: extract_training_data.py and
+    the reports are read by people, where the indentation earns its cost.
+    Use `python -m json.tool` when inspecting a tool by hand.
+    """
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
+
 class MCPUnavailable(RuntimeError):
     """A tool could not be reached after every attempt.
 

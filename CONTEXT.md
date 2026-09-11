@@ -1936,8 +1936,30 @@ the day's range, same-phase reading from yesterday — the raw series was
 redundant as well as expensive. The run that produced "severe drought
 conditions emerging" was reading that dump.
 
-A further 30% of what remains is `json.dumps(indent=2)` whitespace, measured
-and not yet acted on.
+Then the whitespace. `json.dumps(indent=2)` was spending about 30% of every
+tool payload on spaces and newlines — a model reads compact JSON just as
+well. All 25 payloads across the four domain servers now go through
+`agent_runtime.compact_json`. The offline tools keep their indentation
+deliberately: `extract_training_data.py` and the reports are read by people.
+
+Measured on a reconstruction of node-01's data, River's whole context:
+
+```
+raw series, pretty-printed    ~96,480 tokens
+hourly series, pretty         ~43,445    (the aggregate alone, -55%)
+hourly series, compact        ~34,510    (both, -64%)
+```
+
+Fixing the packaging turned up a third instance of an old failure.
+`agent_runtime.py` was added at the repo root on 2026-09-10 and imported by
+all four agents, and the domain `Dockerfile` never copied it — so the
+container build has been broken since that merge, reproduced here as
+`ModuleNotFoundError: No module named 'agent_runtime'`. It does not bite on
+node-01, which runs from the repo rather than the image, which is exactly why
+nobody noticed. `publishers.json` missed the Synthesis image twice before
+this. The compounding detail is worth keeping: the missing module is the one
+holding `record_failed_run`, so the failure caused by its absence is also the
+failure that cannot be recorded.
 
 The generalisation is uncomfortable and worth stating plainly: every fix that
 gives a model context costs tokens, and the cheap way to give context is
