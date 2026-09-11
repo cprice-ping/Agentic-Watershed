@@ -154,6 +154,22 @@ def _pct(n: int, total: int) -> str:
     return f"{100.0 * n / total:.0f}%" if total else "n/a"
 
 
+def _span_days(first: str, last: str) -> str:
+    """How long the scored sample actually covers, stated plainly.
+
+    A percentage of a 30-day window says nothing useful about an instrument
+    deployed a week ago; the number of days it has actually been recording
+    does.
+    """
+    try:
+        a = datetime.fromisoformat(first.replace("Z", "+00:00"))
+        b = datetime.fromisoformat(last.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return "an unknown span"
+    d = (b - a).days
+    return "less than a day" if d < 1 else f"{d} day(s)"
+
+
 def report(a: dict, show: bool) -> None:
     scored = (a["both_flag"] + a["neither"]
               + len(a["rules_only"]) + len(a["model_only"]))
@@ -162,17 +178,29 @@ def report(a: dict, show: bool) -> None:
         print(f"  No scored runs. ({a['no_verdict']} without a verdict, "
               f"{a['failed']} failed)")
         return
-    print(f"  {a['runs']} run(s) {a['run_first'][:16]} to {a['run_last'][:16]}")
-    print(f"  {scored} scored ({_pct(scored, a['runs'])} of runs), "
-          f"{a['first'][:16]} to {a['last'][:16]}")
+    print(f"  {a['runs']} run(s) in window, {a['run_first'][:16]} to "
+          f"{a['run_last'][:16]}")
     if a["no_verdict"]:
         gaps = a["no_verdict_at"]
-        print(f"  {a['no_verdict']} run(s) carried NO VERDICT "
-              f"({_pct(a['no_verdict'], a['runs'])}) — not counted either way.")
-        print(f"    unscored runs span {gaps[0][:16]} to {gaps[-1][:16]}; "
-              f"_rule_verdict returns None both for rows predating the "
-              f"\n    columns and for a rule that raised, so this cannot say "
-              f"which.")
+        # Distinguish "older than the feature" from "the rules failed". Every
+        # unscored row predating every scored one is a deployment boundary,
+        # not a fault — and reading it as a fault is exactly the mistake this
+        # report exists to prevent, made against the report's own output on
+        # 2026-09-11.
+        cutover = gaps[-1] < a["first"]
+        if cutover:
+            print(f"  Shadow recording began {a['first'][:16]}. The "
+                  f"{a['no_verdict']} earlier run(s) predate it —")
+            print(f"    not failures, and correctly excluded. Effective "
+                  f"sample is {scored} run(s)")
+            print(f"    over {_span_days(a['first'], a['last'])}.")
+        else:
+            print(f"  {a['no_verdict']} run(s) carried NO VERDICT "
+                  f"({_pct(a['no_verdict'], a['runs'])}) and are INTERLEAVED "
+                  f"with scored ones,")
+            print(f"    so the rules are failing at run time rather than "
+                  f"predating the column.")
+            print(f"    Unscored span {gaps[0][:16]} to {gaps[-1][:16]}.")
     if a["failed"]:
         print(f"  {a['failed']} failed run(s) excluded")
 
