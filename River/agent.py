@@ -159,10 +159,14 @@ def gather_context() -> str:
     anomalies = call_mcp_tool("get_anomalies", {"threshold_pct": 40.0})
     sections.append(f"=== ANOMALY SCAN (>40% deviation from 30-day mean) ===\n{anomalies}")
 
-    # Recent trend
-    log.info("  → get_readings_since (48h)")
-    recent = call_mcp_tool("get_readings_since", {"hours_ago": 48.0})
-    sections.append(f"=== READINGS: LAST 48 HOURS ===\n{recent}")
+    # Recent trend, hourly rather than every reading. The raw 48-hour series
+    # was 768 rows and about 60,000 tokens — most of this prompt — to convey
+    # a shape that 96 hourly rows convey. It was also redundant once
+    # get_station_summary began returning the daily cycle: min, max, position
+    # in the day's range, and the same-phase reading from yesterday.
+    log.info("  → get_hourly_series (48h)")
+    recent = call_mcp_tool("get_hourly_series", {"hours_ago": 48.0})
+    sections.append(f"=== HOURLY MIN/MAX: LAST 48 HOURS ===\n{recent}")
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     context = f"Agent run at: {now}\n\n" + "\n\n".join(sections)

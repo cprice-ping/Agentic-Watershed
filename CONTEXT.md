@@ -1897,6 +1897,76 @@ shadow and count. This is the first finding in this project that came from
 the system's own instrumentation rather than from a human reading a record —
 and it says the instrument was measuring the wrong thing.
 
+### 60,000 tokens to say the river is low (2026-09-11)
+
+River's agent ran at 116,437 and 81,881 input tokens. Weather ran at 16,658.
+Synthesis, reasoning across four domains, ran at 15,090. The cheapest
+reasoning in the system was costing five to seven times the most complex.
+
+`get_readings_since(48h)` was the reason: 48 hours at 15-minute polling, two
+stations, two parameters, serialised as 768 JSON rows — measured at 65,925
+tokens. The agent's job with that was to conclude the river is low.
+
+Two per-row repetitions accounted for much of it, and the second one is
+instructive because it was mine and it was four days old. `qualifier_meaning`
+was added on 2026-09-07 so the agent would stop guessing what `P` meant; it
+then restated "P (provisional, subject to revision)" on every row, in a table
+where 28,788 of 28,788 readings are P. Roughly 15% of the prompt was one
+sentence. It is now a legend emitted once, with the gloss kept inline only
+for NOTABLE codes — Ice on one row in a hundred is exactly what the
+annotation is for, and a reader should not have to cross-reference to see it.
+
+Then, having fixed that, the first version of the replacement tool attached a
+140-character floor note to every hourly row whose minimum was 0.0 — which is
+most of them. The same bug, reintroduced within the same hour by the same
+reasoning. It is now a boolean flag plus one explanation at the container
+level.
+
+`get_hourly_series` replaces the raw dump in `gather_context`: one row per
+hour per parameter with min, max, reading count and the distinct qualifiers
+seen. Hourly min and max rather than a mean because the minimum is the part
+that matters here — the daily low is what crosses the rating floor, and a
+mean would hide it. Measured at 80% smaller than the raw series, taking
+River's whole context down about 55%.
+
+The detail was not buying anything. Consecutive 15-minute readings at this
+station differ by a hundredth of a foot or not at all, and since
+`get_station_summary` began returning the daily cycle — min, max, position in
+the day's range, same-phase reading from yesterday — the raw series was
+redundant as well as expensive. The run that produced "severe drought
+conditions emerging" was reading that dump.
+
+Then the whitespace. `json.dumps(indent=2)` was spending about 30% of every
+tool payload on spaces and newlines — a model reads compact JSON just as
+well. All 25 payloads across the four domain servers now go through
+`agent_runtime.compact_json`. The offline tools keep their indentation
+deliberately: `extract_training_data.py` and the reports are read by people.
+
+Measured on a reconstruction of node-01's data, River's whole context:
+
+```
+raw series, pretty-printed    ~96,480 tokens
+hourly series, pretty         ~43,445    (the aggregate alone, -55%)
+hourly series, compact        ~34,510    (both, -64%)
+```
+
+Fixing the packaging turned up a third instance of an old failure.
+`agent_runtime.py` was added at the repo root on 2026-09-10 and imported by
+all four agents, and the domain `Dockerfile` never copied it — so the
+container build has been broken since that merge, reproduced here as
+`ModuleNotFoundError: No module named 'agent_runtime'`. It does not bite on
+node-01, which runs from the repo rather than the image, which is exactly why
+nobody noticed. `publishers.json` missed the Synthesis image twice before
+this. The compounding detail is worth keeping: the missing module is the one
+holding `record_failed_run`, so the failure caused by its absence is also the
+failure that cannot be recorded.
+
+The generalisation is uncomfortable and worth stating plainly: every fix that
+gives a model context costs tokens, and the cheap way to give context is
+per-row while the right way is usually once. Both instances here were
+introduced while correcting a genuine defect, by someone who had just
+finished explaining why the defect mattered.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

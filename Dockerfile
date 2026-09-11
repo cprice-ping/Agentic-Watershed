@@ -14,6 +14,14 @@ WORKDIR /app
 COPY River/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# The shared agent runtime lives at the repo root and every domain agent
+# imports it by adding /app to sys.path. Missing it breaks all four at import
+# time — before logging is configured, and before record_failed_run is
+# importable, so the failure it causes is also the failure that cannot be
+# recorded. Third time a new root-level file has been left out of an image:
+# publishers.json missed the Synthesis build twice already.
+COPY agent_runtime.py ./
+
 COPY River ./River
 COPY Weather ./Weather
 COPY AQI ./AQI

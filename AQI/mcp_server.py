@@ -23,6 +23,13 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+# Compact JSON for every tool payload. Pretty-printing spent about 30%
+# of a payload on whitespace — 3,800 tokens per River run of pure
+# indentation. Shared with the agents' runtime so all four serialise alike.
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent.parent))
+from agent_runtime import compact_json  # noqa: E402
+
 # Resolve flag_rules from this file's directory rather than relying on
 # sys.path[0], which is only the script's directory when this module is
 # run as a script — it is also imported directly (tests, offline eval).
@@ -160,7 +167,7 @@ def get_current_aqi() -> str:
 
     if not rows:
         return "No AQI observations in database yet. Run the collector first."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return json.dumps(_rows_to_dicts(rows))
 
 
 @mcp.tool()
@@ -187,7 +194,7 @@ def get_aqi_since(hours_ago: float = 24.0) -> str:
 
     if not rows:
         return f"No observations found in the last {hours_ago} hours."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return compact_json(_rows_to_dicts(rows))
 
 
 @mcp.tool()
@@ -221,7 +228,7 @@ def get_aqi_trend(days: int = 7) -> str:
 
     if not rows:
         return f"No observations found in the last {days} days."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return compact_json(_rows_to_dicts(rows))
 
 
 @mcp.tool()
@@ -332,7 +339,7 @@ def get_smoke_indicators() -> str:
             "Ozone only = summer photochemical smog, not fire."
         ),
     }
-    return json.dumps(result, indent=2)
+    return compact_json(result)
 
 
 @mcp.tool()
@@ -363,7 +370,7 @@ def get_recent_agent_observations(n: int = 5) -> str:
 
     if not rows:
         return "No previous observations recorded. This is a fresh run."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return compact_json(_rows_to_dicts(rows))
 
 
 @mcp.tool()
