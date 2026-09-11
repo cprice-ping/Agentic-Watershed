@@ -50,6 +50,55 @@ HIGH_CONFIDENCE_NUMERIC = 80
 # and no distribution to read it against, so the superlative was a guess.
 FRP_NOTABLE_PERCENTILE = 95.0
 
+# The same percentile gates the frp_rising rule, and a minimum proportional
+# increase gates it again.
+#
+# Without them the rule fired on any increase at all, which meant it fired
+# essentially always: on 12 of the 13 scored runs in the first week of shadow
+# recording. The two observed examples were
+#
+#     0.09 -> 0.10 MW at 43.3 mi     (+11%,  a hundredth of a megawatt)
+#     9.19 -> 9.25 MW at 31.1 mi     (+0.7%, six hundredths)
+#
+# — neither of which is a fire intensifying. Consecutive VIIRS retrievals of
+# the same pixel differ for reasons that have nothing to do with the fire:
+# view angle, atmospheric correction, and which of the three satellites made
+# the pass. A rule that fires on that cannot ever be silent, and a rule that
+# cannot be silent carries no information, exactly like the ⚠️ the River
+# collector printed against every provisional reading.
+#
+# 1.25 is a judgement, not a measurement. It is set to clear both observed
+# false positives with room to spare while staying well below a doubling.
+# The shadow verdicts exist to tune it: if the rule now never fires at all,
+# it is too strict and this is the number to move.
+FRP_RISE_MIN_FACTOR = 1.25
+
+# Fewest FRP readings that can carry a percentile. Below this the notable
+# threshold is undefined rather than approximated.
+MIN_FRP_HISTORY = 20
+
+
+def notable_frp_at(sorted_values: list[float]) -> float | None:
+    """The FRP value at FRP_NOTABLE_PERCENTILE of a sorted reading history.
+
+    Here rather than in either caller because mcp_server.py (which tells the
+    agent what counts as notable) and flag_rules.py (which gates frp_rising
+    on it) must agree exactly. Two copies of the same index arithmetic is how
+    the flag thresholds drifted before this module existed, and a divergence
+    here would have the tool and the rule calling different readings unusual
+    while reading the same column.
+
+    None below MIN_FRP_HISTORY readings: a percentile over a handful of
+    values is not a distribution, and callers should drop the gate rather
+    than act on a number that shape cannot support.
+    """
+    if len(sorted_values) < MIN_FRP_HISTORY:
+        return None
+    idx = min(len(sorted_values) - 1,
+              int(len(sorted_values) * FRP_NOTABLE_PERCENTILE / 100))
+    return float(sorted_values[idx])
+
+
 # Matching a hotspot to a named CAL FIRE incident.
 #
 # An incident is published as a single point; a fire is an area. The Plaskett
@@ -102,10 +151,13 @@ def flag_criteria_text() -> str:
     """The distance-based flag criteria as prompt bullets, generated from the
     constants so the prompt cannot drift from what is enforced.
 
-    Only the numeric criteria are generated. The remaining rules in the
-    prompt — FRP rising, a new cluster since last run, collector error — are
-    prose conditions with no threshold to share, and the persistence
-    exception is deliberately not encoded at all (see flag_rules.py).
+    Only the distance criteria are generated here. FRP rising has thresholds
+    too — FRP_RISE_MIN_FACTOR and FRP_NOTABLE_PERCENTILE, added 2026-09-11 —
+    but its bullet lives in agent.py's template because it is prose with two
+    numbers substituted rather than a generated list; both come from this
+    module either way. A new cluster since last run and collector error are
+    genuinely thresholdless, and the persistence exception is deliberately
+    not encoded at all (see flag_rules.py).
     """
     return "\n".join([
         f"- Any hotspot detected within {_n(NEAR_DISTANCE_MI)} miles of Napa "
