@@ -108,19 +108,30 @@ def analyse(domain: str, rows: list[sqlite3.Row]) -> dict:
     """Split runs into agreement, each direction of disagreement, and unscored."""
     out = {"domain": domain, "both_flag": 0, "neither": 0,
            "rules_only": [], "model_only": [], "no_verdict": 0,
-           "failed": 0, "fired": Counter(), "first": None, "last": None}
+           "no_verdict_at": [], "runs": 0,
+           "failed": 0, "fired": Counter(), "first": None, "last": None,
+           "run_first": None, "run_last": None}
     for r in rows:
         if _is_failed(r):
             out["failed"] += 1
             continue
-        out["first"] = out["first"] or r["observed_at"]
-        out["last"] = r["observed_at"]
+        out["runs"] += 1
+        out["run_first"] = out["run_first"] or r["observed_at"]
+        out["run_last"] = r["observed_at"]
         rules = r["rules_flagged"]
         if rules is None:
             # Either the row predates the shadow columns or the rule
-            # evaluation raised. Counted, never guessed at.
+            # evaluation raised — _rule_verdict swallows every exception and
+            # returns None, so the two are indistinguishable from here.
             out["no_verdict"] += 1
+            out["no_verdict_at"].append(r["observed_at"])
             continue
+        # Dated from scored rows only. This used to take the span of every
+        # row and print it against the scored count, implying coverage it had
+        # not shown — the same unearned claim this whole report exists to
+        # detect.
+        out["first"] = out["first"] or r["observed_at"]
+        out["last"] = r["observed_at"]
         model = bool(r["flagged"])
         rules = bool(rules)
         try:
@@ -151,10 +162,17 @@ def report(a: dict, show: bool) -> None:
         print(f"  No scored runs. ({a['no_verdict']} without a verdict, "
               f"{a['failed']} failed)")
         return
-    print(f"  {scored} scored run(s), {a['first'][:16]} to {a['last'][:16]}")
+    print(f"  {a['runs']} run(s) {a['run_first'][:16]} to {a['run_last'][:16]}")
+    print(f"  {scored} scored ({_pct(scored, a['runs'])} of runs), "
+          f"{a['first'][:16]} to {a['last'][:16]}")
     if a["no_verdict"]:
-        print(f"  {a['no_verdict']} run(s) carried no verdict — not counted "
-              f"either way")
+        gaps = a["no_verdict_at"]
+        print(f"  {a['no_verdict']} run(s) carried NO VERDICT "
+              f"({_pct(a['no_verdict'], a['runs'])}) — not counted either way.")
+        print(f"    unscored runs span {gaps[0][:16]} to {gaps[-1][:16]}; "
+              f"_rule_verdict returns None both for rows predating the "
+              f"\n    columns and for a rule that raised, so this cannot say "
+              f"which.")
     if a["failed"]:
         print(f"  {a['failed']} failed run(s) excluded")
 
