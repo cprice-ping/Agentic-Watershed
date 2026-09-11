@@ -6,7 +6,10 @@ that an agent harness can call via the Model Context Protocol.
 
 Tools:
   get_recent_readings(n)              Last N readings across all stations
-  get_readings_since(hours_ago)       Readings from the last N hours
+  get_readings_since(hours_ago)       Every reading from the last N hours
+  get_hourly_series(hours_ago)        The same window as hourly min/max — what
+                                      the agent actually calls; the raw form
+                                      cost ~60k tokens to say the river is low
   get_station_summary(station_id)     Latest values for a single station
   get_anomalies(threshold_pct)        Readings deviating from recent mean
   write_agent_observation(...)        Agent writes its own reasoning back to DB
@@ -49,12 +52,14 @@ mcp = FastMCP(
         "from two USGS monitoring stations. Use these tools to understand "
         "current river conditions, identify anomalies, and record your "
         "observations. Always call get_recent_readings first to orient yourself. "
-        "Readings carry a USGS `qualifier` code, spelled out in "
-        "`qualifier_meaning` where one is present. Most readings are qualified "
-        "'P' (provisional), which is USGS's review state and says nothing about "
-        "the river — it is not a reason to doubt a value. Codes such as Ice, "
-        "Eqp or Bkw do describe the measurement, and a value carrying one may "
-        "be wrong in a way its magnitude alone will not reveal."
+        "Readings carry a USGS `qualifier` code. Every code present is glossed "
+        "once in `qualifier_legend`; a code that says something about the "
+        "measurement is ALSO spelled out on its own row in "
+        "`qualifier_meaning`, so anything inline is worth reading. Nearly "
+        "every reading is 'P' (provisional), which is USGS's review state and "
+        "says nothing about the river — it is not a reason to doubt a value. "
+        "Ice, Eqp or Bkw do describe the measurement, and a value carrying one "
+        "may be wrong in a way its magnitude alone will not reveal."
     ),
 )
 
@@ -110,22 +115,38 @@ def _db() -> sqlite3.Connection:
     return conn
 
 
-def _rows_to_dicts(rows) -> list[dict]:
-    """Convert result rows to dicts, decoding any qualifier codes.
+def _qualifier_legend(rows) -> dict:
+    """Every qualifier code present in *rows*, glossed once.
 
-    Every tool below returns through here, which is why the annotation lives
-    at this one point rather than in five queries. Before it, a row carried
-    `"qualifier": "P"` or `"qualifier": "Ice"` and nothing in any docstring,
-    prompt or tool output said what those letters meant — the agent was being
-    asked to know NWIS conventions from memory. `qualifier_meaning` states it
-    instead.
+    A legend rather than a field on every row. Glossing per row cost about
+    15% of River's prompt to restate "P (provisional, subject to revision)"
+    768 times, in a database where 28,788 of 28,788 readings are P — the
+    gloss was added (2026-09-07) to stop the agent guessing what the letters
+    meant, and the cheapest way to do that is to say each one once.
+    """
+    seen = {}
+    for r in rows:
+        for code in qualifiers.split(dict(r).get("qualifier")):
+            if code not in seen:
+                seen[code] = qualifiers.describe(code)
+    return seen
+
+
+def _rows_to_dicts(rows) -> list[dict]:
+    """Convert result rows to dicts, annotating only what a legend cannot.
+
+    The qualifier gloss moved to _qualifier_legend, with one exception: a
+    NOTABLE code stays on its own row as well. Ice or Eqp appearing once in
+    a hundred readings is the case the annotation exists for, and a reader
+    scanning rows should not have to cross-reference a legend to notice that
+    one measurement is compromised. Routine codes — P, A — are in the legend
+    only, because they are on everything and single out nothing.
     """
     out = []
     for r in rows:
         d = dict(r)
-        meaning = qualifiers.describe(d.get("qualifier"))
-        if meaning:
-            d["qualifier_meaning"] = meaning
+        if qualifiers.is_notable(d.get("qualifier")):
+            d["qualifier_meaning"] = qualifiers.describe(d.get("qualifier"))
         note = hydrology.floor_note(d.get("parameter_name"), d.get("value"))
         if note:
             d["value_note"] = note
@@ -159,7 +180,8 @@ def get_recent_readings(n: int = 20) -> str:
         ).fetchall()
     if not rows:
         return "No readings in database yet. Run the collector first."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return json.dumps({"readings": _rows_to_dicts(rows),
+                       "qualifier_legend": _qualifier_legend(rows)}, indent=2)
 
 
 @mcp.tool()
@@ -185,7 +207,80 @@ def get_readings_since(hours_ago: float = 24.0) -> str:
         ).fetchall()
     if not rows:
         return f"No readings found in the last {hours_ago} hours."
-    return json.dumps(_rows_to_dicts(rows), indent=2)
+    return json.dumps({"readings": _rows_to_dicts(rows),
+                       "qualifier_legend": _qualifier_legend(rows)}, indent=2)
+
+
+@mcp.tool()
+def get_hourly_series(hours_ago: float = 48.0) -> str:
+    """
+    Return the last N hours as one row per hour per parameter: min, max, and
+    how many readings that hour held. Use this for the shape of recent
+    conditions rather than get_readings_since, which returns every reading.
+
+    The collector polls every 15 minutes, so 48 hours of two stations and two
+    parameters is 768 rows — about 60,000 tokens, most of River's prompt, to
+    convey a trend that 96 hourly rows convey in 4,400. The detail was not
+    buying anything: consecutive 15-minute readings at this station differ by
+    a hundredth of a foot or not at all.
+
+    Hourly min and max rather than a mean, because the min is the part that
+    matters here — the daily low is what crosses the rating floor, and a mean
+    would hide it.
+
+    Args:
+        hours_ago: How many hours back to summarise (default 48)
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+    with _db() as conn:
+        rows = conn.execute(
+            """
+            SELECT substr(collected_at, 1, 13) || ':00' AS hour,
+                   station_id, parameter_name, unit,
+                   MIN(value) AS value_min, MAX(value) AS value_max,
+                   COUNT(*) AS readings,
+                   GROUP_CONCAT(DISTINCT qualifier) AS qualifiers
+            FROM readings
+            WHERE collected_at >= ? AND value IS NOT NULL
+            GROUP BY hour, station_id, parameter_code
+            ORDER BY station_id, parameter_code, hour
+            """,
+            (cutoff,),
+        ).fetchall()
+    if not rows:
+        return f"No readings found in the last {hours_ago} hours."
+
+    out = []
+    legend = {}
+    for r in rows:
+        d = dict(r)
+        # Qualifiers are aggregated per hour, so a rare code stays visible
+        # even though the individual readings are gone. Glossed inline only
+        # when notable, exactly as the row-level tools do.
+        codes = [c for c in (d.get("qualifiers") or "").split(",") if c]
+        for c in codes:
+            legend.setdefault(c, qualifiers.describe(c))
+        if any(qualifiers.is_notable(c) for c in codes):
+            d["qualifier_note"] = qualifiers.describe(",".join(codes))
+        # A flag, not a sentence. The floor note is ~140 characters and the
+        # hourly minimum is at the floor for most discharge rows, so spelling
+        # it out per row rebuilds the per-row repetition the qualifier legend
+        # was just created to remove. Explained once below.
+        if hydrology.at_floor(d.get("parameter_name"), d.get("value_min")):
+            d["min_at_rating_floor"] = True
+        out.append(d)
+
+    result = {
+        "hourly": out,
+        "qualifier_legend": legend,
+        "note": ("One row per hour per parameter: min, max and reading count. "
+                 "Call get_readings_since only if individual readings matter; "
+                 "for a trend they do not."),
+    }
+    if any(r.get("min_at_rating_floor") for r in out):
+        result["min_at_rating_floor_means"] = hydrology.floor_note(
+            "Streamflow", hydrology.DISCHARGE_FLOOR_CFS)
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
