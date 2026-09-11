@@ -1837,6 +1837,66 @@ USGS qualifiers, now applied to a comparison rather than a value: the frame
 has to travel with the number. A reading needs its unit, its clock, its
 provenance — and, at a station that breathes once a day, its phase.
 
+### A rule that could not be silent (2026-09-11)
+
+The first reading of the shadow verdicts produced one finding about the model
+and one about the rules, and the second was the useful one.
+
+Coverage first, because it nearly derailed the reading. `shadow_report.py`
+showed 176 of 227 runs with no verdict and I took that for the rules failing
+three runs in four. They were not: node-01's shadow columns went live on
+2026-09-04 — Weather 08:00, AQI 09:00, Fire 10:00, one deployment landing in
+each domain's next scheduled run — and every unscored row predates it. A
+week-old instrument, read through a 30-day window, looks broken. The report
+now names a deployment boundary as one.
+
+On the model, Fire's result is clean: all four rules-only disagreements are
+the persistence exception, stated verbatim in each summary. Net of them the
+rules and the model agree nine times out of nine.
+
+On the rules, the result is not clean. `new_hotspot_since_last_run` fired on
+13 of 13 scored runs. `frp_rising` on 12 of 13, and what it fired on was:
+
+```
+frp_rising: 0.09 -> 0.10 MW at 43.3mi     (+11%,  a hundredth of a megawatt)
+frp_rising: 9.19 -> 9.25 MW at 31.1mi     (+0.7%, six hundredths)
+```
+
+Consecutive VIIRS retrievals of one pixel differ by more than that for view
+angle, atmospheric correction, and which of three satellites made the pass.
+The rule had no minimum magnitude and no floor on the resulting value, so it
+was reading the instrument. Two of six rules were effectively constants, and
+enforcing them would have made `must_flag` true on every Fire run — the ⚠️
+that fired on every USGS reading, arrived at independently by a different
+route.
+
+`frp_rising` now needs both a proportional rise (`FRP_RISE_MIN_FACTOR`, 1.25)
+and a resulting value at or above `FRP_NOTABLE_PERCENTILE` of this
+collector's own history. Gating on the *new value* rather than the delta is
+deliberate: a fire doubling from 0.1 to 0.2 MW has doubled and still does not
+matter. Reusing the existing percentile matters too — it is a threshold the
+codebase already argued for, rather than a magnitude invented to fit two data
+points. The factor is a judgement and says so, calibrated to clear both
+observed false positives with room to spare.
+
+The percentile arithmetic moved into `thresholds.py`. It had been in
+`mcp_server.py`, the rule was about to hold a second copy, and two copies of
+an index calculation is how the flag thresholds drifted before that module
+existed — the tool and the rule would have called different readings notable
+while reading the same column.
+
+`new_hotspot_since_last_run` is untouched and still fires on essentially
+every run. FIRMS returns new detections continuously, so "new since last run"
+may be a true statement that carries no information. That one needs deciding
+rather than tuning.
+
+The generalisation: a rule that cannot be silent cannot be an authority. The
+argument for enforcing deterministic rules over a model assumes the rules
+discriminate, and the only way to know whether they do is to run them in
+shadow and count. This is the first finding in this project that came from
+the system's own instrumentation rather than from a human reading a record —
+and it says the instrument was measuring the wrong thing.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

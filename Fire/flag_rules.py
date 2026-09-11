@@ -32,7 +32,26 @@ from datetime import datetime, timedelta, timezone
 from thresholds import (  # noqa: E402
     NEAREST_HOTSPOT_MAX_AGE_HOURS, NEAR_DISTANCE_MI, FAR_DISTANCE_MI,
     HIGH_CONFIDENCE_LETTER, HIGH_CONFIDENCE_NUMERIC,
+    FRP_NOTABLE_PERCENTILE, FRP_RISE_MIN_FACTOR, notable_frp_at,
 )
+
+
+def _notable_frp_threshold(conn: sqlite3.Connection) -> float | None:
+    """The FRP value at FRP_NOTABLE_PERCENTILE of this collector's history.
+
+    Its own history, never the region's — the same caveat the lexicon and
+    mcp_server carry. Mirrors mcp_server's calculation so the rule and the
+    tool call the same readings notable; they read the same column, so a
+    divergence here would be the two disagreeing about arithmetic rather than
+    about the fire.
+
+    None when there is not enough history to place a reading, in which case
+    the calling rule drops the percentile gate rather than inventing a
+    threshold — the proportional gate still applies.
+    """
+    values = [r[0] for r in conn.execute(
+        "SELECT frp FROM hotspots WHERE frp IS NOT NULL ORDER BY frp ASC")]
+    return notable_frp_at(values)
 
 
 class Verdict:
@@ -93,10 +112,26 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
         v.fire("high_confidence_within_50mi",
                f"{row['distance_mi']:.1f}mi, confidence={row['confidence']}")
 
-    # Rule 3 — FRP rising across consecutive detections at the same location.
+    # Rule 3 — FRP rising materially at the same location, to a level that is
+    # itself unusual for this collector.
+    #
     # Hotspots dedup on (lat, lon, acq_date, acq_time, satellite), so a
     # re-detection of the same fire is a separate row; grouping by rounded
     # coordinates is what makes "the same hotspot over time" expressible.
+    #
+    # Two gates, added 2026-09-11. The rule used to fire on any increase and
+    # therefore fired on 12 of the first 13 scored runs — on 0.09 -> 0.10 MW
+    # at 43.3 miles, and on 9.19 -> 9.25 MW at 31.1 miles. Consecutive VIIRS
+    # retrievals of one pixel vary by more than that for reasons unrelated to
+    # the fire, so those were readings of the instrument. Both gates come from
+    # thresholds.py: the rise must be proportionally material, and the new
+    # value must sit in the top of this collector's own FRP history.
+    #
+    # Requiring the *new* value to be notable rather than the delta is
+    # deliberate. A fire doubling from 0.1 to 0.2 MW has doubled and still
+    # does not matter; one already among the largest this node has recorded,
+    # and growing, is the case the rule is for.
+    notable_frp = _notable_frp_threshold(conn)
     rows = conn.execute(
         """
         SELECT ROUND(latitude, 3) AS lat, ROUND(longitude, 3) AS lon,
@@ -112,9 +147,16 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     prev_frp = None
     for r in rows:
         key = (r["lat"], r["lon"])
-        if key == prev_key and prev_frp is not None and r["frp"] > prev_frp:
+        if (key == prev_key and prev_frp is not None and prev_frp > 0
+                and r["frp"] >= prev_frp * FRP_RISE_MIN_FACTOR
+                and (notable_frp is None or r["frp"] >= notable_frp)):
+            gate = (f">= p{FRP_NOTABLE_PERCENTILE:g} of {notable_frp:.2f} MW"
+                    if notable_frp is not None
+                    else "percentile gate skipped, <20 FRP readings on record")
             v.fire("frp_rising",
-                   f"{prev_frp:.2f} -> {r['frp']:.2f} MW at {r['distance_mi']:.1f}mi")
+                   f"{prev_frp:.2f} -> {r['frp']:.2f} MW "
+                   f"(x{r['frp'] / prev_frp:.2f}, {gate}) "
+                   f"at {r['distance_mi']:.1f}mi")
             break
         prev_key, prev_frp = key, r["frp"]
 

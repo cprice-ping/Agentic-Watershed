@@ -111,7 +111,11 @@ You must respond in this exact JSON format (no markdown, no extra text):
 
 Flag (set flagged=true) if ANY of these are true:
 $flag_criteria
-- FRP (fire radiative power) rising across consecutive polls for a hotspot in range
+- FRP (fire radiative power) rising materially at one location — at least
+  $frp_rise_factor times the previous reading AND reaching the notable percentile
+  (p$notable_pct) of this collector's own history. A small increase is not
+  a growing fire: consecutive satellite retrievals of the same pixel differ
+  by a few percent for reasons that have nothing to do with the fire.
 - A new hotspot cluster appeared since the last observation that wasn't there before
 - The collector's last poll status is "error" — this is a data-quality issue
   worth flagging on its own, distinct from a fire risk finding; say plainly
@@ -181,6 +185,7 @@ SYSTEM_PROMPT = Template(_SYSTEM_PROMPT_TEMPLATE).substitute(
     near_mi=f"{thresholds.NEAR_DISTANCE_MI:g}",
     far_mi=f"{thresholds.FAR_DISTANCE_MI:g}",
     notable_pct=f"{thresholds.FRP_NOTABLE_PERCENTILE:g}",
+    frp_rise_factor=f"{thresholds.FRP_RISE_MIN_FACTOR:g}",
 )
 
 logging.basicConfig(

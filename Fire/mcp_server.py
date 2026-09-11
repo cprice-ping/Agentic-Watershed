@@ -239,9 +239,13 @@ def _frp_context(conn) -> dict:
     if values:
         ctx["max_frp_on_record"] = round(values[-1], 1)
         ctx["median_frp"] = round(values[len(values) // 2], 1)
-        ctx["notable_at_or_above_frp"] = round(
-            values[min(len(values) - 1,
-                       int(len(values) * thresholds.FRP_NOTABLE_PERCENTILE / 100))], 1)
+        notable = thresholds.notable_frp_at(values)
+        if notable is not None:
+            ctx["notable_at_or_above_frp"] = round(notable, 1)
+        else:
+            ctx["notable_at_or_above_frp_note"] = (
+                f"undefined: fewer than {thresholds.MIN_FRP_HISTORY} FRP "
+                f"readings on record, too few to place one in a distribution")
         ctx["notable_percentile"] = thresholds.FRP_NOTABLE_PERCENTILE
     return ctx
 
