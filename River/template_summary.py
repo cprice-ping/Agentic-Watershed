@@ -16,13 +16,17 @@ Deliberately a pure function of (conn, observed_at). Nothing here reads the
 agent's prior prose, so it can be run retroactively over every observation
 already recorded rather than waiting a fortnight to accumulate a sample.
 
-On flagging, the honest position: River has no flag_rules.py because it has
-no numeric flag criteria. `floodStageThresholdFt` is not configured for
-either Napa gauge, so there is no threshold a rule could evaluate. This
-template therefore flags only on data quality — a collector that has stopped
-— and says so rather than inventing a condition. Any conditions flag the
-agent raises is a judgement with no arithmetic behind it, which the
-comparison should make visible rather than hide.
+On flagging, the honest position: this template flags only on data quality —
+a collector that has stopped — and says so rather than inventing a condition.
+`floodStageThresholdFt` is not configured for either Napa gauge, so there is
+no threshold for "the river is high" that a summariser could evaluate.
+
+That deliberately stays true after River gained a flag_rules.py, which this
+comparison is what prompted. The rules module computes a rate of change, not
+a level, and it is shadow-only; keeping it out of here leaves the control arm
+a control — the template still shows what the database says with no judgement
+of any kind layered on, so a condition flag appearing on the agent's side and
+not on this one remains visible rather than absorbed.
 """
 
 import sqlite3

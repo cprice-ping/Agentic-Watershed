@@ -71,6 +71,20 @@ def _is_window_size(token: str, follows: str) -> bool:
 # Generous, because summaries round: 0.295 quoted against a mean of 0.2951.
 TOLERANCE = 0.02
 
+# How far back a quoted figure may legitimately reach.
+#
+# Wider than the summary's own seven-day statistics window, because a summary
+# may correctly cite something older: on 2026-09-08 the agent wrote "declining
+# from 9.84 cfs peak on 08/31", which was true and which this checker reported
+# as UNVERIFIED because the peak had aged out of seven days. That was the
+# tool's error, not the agent's, and it is the kind of false positive that
+# makes a measurement worse than no measurement — it would have counted
+# against the agent in the comparison that decides whether it keeps its job.
+#
+# Thirty days covers the monthly baselines these summaries reference. A figure
+# older than that quoted without support is a claim worth surfacing.
+CITATION_WINDOW_DAYS = 30
+
 _NUM = re.compile(r"-?\d+(?:\.\d+)?")
 
 
@@ -87,14 +101,22 @@ def supported_values(conn, observed_at: str) -> set[float]:
         return set()
     vals: set[float] = set()
     week = (obs - timedelta(days=template_summary.STATS_WINDOW_DAYS)).isoformat()
+    cited = (obs - timedelta(days=CITATION_WINDOW_DAYS)).isoformat()
 
+    # Everything quotable, over the wider citation window.
+    for r in conn.execute(
+        """SELECT value FROM readings
+           WHERE value IS NOT NULL AND collected_at <= ? AND collected_at >= ?""",
+            (observed_at, cited)):
+        vals.add(round(float(r["value"]), 3))
+
+    # The narrower week is what the seven-day statistics and the diel frame
+    # are computed over, so those stay on the summary's own window.
     rows = conn.execute(
         """SELECT collected_at, station_id, parameter_name, value FROM readings
            WHERE value IS NOT NULL AND collected_at <= ? AND collected_at >= ?""",
         (observed_at, week),
     ).fetchall()
-    for r in rows:
-        vals.add(round(float(r["value"]), 3))
 
     for sid in STATIONS:
         stats = conn.execute(
@@ -230,10 +252,12 @@ def main() -> None:
           "\n  the checker does not know how to reproduce also lands here.")
     if tmpl_flags == 0 and agent_flags:
         print("\n  The template never flags on conditions by construction — "
-              "\n  floodStageThresholdFt is unconfigured, so no numeric "
-              "criterion\n  exists. Every agent condition-flag is judgement "
-              "with no arithmetic\n  behind it; whether that is worth paying "
-              "for is the question.")
+              "\n  floodStageThresholdFt is unconfigured, so no numeric level "
+              "criterion\n  exists, and the template stays a control. An agent "
+              "condition-flag here\n  is judgement with no arithmetic behind "
+              "it. One kind turned out to be\n  worth reproducing: River/"
+              "flag_rules.py now computes a discharge surge,\n  in shadow. "
+              "Run shadow_report.py --domain river to see those verdicts.")
 
 
 if __name__ == "__main__":
