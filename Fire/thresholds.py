@@ -98,6 +98,12 @@ FRP_NOTABLE_PERCENTILE = 95.0
 # pointed at the nearest knob instead of at the question "silent compared to
 # what". Moving this number would have restored the noise without restoring
 # the signal.
+#
+# With the grouping fixed and readings collapsed per satellite pass, these
+# gates fire twice in 136 runs, and both survive inspection: the Steele Fire
+# intensifying at 14.3mi on 2026-09-09, and 8.89 -> 32.04 MW at 38.6mi on
+# 2026-08-26 that the agent's summary did not mention at all. So 1.25 is not
+# currently the thing to change. Run frp_replay.py before touching it.
 FRP_RISE_MIN_FACTOR = 1.25
 
 # Fewest FRP readings that can carry a percentile. Below this the notable
