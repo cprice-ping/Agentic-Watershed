@@ -23,3 +23,11 @@ COPY ATProto ./ATProto
 COPY node_config.json ./node_config.json
 COPY Fire/thresholds.py ./Fire/thresholds.py
 COPY Weather/thresholds.py ./Weather/thresholds.py
+
+# Same reason, third instance: publisher.py imports agent_runtime for the note
+# marker that keeps notes out of flagReason. Adding a root-level import to a
+# file in an image that copies only its own directory breaks that image on
+# import, and nothing on the Pi would show it — cron runs from a checkout
+# where every path resolves. Worth a static check that root modules imported
+# by anything in an image appear as COPY lines here.
+COPY agent_runtime.py ./agent_runtime.py
