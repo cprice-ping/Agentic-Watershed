@@ -2014,6 +2014,51 @@ match — and then saying so instead of choosing. That is not arithmetic over
 one table, and it is the one thing in this system that no rule was ever going
 to do.
 
+### The control arm (2026-09-12)
+
+The week's open question — do the domain agents earn a model — had no
+instrument. The shadow verdicts compare one boolean, and the boolean is the
+part where the rules and the model agree by construction, since flag_rules.py
+encodes the criteria the prompt states.
+
+`River/template_summary.py` is the control: the same summary, from the same
+database, with no model. It is a pure function of (conn, observed_at) and
+reads nothing the agent wrote, so `river_template_report.py` can run it
+retroactively over every observation already recorded rather than waiting a
+fortnight to accumulate a sample.
+
+The template's honest limitation is itself a result. It cannot flag on
+conditions, because River has no numeric flag criteria —
+`floodStageThresholdFt` is unconfigured for both Napa gauges, which is why
+River has no `flag_rules.py` at all. So it flags only on collector gaps and
+says so in its output. Every condition flag the agent has ever raised on
+River is therefore judgement with no arithmetic behind it. That is not
+automatically wrong; it is the thing the comparison exists to price.
+
+The sharper half is NUMERIC TRACEABILITY. Every figure in a summary is
+extracted and checked against values the database can produce at that
+instant — readings, seven-day statistics, diel min/max, same-phase deltas.
+Against the real 2026-09-10 summary it reports `0.826` and `100`, which are
+the fabricated 30-day baseline and the percentage computed against the rating
+floor. It does not report `0.32`, `0.03`, `2.11`, `2.07` or `0.47`, which are
+real readings. The template's own summary of the same instant reports
+nothing.
+
+UNVERIFIED means "no value in the database matched", not "false". A
+legitimately derived figure the checker cannot recompute lands in the same
+bucket — `0.295`, the agent's seven-day mean, does exactly that against a
+fixture whose mean differs.
+
+Building the checker reproduced the failure it was built to detect, twice.
+The first version dropped every number below 3.0 as trivial, which in a river
+running at hundredths of a cubic foot per second is almost every real value —
+it silently swallowed the fabricated baseline. The distinction that actually
+holds is decimals versus integers: readings carry decimals, window sizes do
+not. Then that rule swallowed "100% deviation", because a percentage is an
+integer too; an integer followed by a percent sign is a claim, not furniture.
+Both errors were mine, both were caught by a test asserting the known-bad
+2026-09-10 summary must fail, and neither would have been visible without it.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
