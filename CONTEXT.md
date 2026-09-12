@@ -2127,6 +2127,89 @@ The cost of the rule is zero per run. Whether the model is still worth 35,000
 tokens twice a day to write the prose around it is now a question with an
 instrument behind it rather than an impression.
 
+### A rule with nowhere else to put a fact (2026-09-12)
+
+`new_hotspot_since_last_run` fired on 13 of 13 scored runs, which was on the
+list as a threshold to tune. It was not a threshold problem.
+
+The rule counted rows arriving since the previous agent run. Hotspots dedup on
+`(lat, lon, acq_date, acq_time, satellite)`, so every overpass of a fire that
+has been burning since July inserts a new row — roughly six a day across three
+satellites. The rule was measuring the satellite's revisit cadence.
+
+Two months of data, 101 firings across about 118 runs:
+
+    new rows counted                 807
+    distinct new locations @1.1km     86
+    distinct new locations @110m     337
+
+    firings with zero new ground     57%
+    firings with nothing within 20mi 70%
+    firings with no high-confidence  85%
+
+    nearest "new" hotspot:  21.5mi × 40 runs, 21.0 × 13, 17.5 × 11, 18.0 × 9
+
+Eight hundred and seven arrivals were eighty-six places. The nearest one sat
+at roughly 21.2 or 17.7 miles in 73 of 101 runs: two fire complexes, observed
+since July, reported as new twice a day.
+
+The shadow window settles what it was worth as a flag. Fifteen firings,
+thirteen with no detection inside twenty miles at all. The two that had one
+were the September event — where `hotspot_within_20mi` fires anyway. So the
+rule contributed nothing to the flag decision on the only two occasions it
+could have, and noise on the other thirteen.
+
+The 110m column is a second finding. 337 against 86 means rounding coordinates
+to three decimals splits one fire across cells as the satellite's geolocation
+wanders between passes. `frp_rising` groups by `ROUND(lat, 3)` and requires
+consecutive rows to share that key, so it can only see a fire growing when two
+passes land in the same 110m cell. That rule is under-matching — the opposite
+failure, still open.
+
+**The rule and the model were handed the same unanswerable question.** The
+prompt asks the agent to flag when "a new hotspot cluster appeared since the
+last observation that wasn't there before", and the only tools it had were
+`get_hotspots_since` and `get_hotspot_count_since`, both row-based. Nothing in
+the system could distinguish a new fire from a re-observation. Neither side
+inherited a bug from the other; both answered with row counts because row
+counts were all there was.
+
+So the fix is one computation used three ways. `flag_rules.new_locations()`
+compares by distance rather than by rounding to a grid, so two detections
+100m apart either side of a cell boundary are one place; a kilometre, because
+a VIIRS pixel is 375m at nadir and nearer 800m at the swath edge and
+geolocation adds a few hundred metres on top. A place counts as new again
+after a fortnight of quiet, because a reignition on an old scar is a new fire
+and treating the scar as known forever would hide it. The same function backs
+a new `get_new_locations` tool, added to `gather_context` — these agents have
+no free tool choice, so a tool nothing calls is invisible, which is the
+2026-09-09 lesson and one I nearly repeated by writing "call get_new_locations"
+into a prompt whose model cannot call anything.
+
+It counts places, not fires, and that is deliberate: ten detections inside a
+kilometre collapse to one, but a front spanning several kilometres reports
+several, so the number carries rough extent rather than a count of ignitions.
+
+**The note channel.** The rule is now recorded rather than fired.
+`Verdict` has two outputs: `fire()` forces `flagged`, `note()` records
+something measured that is not a reason to alarm. Notes travel in the same
+`rules_fired` list behind a `note:` prefix, so two months of recorded verdicts
+stay readable — no historical entry begins with it — and `shadow_report.py`
+counts them separately from rules that fired.
+
+This is the third time the persistence exception came up and the second time
+I recorded that it "cannot be expressed as a rule". That was wrong both times.
+It is a de-escalation, and a `Verdict` that only accumulates has no way to
+hold one — a limitation of having a single output channel, not of arithmetic.
+The same single channel is why the newness rule had to be an alarm: there was
+nowhere else to put a fact. The signal it carries is exactly what the
+persistence exception needs as input, since "unchanged from last run" cannot
+be judged without knowing what changed, and nothing was telling the model
+that.
+
+The rule goes from 15 of 15 flags to zero, keeps its signal, and the prompt
+criterion stays as written because it is answerable for the first time.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

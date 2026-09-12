@@ -115,6 +115,38 @@ def notable_frp_at(sorted_values: list[float]) -> float | None:
     return float(sorted_values[idx])
 
 
+# What makes a detection new.
+#
+# The old rule asked whether a ROW had arrived since the last agent run, which
+# is not the same question and is why it fired on 101 of ~118 runs over two
+# months. Hotspots dedup on (lat, lon, acq_date, acq_time, satellite), so every
+# overpass of a fire that has been burning since July inserts a new row. Across
+# that period 807 "new" rows were 86 actual places, and the nearest one sat at
+# either 21.2 or 17.7 miles in 73 of 101 runs — two fire complexes, re-observed,
+# reported as arrivals twice a day.
+#
+# A kilometre, because the question is whether two detections are the same
+# place and the instrument cannot say so more precisely than that. A VIIRS
+# pixel is 375m at nadir and closer to 800m at the swath edge, and geolocation
+# adds a few hundred metres on top. Rounding coordinates to three decimals —
+# about 110m, which is what the FRP rule uses — splits one fire across several
+# cells as the satellite wanders between passes: the same two months give 337
+# "locations" at 110m against 86 at roughly a kilometre. The finer number is
+# measuring the satellite.
+#
+# Compared by distance rather than by rounding to a grid, so that two
+# detections 100m apart either side of a cell boundary are one place.
+NEW_LOCATION_RADIUS_MI = 0.62     # 1 km
+
+# How far back a location must be quiet before a detection there counts as new
+# again. Not "ever recorded": a fire that burned in July, went out, and
+# reignites in September is a new fire, and treating the old scar as known
+# forever would hide it. Two weeks is comfortably longer than the gap between
+# overpasses of an active fire, so a burning complex stays known, and short
+# enough that a genuine reignition after a quiet fortnight reads as new.
+NEW_LOCATION_LOOKBACK_DAYS = 14
+
+
 # Matching a hotspot to a named CAL FIRE incident.
 #
 # An incident is published as a single point; a fire is an area. The Plaskett
@@ -171,9 +203,17 @@ def flag_criteria_text() -> str:
     too — FRP_RISE_MIN_FACTOR and FRP_NOTABLE_PERCENTILE, added 2026-09-11 —
     but its bullet lives in agent.py's template because it is prose with two
     numbers substituted rather than a generated list; both come from this
-    module either way. A new cluster since last run and collector error are
-    genuinely thresholdless, and the persistence exception is deliberately
-    not encoded at all (see flag_rules.py).
+    module either way. Collector error is genuinely thresholdless, and the
+    persistence exception is deliberately not encoded at all (see
+    flag_rules.py).
+
+    A new cluster since last run was listed here as thresholdless too, until
+    2026-09-12 showed that was the problem rather than a property of it: with
+    nothing defining "new", the rule counted rows and fired on essentially
+    every run. It has two thresholds now, NEW_LOCATION_RADIUS_MI and
+    NEW_LOCATION_LOOKBACK_DAYS, and its bullet stays out of this generated
+    list because it no longer produces a flag — it is recorded as a note and
+    surfaced to the agent through get_new_locations.
     """
     return "\n".join([
         f"- Any hotspot detected within {_n(NEAR_DISTANCE_MI)} miles of Napa "
