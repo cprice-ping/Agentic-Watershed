@@ -150,6 +150,56 @@ def group_by_place(rows) -> list[list]:
     return clusters
 
 
+def _hhmm(acq_time) -> str:
+    """acq_time as a zero-padded HHMM, so it sorts chronologically as text.
+
+    collector.py stores whatever the FIRMS CSV returns in this column,
+    verbatim. The schema comments say HHMM, and if every value is padded then
+    plain text ordering is already chronological — but an unpadded "943" for
+    09:43 sorts after "1043" for 10:43, which would silently reorder a series
+    and compare the wrong pair. Padding here costs nothing and removes the
+    dependency on a format nothing validates.
+    """
+    s = str(acq_time or "").strip()
+    return s.zfill(4) if s.isdigit() else s
+
+
+def by_pass(series) -> list[dict]:
+    """Collapse one place's detections to one reading per satellite pass.
+
+    A VIIRS pixel is 375m, so a fire spanning a kilometre lights up several
+    adjacent pixels in a SINGLE overpass, every one carrying the same
+    acq_date and acq_time. Grouping those by place produces a series that
+    looks like a time course and is not one: consecutive entries can be two
+    parts of the same fire seen in the same instant, differing because one
+    end of the burn is hotter than the other.
+
+    That is not hypothetical. It is what place-based grouping did on first
+    contact with real data — three of the four detections it reported as a
+    fire intensifying compared two pixels acquired in the same minute:
+
+        2026-08-24   9.11 -> 24.40 MW    both acquired 21:43
+        2026-09-08   9.51 -> 20.21 MW    both acquired 21:17
+        2026-09-09  24.79 -> 33.48 MW    both acquired 21:43
+
+    The old 110m grouping was accidentally immune, because adjacent pixels
+    fall in different cells. Fixing the grouping is what exposed this.
+
+    The hottest pixel per pass, not the sum. A sum is the more physical
+    measure of what a fire is radiating, but it scales with how many pixels
+    the satellite happened to resolve, and it would be compared against
+    FRP_NOTABLE_PERCENTILE — a distribution built from individual pixel
+    readings. Max keeps both sides of that comparison on one scale.
+    """
+    passes: dict[tuple, dict] = {}
+    for r in series:
+        key = (r["acq_date"], _hhmm(r["acq_time"]))
+        best = passes.get(key)
+        if best is None or (r["frp"] or 0) > (best["frp"] or 0):
+            passes[key] = r
+    return [passes[k] for k in sorted(passes)]
+
+
 def new_locations(conn: sqlite3.Connection, since: str) -> list[dict]:
     """Detections after *since* at places with no recent detection history.
 
@@ -279,6 +329,11 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     # intensification rather than inventing it. Places now come from
     # group_by_place, the same definition the newness note uses.
     #
+    # A place's readings then collapse to one per satellite pass before any
+    # comparison — see by_pass. Correct grouping alone compares adjacent
+    # pixels from a single overpass, which is spatial variation across a burn
+    # and not a fire growing.
+    #
     # It also used to fire on ANY rising consecutive pair inside the 72-hour
     # window, first match wins. With fragmented grouping that rarely found a
     # pair at all; with correct grouping each place carries a full series and
@@ -315,6 +370,7 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
 
     best = None
     for series in group_by_place(rows):
+        series = by_pass(series)
         if len(series) < 2:
             continue
         prev, latest = series[-2], series[-1]
