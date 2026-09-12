@@ -2239,10 +2239,35 @@ comparison is now the latest reading at a place against the one before it,
 which is the question the rule is named for. Where several places qualify, the
 highest current FRP is reported.
 
-That second change is reasoning, not measurement, which is the weaker footing
-of the two. `frp_replay.py` in the session scratchpad replays all three
-variants over recorded history so the choice can be checked against data
-rather than argument.
+That second change was reasoning rather than measurement, so `frp_replay.py`
+replays all three variants over recorded history. Over 135 runs with FRP data
+in window:
+
+    A  round to 110m, any rising pair (the rule as it stood)    0   (0%)
+    B  places at 1km,  any rising pair                         23  (17%)
+    C  places at 1km,  latest vs previous (shipped)             4   (3%)
+
+**The rule had never fired.** Not once in 135 runs. And the note left in
+`thresholds.py` the day the gates went in said exactly what to do about that:
+"if the rule now never fires at all, it is too strict and this is the number
+to move." That advice would have been wrong. B runs the same gates over
+better grouping and fires 23 times, so the silence was never the threshold —
+it was the 110m cells, which one fire rarely occupies twice running. Lowering
+`FRP_RISE_MIN_FACTOR` would have restored the noise without restoring the
+signal.
+
+The note is kept in place with the correction attached rather than deleted.
+It was written in good faith, it named the right symptom, and it failed in a
+specific and repeatable way: it reached for the nearest tunable number instead
+of asking "silent compared to what". There was no comparison available at the
+time, which is the actual gap — the shadow verdicts record what a rule did,
+never what a different rule would have done.
+
+B against C settles the second change. The 19 runs where they differ are not
+19 events; they arrive in consecutive clusters — five straight runs from
+08-19 to 08-21, then seven or more from 08-25 to 08-28 — which is one spike
+re-reported every twelve hours until it ages out of the 72-hour window. C is
+the same signal without the stutter.
 
 ### What generalises, and what doesn't
 
