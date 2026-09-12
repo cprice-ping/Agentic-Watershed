@@ -96,9 +96,16 @@ invisible to the other. Read both.
    there means nothing current nearby, full stop. Don't describe the feed
    itself as "frozen" or "stale" based on hotspot ages; that's answered by
    get_last_poll_status, not by how old the nearest hotspot is.
-4. Assess: are there new hotspots since last run? Are any close (<${near_mi}mi) or
-   high-confidence? Is FRP (fire radiative power) rising, indicating a growing fire?
-5. Write a clear, concise observation that will inform Synthesis's cross-domain
+4. Read the NEW LOCATIONS section for what is actually new. It is the only section
+   that distinguishes a new place from a re-observation: a satellite re-detects an
+   active fire on every overpass — roughly six a day across three satellites — and
+   each pass is a separate row, so a long HOTSPOTS: LAST 48 HOURS list is normal
+   for a fire that has burned for weeks and is not evidence anything changed. Judge
+   newness from that section alone, never from the length of the others. An empty
+   new_locations list with many recent hotspots means an ongoing fire, not a new one.
+5. Assess: are any hotspots close (<${near_mi}mi) or high-confidence? Is FRP
+   (fire radiative power) rising, indicating a growing fire?
+6. Write a clear, concise observation that will inform Synthesis's cross-domain
    reasoning — Synthesis will correlate your findings with Weather's wind direction
    and AQI's smoke signature to determine if a detected hotspot explains observed smoke.
 
@@ -242,6 +249,14 @@ def gather_context() -> str:
     log.info("  → get_hotspots_since (48h)")
     recent = call_mcp_tool("get_hotspots_since", {"hours_ago": 48.0})
     sections.append(f"=== HOTSPOTS: LAST 48 HOURS (nearest first) ===\n{recent}")
+
+    # The only section that distinguishes a new fire from a re-observation of
+    # an old one. Every other hotspot section above counts rows, and a row is
+    # one satellite pass: an already-burning fire fills them on every run.
+    log.info("  → get_new_locations")
+    fresh = call_mcp_tool("get_new_locations", {})
+    sections.append(
+        f"=== NEW LOCATIONS SINCE YOUR LAST OBSERVATION ===\n{fresh}")
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     context = f"Agent run at: {now}\n\n" + "\n\n".join(sections)

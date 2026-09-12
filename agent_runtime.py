@@ -211,3 +211,39 @@ def is_failed_row(row) -> bool:
         return (row["status"] or "").lower() == "failed"
     except (IndexError, KeyError, TypeError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# The note channel
+# ---------------------------------------------------------------------------
+#
+# A flag_rules Verdict has two outputs, not one. `fire()` records something
+# that forces flagged=true; `note()` records something worth having in the
+# shadow record that is not by itself a reason to alarm.
+#
+# The second channel exists because its absence caused a real defect. Fire's
+# new_hotspot_since_last_run fired on 101 of ~118 runs across two months, and
+# on 15 of the 15 runs in the shadow window — 13 of which had no detection
+# within 20 miles at all. A rule that cannot be silent carries no information,
+# the same failure frp_rising had. But the underlying signal is not worthless:
+# it is exactly what the prompt's persistence exception needs as input, since
+# "this hotspot is unchanged from last run" cannot be judged without knowing
+# what changed. There was nowhere to put a fact that is informative and not
+# alarming, so it became an alarm.
+#
+# Notes travel in the same `rules_fired` JSON list as fired rules, marked with
+# this prefix, rather than in a new column or a changed JSON shape. Two months
+# of recorded verdicts already exist and stay readable: no historical entry
+# begins with "note:", so the split is unambiguous in both directions.
+NOTE_PREFIX = "note:"
+
+
+def is_note(entry: str) -> bool:
+    """Whether a rules_fired entry is a note rather than a fired rule."""
+    return str(entry).startswith(NOTE_PREFIX)
+
+
+def strip_note(entry: str) -> str:
+    """A note entry without its marker, for display."""
+    e = str(entry)
+    return e[len(NOTE_PREFIX):] if is_note(e) else e

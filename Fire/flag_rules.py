@@ -16,6 +16,12 @@ flagged value; it does not override it. Enforcing it is a separate decision
 that should be made against the divergence data this produces, not in advance
 — see the persistence-exception note below for why that matters here.
 
+Two output channels, not one. `fire()` forces a flag; `note()` records
+something measured that is not a reason to alarm. The second was added on
+2026-09-12 after the divergence data showed the newness rule firing on
+essentially every run, and after it became clear that the reason it had to be
+a flag was that there was nowhere else to put it.
+
 Windows come from thresholds.py, the same module mcp_server.py reads, so a
 divergence means the model and the rules disagreed about the same facts rather
 than about which rows were in scope.
@@ -23,7 +29,14 @@ than about which rows were in scope.
 
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+# The note channel's marker, defined once at the repo root because
+# shadow_report.py has to recognise exactly what this module writes.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from agent_runtime import NOTE_PREFIX  # noqa: E402
 
 # Every threshold comes from thresholds.py, which agent.py's prompt,
 # mcp_server.py's queries and ATProto/publisher.py's currency window are also
@@ -33,7 +46,12 @@ from thresholds import (  # noqa: E402
     NEAREST_HOTSPOT_MAX_AGE_HOURS, NEAR_DISTANCE_MI, FAR_DISTANCE_MI,
     HIGH_CONFIDENCE_LETTER, HIGH_CONFIDENCE_NUMERIC,
     FRP_NOTABLE_PERCENTILE, FRP_RISE_MIN_FACTOR, notable_frp_at,
+    NEW_LOCATION_RADIUS_MI, NEW_LOCATION_LOOKBACK_DAYS,
 )
+
+# The same great-circle distance the collector used to fill distance_mi, so
+# "one kilometre apart" means the same thing here as in that column.
+from collector import haversine_mi  # noqa: E402
 
 
 def _notable_frp_threshold(conn: sqlite3.Connection) -> float | None:
@@ -55,12 +73,22 @@ def _notable_frp_threshold(conn: sqlite3.Connection) -> float | None:
 
 
 class Verdict:
-    """Outcome of evaluating the rules. `fired` names each rule that matched
-    and the values that made it match, so a stored verdict can be read back
-    later without re-running anything."""
+    """Outcome of evaluating the rules, on two channels.
+
+    `fired` names each rule that matched and the values that made it match, so
+    a stored verdict can be read back later without re-running anything. Only
+    these force a flag.
+
+    `notes` records something measured and worth keeping that is not by itself
+    a reason to alarm. See agent_runtime.NOTE_PREFIX for why the second
+    channel exists: without it, the only way to record a fact was to raise an
+    alert about it, and Fire's newness rule spent two months doing exactly
+    that.
+    """
 
     def __init__(self) -> None:
         self.fired: list[str] = []
+        self.notes: list[str] = []
 
     @property
     def must_flag(self) -> bool:
@@ -69,8 +97,97 @@ class Verdict:
     def fire(self, rule: str, detail: str) -> None:
         self.fired.append(f"{rule}: {detail}")
 
+    def note(self, rule: str, detail: str) -> None:
+        self.notes.append(f"{NOTE_PREFIX}{rule}: {detail}")
+
     def as_json(self) -> str:
-        return json.dumps(self.fired)
+        return json.dumps(self.fired + self.notes)
+
+
+def new_locations(conn: sqlite3.Connection, since: str) -> list[dict]:
+    """Detections after *since* at places with no recent detection history.
+
+    A place, not a row. The same fire re-observed on the next overpass is a
+    new row — the dedup key includes acq_time and satellite — and treating
+    that as an arrival is what made the old rule fire on 101 of ~118 runs.
+
+    Shared with mcp_server.get_new_locations so the model and the shadow
+    verdict count the same things. Two copies of this arithmetic would have
+    the tool telling the agent one number while the recorded note said
+    another, which is the drift thresholds.py exists to prevent.
+
+    Returns one entry per distinct new place, nearest first.
+
+    Places, not fires, and the difference is deliberate. Ten detections of one
+    ignition inside a kilometre collapse to one entry, but a fire front
+    genuinely spanning several kilometres reports several — ten VIIRS pixels
+    in a line already cover about 3.75km. So the count carries a rough sense
+    of extent rather than a count of ignitions, and a large new burn reads as
+    a bigger number than a single hotspot. Anything reading this should treat
+    it as "how much new ground", not "how many new fires".
+    """
+    lookback = (datetime.now(timezone.utc)
+                - timedelta(days=NEW_LOCATION_LOOKBACK_DAYS)).isoformat()
+
+    arrived = conn.execute(
+        """
+        SELECT latitude, longitude, distance_mi, confidence, frp, collected_at
+        FROM hotspots
+        WHERE collected_at > ? AND distance_mi IS NOT NULL AND distance_mi <= ?
+        ORDER BY collected_at
+        """,
+        (since, FAR_DISTANCE_MI),
+    ).fetchall()
+    if not arrived:
+        return []
+
+    # Deliberately not distance-filtered. A prior detection just outside the
+    # 50-mile band still means a place is not new, and excluding those would
+    # invent arrivals along the boundary.
+    known = conn.execute(
+        """
+        SELECT latitude, longitude FROM hotspots
+        WHERE collected_at <= ? AND collected_at >= ?
+        """,
+        (since, lookback),
+    ).fetchall()
+    known_pts = [(r["latitude"], r["longitude"]) for r in known]
+
+    # A degree of latitude is about 69 miles everywhere, so this is a cheap
+    # test that can only over-select — anything within the radius is also
+    # within this band. It keeps the haversine off the great majority of a
+    # fortnight's rows.
+    lat_band = NEW_LOCATION_RADIUS_MI / 69.0
+
+    def seen(lat: float, lon: float, points) -> bool:
+        for plat, plon in points:
+            if abs(lat - plat) > lat_band:
+                continue
+            if haversine_mi(lat, lon, plat, plon) <= NEW_LOCATION_RADIUS_MI:
+                return True
+        return False
+
+    out: list[dict] = []
+    for r in arrived:
+        lat, lon = r["latitude"], r["longitude"]
+        if seen(lat, lon, known_pts):
+            continue
+        # Also against places already accepted from this batch, so a cluster
+        # of ten detections of one new fire counts as one place rather than
+        # ten. The prompt asks about a cluster; this is what makes counting
+        # one possible.
+        if seen(lat, lon, [(o["latitude"], o["longitude"]) for o in out]):
+            continue
+        out.append({
+            "latitude": lat,
+            "longitude": lon,
+            "distance_mi": r["distance_mi"],
+            "confidence": r["confidence"],
+            "frp": r["frp"],
+            "first_seen": r["collected_at"],
+        })
+    out.sort(key=lambda o: o["distance_mi"])
+    return out
 
 
 def evaluate(conn: sqlite3.Connection) -> Verdict:
@@ -160,24 +277,35 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
             break
         prev_key, prev_frp = key, r["frp"]
 
-    # Rule 4 — a hotspot first seen since the previous observation.
-    # collected_at is first-seen time (INSERT OR IGNORE dedup), so "arrived
-    # since the last run" is exactly collected_at > that run's observed_at.
+    # Rule 4 — places with no recent detection history. A NOTE, not a flag.
+    #
+    # This was new_hotspot_since_last_run, and it fired on 101 of ~118 runs
+    # over two months because it counted rows rather than places: collected_at
+    # is first-seen time, but the dedup key includes acq_time and satellite,
+    # so every overpass of an already-burning fire inserts one. In the fifteen
+    # runs of the shadow window it fired fifteen times, and thirteen of those
+    # had no detection within twenty miles at all. The two that did were the
+    # September event, where hotspot_within_20mi fires regardless — so as a
+    # flag it contributed nothing on the only occasions it could have.
+    #
+    # Demoted rather than deleted, because the signal is real and something
+    # needs it. The prompt's persistence exception lets the model stop
+    # re-alarming on a hotspot that is unchanged across runs, and nothing in
+    # the system could tell it what had changed: get_hotspots_since and
+    # get_hotspot_count_since are both row-based and inherit the same defect.
+    # A count of genuinely new places is the input that exception was always
+    # missing, and it is not an alarm.
     last_obs = conn.execute(
         "SELECT observed_at FROM agent_observations ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if last_obs:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) AS n, MIN(distance_mi) AS nearest FROM hotspots
-            WHERE collected_at > ? AND distance_mi IS NOT NULL
-              AND distance_mi <= ?
-            """,
-            (last_obs["observed_at"], FAR_DISTANCE_MI),
-        ).fetchone()
-        if row and row["n"]:
-            v.fire("new_hotspot_since_last_run",
-                   f"{row['n']} new, nearest {row['nearest']:.1f}mi")
+        fresh = new_locations(conn, last_obs["observed_at"])
+        if fresh:
+            v.note("new_locations",
+                   f"{len(fresh)} place(s) with no detection within "
+                   f"{NEW_LOCATION_RADIUS_MI:g}mi in the last "
+                   f"{NEW_LOCATION_LOOKBACK_DAYS}d, nearest "
+                   f"{fresh[0]['distance_mi']:.1f}mi")
 
     # Rule 5 — a named CAL FIRE incident actively burning inside the
     # unconditional radius. Every other rule requires a satellite detection,

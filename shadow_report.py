@@ -28,10 +28,16 @@ Two caveats the report prints rather than hides.
 
 Fire's persistence exception is deliberately absent from its rules — "a
 previously-flagged low-confidence hotspot, unchanged across runs, need not be
-treated as newly alarming" is a de-escalation and cannot be expressed as
-another rule that fires. So Fire is expected to show rules=1/model=0 on
-persistent hotspots, and that disagreement is correct behaviour rather than a
-miss. Any decision to enforce has to net it out.
+treated as newly alarming" is a de-escalation, and a Verdict that only
+accumulates has no way to record one. So Fire is expected to show
+rules=1/model=0 on persistent hotspots, and that disagreement is correct
+behaviour rather than a miss. Any decision to enforce has to net it out.
+
+That was twice described here as inexpressible, which was wrong: it is a
+limitation of having one output channel, not of arithmetic. Verdicts now have
+two — `fire()` and `note()` — and notes appear in `rules_fired` marked with a
+prefix without ever reaching `rules_flagged`. Fire's newness rule is the first
+thing moved across; the de-escalation itself still is not encoded.
 
 And a verdict is only as good as the data it read. Weather rows before the
 2026-09-08 wind unit fix were computed against readings inflated 3.6x; the
@@ -49,11 +55,16 @@ Usage:
 import argparse
 import json
 import sqlite3
+import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BASE = Path(__file__).parent
+
+# The note channel's marker, defined once where flag_rules also reads it.
+sys.path.insert(0, str(BASE))
+from agent_runtime import is_note, strip_note  # noqa: E402
 
 SOURCES = {
     "weather": BASE / "Weather" / "data" / "weather.db",
@@ -119,7 +130,8 @@ def analyse(domain: str, rows: list[sqlite3.Row]) -> dict:
     """Split runs into agreement, each direction of disagreement, and unscored."""
     out = {"domain": domain, "both_flag": 0, "neither": 0,
            "rules_only": [], "model_only": [], "no_verdict": 0,
-           "failed": 0, "fired": Counter(), "first": None, "last": None}
+           "failed": 0, "fired": Counter(), "noted": Counter(),
+           "first": None, "last": None}
     for r in rows:
         if _is_failed(r):
             out["failed"] += 1
@@ -136,7 +148,10 @@ def analyse(domain: str, rows: list[sqlite3.Row]) -> dict:
         rules = bool(rules)
         try:
             for f in json.loads(r["rules_fired"] or "[]"):
-                out["fired"][str(f).split(":")[0]] += 1
+                # Notes ride in the same list and must not be counted as
+                # rules that fired — they never contributed to rules_flagged.
+                bucket = "noted" if is_note(f) else "fired"
+                out[bucket][strip_note(str(f)).split(":")[0]] += 1
         except (TypeError, ValueError):
             pass
         if model and rules:
@@ -184,6 +199,11 @@ def report(a: dict, show: bool) -> None:
         for rule, n in a["fired"].most_common():
             print(f"    {n:4d}  {rule}")
 
+    if a["noted"]:
+        print("\n  notes recorded (measured, never counted toward a flag):")
+        for rule, n in a["noted"].most_common():
+            print(f"    {n:4d}  {rule}")
+
     if a["domain"] == "fire" and a["rules_only"]:
         print("\n  NOTE: Fire's persistence exception is deliberately not in "
               "\n  its rules, so some rules-only rows are the model correctly "
@@ -216,9 +236,9 @@ def report(a: dict, show: bool) -> None:
                     fired = json.loads(r["rules_fired"] or "[]")
                 except (TypeError, ValueError):
                     fired = []
-                if fired:
-                    for f in fired:
-                        print(f"    rule: {f}")
+                for f in fired:
+                    print(f"    {'note' if is_note(f) else 'rule'}: "
+                          f"{strip_note(f)}")
                 print(f"    summary: {(r['summary'] or '')[:300]}")
 
 

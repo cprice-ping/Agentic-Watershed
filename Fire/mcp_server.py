@@ -555,6 +555,48 @@ def get_hotspot_count_since(hours_ago: float = 24.0,
 
 
 @mcp.tool()
+def get_new_locations() -> str:
+    """
+    Which recent detections are at places that were NOT burning before, as
+    opposed to re-observations of a fire already on record.
+
+    Answers "did a new hotspot cluster appear since the last observation", and
+    supplies what the persistence exception needs. The other hotspot tools
+    cannot answer that question: a satellite re-detects an active fire on
+    every overpass, roughly six times a day across three satellites, and each
+    pass is a separate row. A long list from get_hotspots_since is therefore
+    normal for a fire that has been burning for weeks and is not evidence that
+    anything changed.
+
+    Two places count as one when they are within a kilometre, because that is
+    as precisely as the instrument can say they are the same fire. A place
+    counts as new again if nothing has been detected there for a fortnight —
+    a reignition on an old scar is a new fire.
+
+    Returns the distinct new places since the previous agent run, nearest
+    first. An empty list means everything detected recently was already
+    burning somewhere already on record.
+    """
+    with _db() as conn:
+        last = conn.execute(
+            "SELECT observed_at FROM agent_observations ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if not last:
+            return compact_json({
+                "new_locations": [],
+                "note": "no previous observation to compare against",
+            })
+        fresh = flag_rules.new_locations(conn, last["observed_at"])
+    return compact_json({
+        "since": last["observed_at"],
+        "new_location_count": len(fresh),
+        "new_locations": fresh,
+        "same_place_radius_mi": thresholds.NEW_LOCATION_RADIUS_MI,
+        "quiet_days_before_new_again": thresholds.NEW_LOCATION_LOOKBACK_DAYS,
+    })
+
+
+@mcp.tool()
 def write_agent_observation(
     summary: str,
     flagged: bool = False,
