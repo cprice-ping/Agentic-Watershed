@@ -2269,6 +2269,54 @@ B against C settles the second change. The 19 runs where they differ are not
 re-reported every twelve hours until it ages out of the 72-hour window. C is
 the same signal without the stutter.
 
+Then `--detail` on C found a bug in C. Three of its four firings compared two
+pixels acquired in the same minute — 24.79 to 33.48 MW, both at 21:43. A VIIRS
+pixel is 375m, so a fire spanning a kilometre lights up several adjacent
+pixels in one overpass, all sharing acq_date and acq_time. Grouping by place
+gathered them into a series that looks like a time course and is not one:
+consecutive entries were two ends of the same burn at one instant, one hotter
+than the other. Spatial variation read as growth over time — the same
+value-without-its-frame failure as everything else here, introduced by me
+while fixing an instance of it. The 110m grouping had been accidentally immune
+because adjacent pixels fall in different cells.
+
+`by_pass` collapses each place to its hottest pixel per pass before any
+comparison. Max rather than sum, so both sides of the percentile test stay on
+the scale of individual pixel readings. Final replay over 136 runs:
+
+    A  round to 110m, any rising pair          0   (0%)
+    B  places at 1km,  any rising pair        24  (18%)
+    C  places at 1km,  latest vs previous      4   (3%)   3 of 4 same-overpass
+    D  per pass,       latest vs previous      2   (1%)   shipped
+    E  per pass,       any rising pair        17  (12%)
+
+Two firings in two months, and both survive inspection.
+
+2026-09-09 is the Steele Fire, 24.12 to 33.48 MW at 14.3 miles across passes
+at 20:58 and 21:43. The agent flagged that run independently, so the rule
+agrees with it and adds the intensification.
+
+2026-08-26 is the one worth keeping. 8.89 to 32.04 MW at 38.6 miles, passes 81
+minutes apart, comfortably above the p95 of 21.06 — and the agent's summary
+for that run reads "No hotspots detected within 20 miles. All nearest
+detections are low-confidence, clustered 21.2–21.7 miles south." It never
+mentions it. That is a rules-only divergence: the direction shadow_report
+calls a missed alert if the rules are right, and the first one this system has
+produced that was not a rule misfiring.
+
+E is not the answer despite firing more. It is 17 against D's 2, and B's
+extra firings turned out to be one spike smeared across consecutive runs; the
+same check should be run on E before anyone reaches for it. Not verified
+either way here.
+
+The sequence is the point. The rule was silent, the note said to lower the
+threshold, the threshold was not the problem; fixing the grouping created a
+new defect that only showed up because the tool printed acquisition times
+next to the numbers; and the version that survives fires twice in two months,
+once on something nobody had noticed. Every step of that was invisible to the
+shadow verdicts, which record what a rule did and never what a different rule
+would have done.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
