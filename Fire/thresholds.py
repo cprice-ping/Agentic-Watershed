@@ -85,8 +85,19 @@ FRP_NOTABLE_PERCENTILE = 95.0
 #
 # 1.25 is a judgement, not a measurement. It is set to clear both observed
 # false positives with room to spare while staying well below a doubling.
-# The shadow verdicts exist to tune it: if the rule now never fires at all,
-# it is too strict and this is the number to move.
+#
+# This used to end: "if the rule now never fires at all, it is too strict and
+# this is the number to move." The rule then never fired at all — zero times
+# in 135 replayed runs — and that advice would have been wrong. Replaying the
+# same gates against place-based grouping fires 23 times, so the silence was
+# never the threshold. It was frp_rising comparing rows only when they landed
+# in the same 110m cell, which one fire rarely does twice running.
+#
+# Worth keeping as a caution rather than deleting. The note was written in
+# good faith the day the gates went in, it named the right symptom, and it
+# pointed at the nearest knob instead of at the question "silent compared to
+# what". Moving this number would have restored the noise without restoring
+# the signal.
 FRP_RISE_MIN_FACTOR = 1.25
 
 # Fewest FRP readings that can carry a percentile. Below this the notable

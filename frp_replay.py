@@ -1,6 +1,7 @@
 import math
 import os
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -75,20 +76,30 @@ def variant_b(rows, thr):
 
 
 def variant_c(rows, thr):
-    """Place grouping, latest reading against the one before it. (Shipped.)"""
+    """Place grouping, latest reading against the one before it. (Shipped.)
+
+    Returns the strongest qualifying (previous, latest) pair, or None —
+    truthy for counting, and detailed enough for --detail to say what fired.
+    """
+    best = None
     for s in places(rows):
         if len(s) >= 2 and gates_ok(s[-2]["frp"], s[-1]["frp"], thr):
-            return True
-    return False
+            if best is None or s[-1]["frp"] > best[1]["frp"]:
+                best = (s[-2], s[-1])
+    return best
 
+
+DETAIL = "--detail" in sys.argv
 
 conn = sqlite3.connect(DB)
 conn.row_factory = sqlite3.Row
 runs = conn.execute(
-    "SELECT observed_at FROM agent_observations ORDER BY observed_at").fetchall()
+    "SELECT observed_at, summary, flagged FROM agent_observations"
+    " ORDER BY observed_at").fetchall()
 
 n = a = b = c = 0
 bc_split = []
+c_fires = []
 for run in runs:
     at = run["observed_at"]
     try:
@@ -97,7 +108,7 @@ for run in runs:
     except ValueError:
         continue
     rows = conn.execute(
-        """SELECT latitude, longitude, acq_date, acq_time, frp
+        """SELECT latitude, longitude, acq_date, acq_time, frp, distance_mi
            FROM hotspots
            WHERE collected_at >= ? AND collected_at <= ? AND frp IS NOT NULL
              AND distance_mi IS NOT NULL AND distance_mi <= ?
@@ -106,12 +117,15 @@ for run in runs:
         continue
     thr = notable(conn, at)
     n += 1
-    ra, rb, rc = variant_a(rows, thr), variant_b(rows, thr), variant_c(rows, thr)
+    ra, rb = variant_a(rows, thr), variant_b(rows, thr)
+    rc = variant_c(rows, thr)
     a += ra
     b += rb
-    c += rc
-    if rb != rc:
-        bc_split.append((at[:16], rb, rc))
+    c += bool(rc)
+    if rb != bool(rc):
+        bc_split.append((at[:16], rb, bool(rc)))
+    if rc:
+        c_fires.append((at, run["summary"], run["flagged"], rc, thr))
 
 if not n:
     print("No runs with FRP readings in window.")
@@ -125,3 +139,19 @@ print(f"\n  B and C differ on {len(bc_split)} run(s) — those are spikes that h
 print("  already reversed by the time the run happened.")
 for at, rb, rc in bc_split[:12]:
     print(f"    {at}  B={rb} C={rc}")
+
+if not DETAIL:
+    print("\n  Re-run with --detail to see what C fires on. A plausible count "
+          "is not\n  the same as real events.")
+    raise SystemExit
+
+print(f"\n=== what C fires on ({len(c_fires)} run(s)) ===")
+for at, summary, flagged, (prev, cur), thr in c_fires:
+    gate = f"p{PCT:g}={thr:.2f}MW" if thr is not None else "no percentile gate"
+    print(f"\n  {at[:19]}   agent flagged={bool(flagged)}")
+    print(f"    {prev['frp']:.2f} -> {cur['frp']:.2f} MW "
+          f"(x{cur['frp'] / prev['frp']:.2f}, {gate}) "
+          f"at {cur['distance_mi']:.1f}mi")
+    print(f"    previous pass {prev['acq_date']} {prev['acq_time']}, "
+          f"latest {cur['acq_date']} {cur['acq_time']}")
+    print(f"    agent said: {(summary or '')[:220]}")
