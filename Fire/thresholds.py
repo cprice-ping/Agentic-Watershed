@@ -26,9 +26,25 @@ _DAY_RANGE = _NODE_CFG["fire"]["day_range"]
 # "this old one is still the nearest threat".
 NEAREST_HOTSPOT_MAX_AGE_HOURS = _DAY_RANGE * 24 + 24
 
-# How many hours around observedAt the published hotspotCount covers. Narrower
-# than the currency window and documented separately in the lexicon.
-HOTSPOT_COUNT_WINDOW_HOURS = 6
+# hotspotCount used to have its own ±6h window and no distance filter, making
+# it the third population in one fire block: nearestHotspot* and maxHotspot*
+# read the currency window above with distance_mi NOT NULL, the agent's prose
+# came from get_nearest_hotspots reading the same, and the count read neither.
+#
+# It also counted the wrong thing. collected_at freezes at first-seen time
+# (INSERT OR IGNORE dedup, see Fire/collector.py), so the count measured how
+# many detections were first STORED near observedAt, not how many hotspots
+# existed. VIIRS gives roughly six overpasses a day across three satellites
+# and NRT lags about three hours, so detections arrive in bursts: land between
+# bursts and the count reads 0 with ten hotspots current in the table.
+#
+# That is what the 2026-09-12 synthesis record caught — "hotspotCount: 0 in
+# the structured field despite the summary describing 9-10 hotspots in range"
+# — the first defect in this system found by the system rather than by a
+# person reading a record.
+#
+# The count now draws from the same population as every other structured fire
+# number, so there is no separate window to name.
 
 NEAR_DISTANCE_MI = 20.0   # unconditional on confidence
 FAR_DISTANCE_MI  = 50.0   # high-confidence only

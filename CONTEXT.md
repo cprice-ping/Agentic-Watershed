@@ -1967,6 +1967,53 @@ per-row while the right way is usually once. Both instances here were
 introduced while correcting a genuine defect, by someone who had just
 finished explaining why the defect mattered.
 
+### The system found one (2026-09-12)
+
+The 2026-09-12 18:00 synthesis record contains this, unprompted:
+
+> Both records report hotspotCount: 0 in the structured field despite the
+> summary describing "9-10 hotspots in range matching the confirmed incident"
+> — this is a field/summary conflict worth noting: the numeric hotspotCount
+> field says zero while the prose describes nearly a dozen matched
+> detections. I'm reporting this discrepancy rather than picking a side.
+
+That is the two-authors rule doing precisely what it was written for four
+days earlier, and it is the first defect in this project found by the system
+rather than by a person reading a record. The shadow rules could not have
+caught it — they read the same table. The publisher could not — it wrote the
+wrong number confidently. What caught it was a model noticing that two
+descriptions of one event disagreed and declining to resolve them.
+
+The bug was real, and it was the same bug as everything else here. Three
+things described one fire block, from three different populations:
+
+```
+nearestHotspot* / maxHotspot*   collected_at >= observedAt - 72h, distance NOT NULL
+get_nearest_hotspots (prose)    collected_at >= now - 72h, ordered by distance
+hotspotCount                    |collected_at - observedAt| < 6h, no distance filter
+```
+
+Different window, different clock, no distance bound. And `collected_at`
+freezes at first-seen time under the INSERT OR IGNORE dedup — the collector
+says so in its own comments — so the count measured how many detections were
+first STORED near observedAt, not how many hotspots existed. VIIRS gives
+about six overpasses a day across three satellites and NRT lags roughly three
+hours, so detections arrive in bursts. Land between bursts, as a steady
+75%-contained fire does, and the count reads 0 with ten hotspots current.
+
+`hotspotCount` now draws from the same population as every other structured
+fire number, `HOTSPOT_COUNT_WINDOW_HOURS` is retired, and the lexicon says
+what the field means rather than what its window was. A count of 0 now agrees
+with an absent `nearestHotspotDistanceMi` instead of contradicting it.
+
+Worth recording what this says about the domain-agent question that had been
+running all week. The value of a model here was not in the flag, which the
+rules reproduce, nor in the prose, which a template could assemble. It was in
+holding two accounts of the same event side by side and noticing they did not
+match — and then saying so instead of choosing. That is not arithmetic over
+one table, and it is the one thing in this system that no rule was ever going
+to do.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
