@@ -289,7 +289,7 @@
         },
         "hotspotCount": {
           "type": "integer",
-          "description": "Count of hotspots within the 6-hour window around observedAt."
+          "description": "How many hotspots are current at observedAt: the same set nearestHotspot* and maxHotspot* are drawn from \u2014 detected inside the collector's currency window and carrying a distance. Until 2026-09-12 this had its own plus or minus 6 hour window and no distance filter, and counted rows by when they were first STORED rather than when detected, so it could read 0 while ten hotspots sat current in the table. A count of 0 now means no current hotspots, which is also what an absent nearestHotspotDistanceMi means."
         }
       }
     },

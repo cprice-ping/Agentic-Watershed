@@ -809,8 +809,9 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
 
     Returns no distance/confidence/frp at all when nothing is current, so
     build_fire_record omits those fields rather than publishing a stale
-    reading. hotspotCount keeps its own narrower window, which the lexicon
-    documents separately.
+    reading. hotspotCount now comes from this same window too — it had its
+    own ±6h one, which made it the third population described by one fire
+    block and let it read 0 while ten hotspots sat current in the table.
     """
     db_path = DB_PATHS["fire"]
     if not db_path.exists():
@@ -830,13 +831,17 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
             """,
             (cutoff,),
         ).fetchone()
+        # Same population as nearest and peak: the currency window, with a
+        # distance. It used to be its own ±6h window with no distance filter,
+        # counting how many detections were first STORED near observedAt
+        # rather than how many hotspots were current — see thresholds.py.
         count_row = conn.execute(
             """
             SELECT COUNT(*) as n
             FROM hotspots
-            WHERE ABS(strftime('%s', collected_at) - strftime('%s', ?)) < 3600 * ?
+            WHERE collected_at >= ? AND distance_mi IS NOT NULL
             """,
-            (observed_at, _FIRE_THRESHOLDS.HOTSPOT_COUNT_WINDOW_HOURS),
+            (cutoff,),
         ).fetchone()
         # The most energetic hotspot in the same window. Ordered by FRP rather
         # than distance; ties break on the nearer one so the field is stable
