@@ -76,7 +76,7 @@ def variant_b(rows, thr):
 
 
 def variant_c(rows, thr):
-    """Place grouping, latest reading against the one before it. (Shipped.)
+    """Place grouping, latest reading against the one before it.
 
     Returns the strongest qualifying (previous, latest) pair, or None —
     truthy for counting, and detailed enough for --detail to say what fired.
@@ -89,6 +89,42 @@ def variant_c(rows, thr):
     return best
 
 
+def by_pass(s):
+    """One reading per satellite pass — the hottest pixel of each.
+
+    Without this, adjacent pixels from a single overpass share an acq_time
+    and read as a time series. Three of C's four firings compared two pixels
+    acquired in the same minute.
+    """
+    out = {}
+    for r in s:
+        k = (r["acq_date"], r["acq_time"])
+        if k not in out or (r["frp"] or 0) > (out[k]["frp"] or 0):
+            out[k] = r
+    return [out[k] for k in sorted(out)]
+
+
+def variant_d(rows, thr):
+    """Per-pass, latest pass against the one before it. (Shipped.)"""
+    best = None
+    for s in places(rows):
+        s = by_pass(s)
+        if len(s) >= 2 and gates_ok(s[-2]["frp"], s[-1]["frp"], thr):
+            if best is None or s[-1]["frp"] > best[1]["frp"]:
+                best = (s[-2], s[-1])
+    return best
+
+
+def variant_e(rows, thr):
+    """Per-pass, any rising consecutive pair in the window."""
+    for s in places(rows):
+        s = by_pass(s)
+        for prev, cur in zip(s, s[1:]):
+            if gates_ok(prev["frp"], cur["frp"], thr):
+                return True
+    return False
+
+
 DETAIL = "--detail" in sys.argv
 
 conn = sqlite3.connect(DB)
@@ -97,9 +133,10 @@ runs = conn.execute(
     "SELECT observed_at, summary, flagged FROM agent_observations"
     " ORDER BY observed_at").fetchall()
 
-n = a = b = c = 0
+n = a = b = c = d = e = 0
 bc_split = []
-c_fires = []
+d_fires = []
+same_pass = 0
 for run in runs:
     at = run["observed_at"]
     try:
@@ -118,14 +155,21 @@ for run in runs:
     thr = notable(conn, at)
     n += 1
     ra, rb = variant_a(rows, thr), variant_b(rows, thr)
-    rc = variant_c(rows, thr)
+    rc, rd = variant_c(rows, thr), variant_d(rows, thr)
+    re_ = variant_e(rows, thr)
     a += ra
     b += rb
     c += bool(rc)
+    d += bool(rd)
+    e += re_
     if rb != bool(rc):
         bc_split.append((at[:16], rb, bool(rc)))
-    if rc:
-        c_fires.append((at, run["summary"], run["flagged"], rc, thr))
+    # How much of C was two pixels from one overpass rather than a change.
+    if rc and (rc[0]["acq_date"], rc[0]["acq_time"]) == \
+              (rc[1]["acq_date"], rc[1]["acq_time"]):
+        same_pass += 1
+    if rd:
+        d_fires.append((at, run["summary"], run["flagged"], rd, thr))
 
 if not n:
     print("No runs with FRP readings in window.")
@@ -135,18 +179,24 @@ print(f"frp_rising replayed over {n} run(s) with FRP data in window\n")
 print(f"  A  round to 110m, any rising pair (current)   {a:4d}  ({100*a/n:.0f}%)")
 print(f"  B  places at 1km,  any rising pair            {b:4d}  ({100*b/n:.0f}%)")
 print(f"  C  places at 1km,  latest vs previous         {c:4d}  ({100*c/n:.0f}%)")
+print(f"  D  per pass,       latest vs previous         {d:4d}  ({100*d/n:.0f}%)"
+      "   <- shipped")
+print(f"  E  per pass,       any rising pair            {e:4d}  ({100*e/n:.0f}%)")
+print(f"\n  Of C's {c} firing(s), {same_pass} compared two pixels from the SAME "
+      "overpass —\n  spatial variation across one burn, not a fire growing. "
+      "D collapses each\n  place to its hottest pixel per pass first.")
 print(f"\n  B and C differ on {len(bc_split)} run(s) — those are spikes that had")
 print("  already reversed by the time the run happened.")
 for at, rb, rc in bc_split[:12]:
     print(f"    {at}  B={rb} C={rc}")
 
 if not DETAIL:
-    print("\n  Re-run with --detail to see what C fires on. A plausible count "
+    print("\n  Re-run with --detail to see what D fires on. A plausible count "
           "is not\n  the same as real events.")
     raise SystemExit
 
-print(f"\n=== what C fires on ({len(c_fires)} run(s)) ===")
-for at, summary, flagged, (prev, cur), thr in c_fires:
+print(f"\n=== what D fires on ({len(d_fires)} run(s)) ===")
+for at, summary, flagged, (prev, cur), thr in d_fires:
     gate = f"p{PCT:g}={thr:.2f}MW" if thr is not None else "no percentile gate"
     print(f"\n  {at[:19]}   agent flagged={bool(flagged)}")
     print(f"    {prev['frp']:.2f} -> {cur['frp']:.2f} MW "
