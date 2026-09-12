@@ -2210,6 +2210,40 @@ that.
 The rule goes from 15 of 15 flags to zero, keeps its signal, and the prompt
 criterion stays as written because it is answerable for the first time.
 
+### The same mistake, pointing the other way (2026-09-12)
+
+The newness investigation turned up 337 places at 110m against 86 at a
+kilometre, and `frp_rising` was grouping at 110m. Same defect, opposite
+consequence.
+
+Rounding coordinates to three decimals is finer than the instrument can place
+a pixel — VIIRS is 375m at nadir, nearer 800m at the swath edge, with
+geolocation error on top — so one fire lands in a different cell from pass to
+pass. `frp_rising` compared consecutive rows only when they shared a cell, so
+it could see a fire growing only when two passes happened to fall in the same
+110m box. The newness rule invented events; this one hid them. Of the two,
+this is the dangerous direction.
+
+Both rules now use `group_by_place`, one definition of "the same place",
+clustered by distance rather than by rounding so a boundary cannot split a
+fire. Clustering is greedy against each cluster's seed rather than all its
+members, so a long fire front cannot chain into one cluster spanning miles.
+
+Fixing the grouping forced a second question that the broken grouping had been
+hiding. The rule fired on any rising consecutive pair inside the 72-hour
+window, first match wins. With detections fragmented across cells that rarely
+found a pair at all; with correct grouping each place carries a full series,
+and "some pair rose at some point in three days" is close to always true — and
+would keep firing for three days on a spike that had already reversed. The
+comparison is now the latest reading at a place against the one before it,
+which is the question the rule is named for. Where several places qualify, the
+highest current FRP is reported.
+
+That second change is reasoning, not measurement, which is the weaker footing
+of the two. `frp_replay.py` in the session scratchpad replays all three
+variants over recorded history so the choice can be checked against data
+rather than argument.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

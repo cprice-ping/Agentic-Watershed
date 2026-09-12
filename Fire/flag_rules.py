@@ -104,6 +104,52 @@ class Verdict:
         return json.dumps(self.fired + self.notes)
 
 
+# A degree of latitude is about 69 miles everywhere, so this bound can only
+# over-select: anything inside the radius is also inside the band. It keeps
+# the haversine off the great majority of rows.
+_LAT_BAND = NEW_LOCATION_RADIUS_MI / 69.0
+
+
+def same_place(lat: float, lon: float, points) -> bool:
+    """Whether (lat, lon) is within NEW_LOCATION_RADIUS_MI of any of *points*.
+
+    One definition of "the same place", shared by the newness note and the FRP
+    rule. They previously disagreed: newness compared by distance while
+    frp_rising rounded coordinates to three decimals, and the two answers were
+    not close — the same two months of detections are 86 places by distance
+    and 337 by rounding.
+    """
+    for plat, plon in points:
+        if abs(lat - plat) > _LAT_BAND:
+            continue
+        if haversine_mi(lat, lon, plat, plon) <= NEW_LOCATION_RADIUS_MI:
+            return True
+    return False
+
+
+def group_by_place(rows) -> list[list]:
+    """Cluster detections into places, preserving each row's order within one.
+
+    Greedy, against each cluster's first member rather than all of them, so a
+    long fire front cannot chain into one cluster spanning miles: every
+    cluster stays inside a radius of its seed. Rows keep the order they
+    arrive in, so passing them in acquisition order yields a time series per
+    place.
+    """
+    clusters: list[list] = []
+    seeds: list[tuple] = []
+    for r in rows:
+        lat, lon = r["latitude"], r["longitude"]
+        for i, seed in enumerate(seeds):
+            if same_place(lat, lon, [seed]):
+                clusters[i].append(r)
+                break
+        else:
+            seeds.append((lat, lon))
+            clusters.append([r])
+    return clusters
+
+
 def new_locations(conn: sqlite3.Connection, since: str) -> list[dict]:
     """Detections after *since* at places with no recent detection history.
 
@@ -153,30 +199,16 @@ def new_locations(conn: sqlite3.Connection, since: str) -> list[dict]:
     ).fetchall()
     known_pts = [(r["latitude"], r["longitude"]) for r in known]
 
-    # A degree of latitude is about 69 miles everywhere, so this is a cheap
-    # test that can only over-select — anything within the radius is also
-    # within this band. It keeps the haversine off the great majority of a
-    # fortnight's rows.
-    lat_band = NEW_LOCATION_RADIUS_MI / 69.0
-
-    def seen(lat: float, lon: float, points) -> bool:
-        for plat, plon in points:
-            if abs(lat - plat) > lat_band:
-                continue
-            if haversine_mi(lat, lon, plat, plon) <= NEW_LOCATION_RADIUS_MI:
-                return True
-        return False
-
     out: list[dict] = []
     for r in arrived:
         lat, lon = r["latitude"], r["longitude"]
-        if seen(lat, lon, known_pts):
+        if same_place(lat, lon, known_pts):
             continue
         # Also against places already accepted from this batch, so a cluster
         # of ten detections of one new fire counts as one place rather than
         # ten. The prompt asks about a cluster; this is what makes counting
         # one possible.
-        if seen(lat, lon, [(o["latitude"], o["longitude"]) for o in out]):
+        if same_place(lat, lon, [(o["latitude"], o["longitude"]) for o in out]):
             continue
         out.append({
             "latitude": lat,
@@ -233,8 +265,29 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     # itself unusual for this collector.
     #
     # Hotspots dedup on (lat, lon, acq_date, acq_time, satellite), so a
-    # re-detection of the same fire is a separate row; grouping by rounded
-    # coordinates is what makes "the same hotspot over time" expressible.
+    # re-detection of the same fire is a separate row; grouping detections
+    # into places is what makes "the same hotspot over time" expressible.
+    #
+    # That grouping used to round coordinates to three decimals — about 110m,
+    # finer than the instrument can place a pixel. VIIRS is 375m at nadir and
+    # nearer 800m at the swath edge, with geolocation error on top, so one
+    # fire lands in a different cell from pass to pass: the same two months of
+    # detections are 86 places measured by distance and 337 by rounding. The
+    # rule could therefore only see a fire growing when two consecutive passes
+    # happened to fall in the same 110m box, which is the opposite failure
+    # from the newness rule's and the more dangerous direction — it hid
+    # intensification rather than inventing it. Places now come from
+    # group_by_place, the same definition the newness note uses.
+    #
+    # It also used to fire on ANY rising consecutive pair inside the 72-hour
+    # window, first match wins. With fragmented grouping that rarely found a
+    # pair at all; with correct grouping each place carries a full series and
+    # "some pair rose at some point in three days" would be close to always
+    # true, and would keep firing for three days on a spike that had already
+    # reversed. The comparison is now the latest reading at a place against
+    # the one before it, which is the question the rule is named for: is this
+    # fire intensifying now. Where several places qualify, the one with the
+    # highest current FRP is reported.
     #
     # Two gates, added 2026-09-11. The rule used to fire on any increase and
     # therefore fired on 12 of the first 13 scored runs — on 0.09 -> 0.10 MW
@@ -251,31 +304,38 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     notable_frp = _notable_frp_threshold(conn)
     rows = conn.execute(
         """
-        SELECT ROUND(latitude, 3) AS lat, ROUND(longitude, 3) AS lon,
-               acq_date, acq_time, frp, distance_mi
+        SELECT latitude, longitude, acq_date, acq_time, frp, distance_mi
         FROM hotspots
         WHERE collected_at >= ? AND frp IS NOT NULL
           AND distance_mi IS NOT NULL AND distance_mi <= ?
-        ORDER BY lat, lon, acq_date, acq_time
+        ORDER BY acq_date, acq_time
         """,
         (cutoff, FAR_DISTANCE_MI),
     ).fetchall()
-    prev_key = None
-    prev_frp = None
-    for r in rows:
-        key = (r["lat"], r["lon"])
-        if (key == prev_key and prev_frp is not None and prev_frp > 0
-                and r["frp"] >= prev_frp * FRP_RISE_MIN_FACTOR
-                and (notable_frp is None or r["frp"] >= notable_frp)):
-            gate = (f">= p{FRP_NOTABLE_PERCENTILE:g} of {notable_frp:.2f} MW"
-                    if notable_frp is not None
-                    else "percentile gate skipped, <20 FRP readings on record")
-            v.fire("frp_rising",
-                   f"{prev_frp:.2f} -> {r['frp']:.2f} MW "
-                   f"(x{r['frp'] / prev_frp:.2f}, {gate}) "
-                   f"at {r['distance_mi']:.1f}mi")
-            break
-        prev_key, prev_frp = key, r["frp"]
+
+    best = None
+    for series in group_by_place(rows):
+        if len(series) < 2:
+            continue
+        prev, latest = series[-2], series[-1]
+        if not prev["frp"] or prev["frp"] <= 0:
+            continue
+        if latest["frp"] < prev["frp"] * FRP_RISE_MIN_FACTOR:
+            continue
+        if notable_frp is not None and latest["frp"] < notable_frp:
+            continue
+        if best is None or latest["frp"] > best[1]["frp"]:
+            best = (prev, latest)
+
+    if best is not None:
+        prev, latest = best
+        gate = (f">= p{FRP_NOTABLE_PERCENTILE:g} of {notable_frp:.2f} MW"
+                if notable_frp is not None
+                else "percentile gate skipped, <20 FRP readings on record")
+        v.fire("frp_rising",
+               f"{prev['frp']:.2f} -> {latest['frp']:.2f} MW "
+               f"(x{latest['frp'] / prev['frp']:.2f}, {gate}) "
+               f"at {latest['distance_mi']:.1f}mi")
 
     # Rule 4 — places with no recent detection history. A NOTE, not a flag.
     #
