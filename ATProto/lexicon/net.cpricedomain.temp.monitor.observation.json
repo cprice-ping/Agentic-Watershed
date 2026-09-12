@@ -47,7 +47,7 @@
           "flagReason": {
             "type": "string",
             "maxLength": 200,
-            "description": "Brief reason if flagged. Empty string if not flagged."
+            "description": "Brief reason if flagged. Empty string if not flagged. On domain records this is generated rather than written by the agent: it names the deterministic rule(s) that matched and the values that matched them, or states that the flag was the model's judgement with no rule behind it. Those rules are evaluated independently of the model's `flagged` bit and have never overridden it, so this explains the flag with the best evidence available rather than asserting the model's motive. Synthesis records carry the synthesis agent's own one-line label here instead."
           },
 
           "agentModel": {

@@ -61,6 +61,35 @@ LEXICON = "net.cpricedomain.temp.monitor.observation"
 _NODE_CFG = json.loads((BASE / "node_config.json").read_text())
 NODE_ID   = _NODE_CFG["node_id"]
 
+# The note marker, so a note recorded next to a fired rule never reaches a
+# published record as though it were the reason for the flag.
+sys.path.insert(0, str(BASE))
+from agent_runtime import is_note  # noqa: E402
+
+
+def _lexicon_max_bytes(field: str, default: int) -> int:
+    """A field's maxLength, read from the lexicon rather than restated here.
+
+    The lexicon is the contract this publisher writes against, so a cap
+    copied into Python is a second copy of a number that can drift from the
+    thing enforcing it — the shape that produced the four-copies threshold
+    drift and the currency window that existed in three places and was
+    missing from a fourth.
+
+    Falls back to *default* rather than failing: an unreadable lexicon file
+    must not stop a node publishing. Over-long output would be rejected by
+    the PDS loudly, so the failure mode of a stale fallback is visible.
+    """
+    try:
+        doc = json.loads(
+            (Path(__file__).parent / "lexicon" / f"{LEXICON}.json").read_text())
+        props = doc["defs"]["main"]["record"]["properties"]
+        return int(props[field]["maxLength"])
+    except (OSError, KeyError, ValueError, TypeError) as exc:
+        log.warning("Could not read %s maxLength from the lexicon (%s); "
+                    "using %d", field, exc, default)
+        return default
+
 
 def _load_domain_thresholds(domain: str):
     """Load a domain's thresholds module by path.
@@ -103,6 +132,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
 log = logging.getLogger("atproto.publisher")
+
+# Resolved after logging is configured, because the fallback path warns.
+FLAG_REASON_MAX_BYTES = _lexicon_max_bytes("flagReason", 200)
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +925,76 @@ def _atproto_safe(value):
 
 
 # ---------------------------------------------------------------------------
+# flagReason
+# ---------------------------------------------------------------------------
+#
+# Domain records published `flagged: true` with `flagReason: ""` for the
+# entire life of this system. On 2026-09-09 that included an observation whose
+# summary opened "ACTIVE WILDFIRE" — anyone filtering the firehose on
+# flagReason got an empty string for the most consequential fire record the
+# node has produced.
+#
+# It stayed empty because there was nothing honest to put in it. The agents
+# return summary, flagged and reasoning; none of those is a one-line reason,
+# and reasoning is long-form model prose that would have been truncated into
+# a fragment and published as though it were a label. Filling the field with
+# the first 200 bytes of that would have been the agentModel defect again: a
+# structured field asserting something nobody checked.
+#
+# flag_rules.py made a real answer available. The rules evaluate the same
+# criteria the prompt states, independently of the model, and record which one
+# matched and on what values. That is a reason, computed rather than narrated.
+
+
+def _fit(text: str, max_bytes: int) -> str:
+    """Truncate to a byte limit on a character boundary."""
+    encoded = (text or "").encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text or ""
+    return encoded[:max_bytes - 3].decode("utf-8", errors="ignore") + "…"
+
+
+def _fired_rules(row: dict) -> list[str]:
+    """Rules that matched on this run, excluding notes.
+
+    A note is measured and recorded but never contributed to the flag — see
+    agent_runtime.NOTE_PREFIX — so it must not be published as the reason for
+    one. Fire's newness signal is a note, and it is present on most runs.
+    """
+    try:
+        entries = json.loads(row.get("rules_fired") or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(e) for e in entries if not is_note(e)]
+
+
+def _flag_reason(row: dict) -> str:
+    """One line saying why this record is flagged, or "" when it is not.
+
+    The published `flagged` bit is the model's, and the rules are shadow —
+    they have never overridden it. So this explains the flag with the best
+    evidence available and says plainly when there is none, rather than
+    implying the rule is why the model decided:
+
+      a rule matched      the rule and the values that matched it
+      no rule matched     the flag is judgement with no arithmetic behind it
+      no verdict          the rules did not run, which is not the same thing
+
+    The third case matters. A row from before shadow recording, or one where
+    rule evaluation raised, has rules_fired NULL — reporting that as "no rule
+    matched" would assert a negative result that was never computed.
+    """
+    if not bool(row.get("flagged", False)):
+        return ""
+    fired = _fired_rules(row)
+    if fired:
+        return _fit("; ".join(fired), FLAG_REASON_MAX_BYTES)
+    if row.get("rules_flagged") is None:
+        return "model judgement; no rule verdict was recorded for this run"
+    return "model judgement; no deterministic rule matched"
+
+
+# ---------------------------------------------------------------------------
 # Observation builders — convert DB rows to lexicon records
 # ---------------------------------------------------------------------------
 
@@ -919,7 +1021,7 @@ def build_watershed_record(row: dict, observed_at: str) -> dict:
         "observationType": f"{LEXICON}#watershed",
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
-        "flagReason": "",
+        "flagReason": _flag_reason(row),
         "agentModel": row.get("model") or "unknown",
         "watershed": watershed_block,
     }
@@ -958,7 +1060,7 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
         "observationType": f"{LEXICON}#weather",
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
-        "flagReason": "",
+        "flagReason": _flag_reason(row),
         "agentModel": row.get("model") or "unknown",
         "weather": weather_block,
     }
@@ -981,7 +1083,7 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         "observationType": f"{LEXICON}#aqi",
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
-        "flagReason": "",
+        "flagReason": _flag_reason(row),
         "agentModel": row.get("model") or "unknown",
         "aqi": aqi_block,
     }
@@ -1027,7 +1129,7 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
         "observationType": f"{LEXICON}#fire",
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
-        "flagReason": "",
+        "flagReason": _flag_reason(row),
         "agentModel": row.get("model") or "unknown",
         "fire": fire_block,
     }

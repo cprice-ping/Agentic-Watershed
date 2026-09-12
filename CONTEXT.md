@@ -1604,11 +1604,12 @@ defining Diablo as NE/E. Both errors moved the same direction. The rule makes
 the disagreement itself a reportable output, so the model is not forced to
 resolve something it cannot resolve.
 
-Still open from the same record: `flagged: true` with `flagReason: ""` on an
+Also from the same record: `flagged: true` with `flagReason: ""` on an
 observation whose summary opens "ACTIVE WILDFIRE". Anyone filtering the
-firehose on flagReason gets an empty string for the most consequential fire
-record the system has produced. That remains parked pending shadow-verdict
-divergence data, but this is the strongest case yet for unparking it.
+firehose on flagReason got an empty string for the most consequential fire
+record the system has produced. Parked at the time pending shadow-verdict
+divergence data; fixed on 2026-09-12 once `rules_fired` could supply a reason
+that was computed rather than narrated (see below).
 
 ### Two windows, one of them imaginary (2026-09-10)
 
@@ -2317,6 +2318,59 @@ once on something nobody had noticed. Every step of that was invisible to the
 shadow verdicts, which record what a rule did and never what a different rule
 would have done.
 
+### A field that was empty because there was nothing honest for it (2026-09-12)
+
+Domain records published `flagReason: ""` for the entire life of this system,
+including on the 2026-09-09 record whose summary opens "ACTIVE WILDFIRE".
+
+It was easy to read that as an oversight. It was not. The agents return
+summary, flagged and reasoning; none of those is a one-line reason. Truncating
+`reasoning` to 200 bytes would have put a fragment of model prose into a
+structured field as though it were a label — the `agentModel` defect again, a
+field asserting something nobody checked. Empty was the more honest of the two
+available answers, which is why it stayed empty through several rounds of
+noticing it.
+
+`flag_rules.py` is what made a third answer possible. The rules evaluate the
+same criteria the prompt states, independently of the model, and record which
+one matched and on what values. That is a reason, computed rather than
+narrated, and it needed no new data — `rules_fired` was already on the row the
+publisher reads.
+
+Three cases, and the third is the one that took thought:
+
+    a rule matched      the rule and the values that matched it
+    no rule matched     "model judgement; no deterministic rule matched"
+    no verdict          "no rule verdict was recorded for this run"
+
+A row from before shadow recording, or one where rule evaluation raised, has
+`rules_fired` NULL. Reporting that as "no rule matched" would assert a
+negative result that was never computed — the same shape as `hotspotCount: 0`
+meaning "nothing was stored in this window" while reading as "no hotspots
+exist". Silence about a measurement and a measurement of silence are different
+facts and the field now says which one it holds.
+
+Notes are excluded. Fire's newness signal is a note, present on most runs, and
+it never contributed to a flag; publishing it as the reason for one would have
+undone the point of giving `Verdict` a second channel in the first place.
+
+The cap is read from the lexicon rather than restated in Python. Writing that
+lookup, I pointed it at `defs.observation` when the def is `defs.main`, so it
+silently fell back to the hardcoded 200 — correct output, wrong mechanism, and
+invisible because the fallback is the same number. The test now asserts the
+lookup returns the declared value when handed a deliberately wrong default,
+which is what caught it.
+
+**Still open, and now the more interesting half.** The published `flagged` bit
+is the model's, and the lexicon says flagReason is empty when it is false. So
+a rules-only divergence — rules fired, model did not flag — publishes as an
+unflagged record with an empty reason, and the 2026-08-26 case is exactly
+that: 8.89 to 32.04 MW at 38.6 miles, above p95, and the agent's summary never
+mentions it. Nothing about that leaves the node. Putting it in flagReason
+would break the field's contract; it wants its own field, something like
+`rulesFired` as an array on domain records, which is a lexicon change touching
+the subscriber and the Viewer too.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
@@ -2386,11 +2440,10 @@ Worth considering a sanity bound on collector inputs — a value outside what
 the location can physically produce is a collector bug, not an observation.
 
 Also unresolved: `domainsObserved` is still hardcoded to all four domains in
-`Synthesis/publisher.py`, and domain records still publish `flagReason` as an
-empty string. Both are the same shape as the `agentModel` problem — a field
-asserting something nobody checked — and both are waiting on the same
-divergence data, since `rules_fired` is the natural source for a real
-flagReason.
+`Synthesis/publisher.py`. Same shape as the `agentModel` problem — a field
+asserting something nobody checked. `flagReason` was the other half of this
+note and is now resolved; `rules_fired` turned out to be the source, as
+expected.
 
 ## Architecture decisions made
 
