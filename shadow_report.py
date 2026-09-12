@@ -1,7 +1,7 @@
 """
 Shadow verdict report — where the rules and the model disagree.
 
-Weather, AQI and Fire each evaluate their flag criteria twice: the model
+All four domains now evaluate their flag criteria twice: the model
 decides `flagged`, and flag_rules.py independently evaluates the same
 criteria as arithmetic into `rules_flagged` / `rules_fired`. The rules have
 never been authoritative. They were added to measure the disagreement before
@@ -55,13 +55,24 @@ from pathlib import Path
 
 BASE = Path(__file__).parent
 
-# River has no flag_rules.py: its criteria are flood-stage thresholds that
-# are not configured for either Napa gauge, so there is nothing to shadow.
 SOURCES = {
     "weather": BASE / "Weather" / "data" / "weather.db",
     "aqi":     BASE / "AQI"     / "data" / "aqi.db",
     "fire":    BASE / "Fire"    / "data" / "fire.db",
+    "river":   BASE / "River"   / "data" / "watershed.db",
 }
+
+# River joined on 2026-09-12 and its rules test something different from the
+# other three. Weather, AQI and Fire encode a documented threshold the agent
+# was already told to apply, so a disagreement means one of them misread a
+# criterion both were given. River has no such threshold — floodStageThresholdFt
+# is unconfigured for both Napa gauges — and its one rule measures a rate of
+# change nobody wrote down. So a River disagreement in the model-only direction
+# is the expected case, not a defect: the agent's five low-water flags in the
+# 2026-09-12 template comparison were September restated as an emergency, and
+# the rules are silent on them by design. The direction worth reading for River
+# is rules-only, which would be a surge the agent narrated past.
+RIVER_RULES_FROM = "2026-09-12"
 
 # Verdicts recorded before this are suspect for Weather — see module docstring.
 WIND_FIX_AT = "2026-09-08"
@@ -177,6 +188,13 @@ def report(a: dict, show: bool) -> None:
         print("\n  NOTE: Fire's persistence exception is deliberately not in "
               "\n  its rules, so some rules-only rows are the model correctly "
               "\n  declining to re-alarm on an unchanged hotspot, not a miss.")
+    if a["domain"] == "river" and a["model_only"]:
+        print(f"\n  NOTE: River's rules encode a rate of change, not a "
+              f"threshold the agent\n  was given — no flood stage is "
+              f"configured for either gauge. A model-only\n  row is the "
+              f"expected shape here rather than a divergence to fix; the "
+              f"\n  direction worth reading is rules-only. Rules recorded "
+              f"from {RIVER_RULES_FROM}.")
     if a["domain"] == "weather":
         pre = [r for r in a["rules_only"] + a["model_only"]
                if r["observed_at"] < WIND_FIX_AT]

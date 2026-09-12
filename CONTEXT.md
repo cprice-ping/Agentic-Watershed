@@ -2028,12 +2028,13 @@ retroactively over every observation already recorded rather than waiting a
 fortnight to accumulate a sample.
 
 The template's honest limitation is itself a result. It cannot flag on
-conditions, because River has no numeric flag criteria —
+conditions, because River had no numeric flag criteria —
 `floodStageThresholdFt` is unconfigured for both Napa gauges, which is why
-River has no `flag_rules.py` at all. So it flags only on collector gaps and
-says so in its output. Every condition flag the agent has ever raised on
-River is therefore judgement with no arithmetic behind it. That is not
-automatically wrong; it is the thing the comparison exists to price.
+River had no `flag_rules.py` at all. So it flags only on collector gaps and
+says so in its output. Every condition flag the agent had raised on River to
+this point was therefore judgement with no arithmetic behind it. That is not
+automatically wrong; it is the thing the comparison exists to price. (The
+comparison then priced it, and River got a rules module — see below.)
 
 The sharper half is NUMERIC TRACEABILITY. Every figure in a summary is
 extracted and checked against values the database can produce at that
@@ -2058,6 +2059,73 @@ not. Then that rule swallowed "100% deviation", because a percentage is an
 integer too; an integer followed by a percent sign is a claim, not furniture.
 Both errors were mine, both were caught by a test asserting the known-bad
 2026-09-10 summary must fail, and neither would have been visible without it.
+
+### What the control arm actually measured (2026-09-12)
+
+Twenty-five runs, agent against template, same database, same instants.
+
+    flagged      agent 6, template 0
+    unverified   agent 5 figures, template 0
+
+Both halves needed reading rather than counting.
+
+The six flags. Five were September low water restated as "extreme", "severe",
+"multi-day suppression" and "warrants continued monitoring" — on a prompt
+that already says a dry Napa summer is the norm, against gauges sitting at
+the rating floor from July to October. Alarm with no information in it. The
+sixth was real: on 2026-08-31 streamflow went from 0.55 cfs at 17:45 to 8.97
+at 19:00, sixteenfold inside two hours, and the agent caught it. One flag in
+twenty-five worth the money.
+
+The five unverified figures. Four were genuine errors and one was mine. The
+worst two landed on the single run where the flag mattered: the agent
+reported the gage height as "19.00 ft" — that is 19:00 UTC, the timestamp,
+rendered as a river level, against an actual 2.42 ft — and called a 1531%
+rise "~900%". So the one valuable flag in twenty-five runs arrived carrying a
+reading nine times the river's real level. `9.84` was the checker's false
+positive: "declining from 9.84 cfs peak on 08/31" was true, and the peak had
+simply aged out of the seven-day statistics window the checker was reading.
+`CITATION_WINDOW_DAYS = 30` now governs quotable readings while the seven-day
+window still governs statistics and the diel frame. A false positive in a
+measurement that decides whether something keeps its job is worse than no
+measurement.
+
+The result is not "the model is useless". It is narrower and more actionable:
+the one thing the model demonstrably contributed here was noticing a rate of
+change, and a rate of change is arithmetic. `River/flag_rules.py` computes
+it — a surge is a rise of at least 1.0 cfs that is also at least fourfold
+inside three hours. Both gates are load-bearing. Proportional alone fires
+constantly at the bottom of the rating curve, where 0.03 to 0.14 is a 367%
+rise and four hundredths of a cubic foot per second; that is exactly the
+defect that had Fire's `frp_rising` firing on 12 of 13 runs. Absolute alone
+would miss a real surge on a small creek. Against the observed event, 0.55 to
+8.97 is 16.3x and 8.42 cfs and clears both by a wide margin; against the
+noise, the largest non-event move in the same fortnight is 0.14 to 0.32,
+which is 2.3x and 0.18 cfs and fails both.
+
+A rise off the rating floor is the one case with no usable ratio — the
+denominator is zero or describes the curve rather than the river — so the
+factor gate is dropped there and the absolute rise carries it alone. That is
+the case that matters most, a surge into a dry channel.
+
+Low flow is deliberately not encoded, and the reasoning is the point. There
+is no threshold for it: no flood stage is configured, a Napa summer is
+rainless by default, and both gauges sit at or near the floor for four months
+of the year. Inventing a number to justify those five alarms would have been
+automating the failure this whole exercise exists to find, rather than fixing
+it. The rules are silent on low water because silence is the correct verdict.
+
+River's shadow verdicts therefore read differently from the other three
+domains, and `shadow_report.py` says so rather than letting the numbers imply
+otherwise. Weather, AQI and Fire encode a threshold the agent was already
+given, so a disagreement means one of the two misread a shared criterion.
+River's rule measures something nobody wrote down, so a model-only row is the
+expected shape — those five low-water flags — and the direction worth reading
+is rules-only: a surge the agent narrated past.
+
+The cost of the rule is zero per run. Whether the model is still worth 35,000
+tokens twice a day to write the prose around it is now a question with an
+instrument behind it rather than an impression.
 
 ### What generalises, and what doesn't
 
