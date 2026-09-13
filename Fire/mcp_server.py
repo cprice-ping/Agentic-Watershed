@@ -44,7 +44,27 @@ from agent_runtime import compact_json  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flag_rules  # noqa: E402
 import thresholds  # noqa: E402
-from collector import haversine_mi  # noqa: E402
+from collector import haversine_mi, direction_from  # noqa: E402
+
+_HOME_LAT = thresholds._NODE_CFG["fire"]["home_lat"]
+_HOME_LON = thresholds._NODE_CFG["fire"]["home_lon"]
+
+
+def _annotate_direction(items: list[dict]) -> None:
+    """Attach a compass bearing from home to anything carrying coordinates.
+
+    Computed rather than left to the reader. These tools have always returned
+    latitude and longitude, and the agents were turning them into "the ENE
+    cluster" and "14mi NE of Napa" by estimating — which reached a published
+    advisory on 2026-09-13 with no way to check it, in the same sentence as a
+    Diablo warning that the direction changes the meaning of.
+    """
+    for item in items:
+        deg, point = direction_from(_HOME_LAT, _HOME_LON,
+                                    item.get("latitude"), item.get("longitude"))
+        if point is not None:
+            item["bearing_deg"] = deg
+            item["direction"] = point
 
 # ---------------------------------------------------------------------------
 # Config — points at the same DB the collector writes to
@@ -412,6 +432,7 @@ def get_active_incidents(n: int = 10) -> str:
     """
     with _db() as conn:
         incidents = _incidents(conn)
+        _annotate_direction(incidents)
         stale = conn.execute(
             "SELECT MAX(last_seen_at) AS t FROM incidents"
         ).fetchone() if incidents else None
@@ -497,6 +518,7 @@ def get_nearest_hotspots(n: int = 10) -> str:
     else:
         hotspots = _rows_to_dicts(rows)
         _annotate_frp(hotspots, frp_values)
+        _annotate_direction(hotspots)
         _match_incidents(hotspots, incidents)
         result["nearest_hotspots"] = hotspots
     return compact_json(result)

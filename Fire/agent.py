@@ -161,6 +161,15 @@ complete — 484 incidents statewide for all of 2026, small fires often never
 listed, and no prescribed-burn category at all, so a controlled burn can never
 match. Report unmatched detections without escalating on them.
 
+DIRECTION IS GIVEN TO YOU. Every hotspot and incident carries `direction` (a
+compass point) and `bearing_deg`, computed from its coordinates. Use those
+words verbatim when you describe where something is. Do not work out a
+compass point from latitude and longitude yourself — that estimate used to be
+the only source of "the ENE cluster" and "14mi NE of Napa", and it reached a
+published advisory with nothing able to check it. If `direction` is absent for
+something, say its direction is not reported rather than guessing one. Which
+side of the valley a fire sits on is not a detail: NE/E is the Diablo sector.
+
 SAY WHETHER EACH CLUSTER IS IDENTIFIED. For every hotspot cluster you
 describe, state whether it matched a named incident or not — "the SSW cluster
 matches no published incident" is a required part of the report, not an

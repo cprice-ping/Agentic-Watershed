@@ -266,6 +266,15 @@
           "type": "string",
           "description": "FIRMS confidence for the nearest hotspot: VIIRS uses l/n/h (low/nominal/high)."
         },
+        "nearestHotspotDirection": {
+          "type": "string",
+          "knownValues": ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"],
+          "description": "Compass direction of the nearest hotspot from the node, computed from coordinates. Present only when the hotspot has usable coordinates. This field exists because a distance without a direction is half a location: before it, agents were estimating the compass point from raw latitude and longitude in prose, and a published advisory read '~14mi NE of Napa' with nothing able to check it. The direction is not decorative here — NE/E is the Diablo sector, so which side of the valley a fire sits on changes what offshore flow means for it."
+        },
+        "nearestHotspotBearingDeg": {
+          "type": "string",
+          "description": "Initial great-circle bearing to the nearest hotspot, degrees true (0/360=N, 90=E, 180=S, 270=W). Stringified — DAG-CBOR has no float type. The exact value behind nearestHotspotDirection, for a consumer that wants to compare against a wind direction rather than a compass label."
+        },
         "nearestHotspotFrpMw": {
           "type": "string",
           "description": "Fire Radiative Power (MW) for the nearest hotspot. Stringified — DAG-CBOR has no float type."
@@ -301,6 +310,15 @@
         "nearestIncidentName": {
           "type": "string",
           "description": "Nearest CAL FIRE incident ACTIVELY BURNING at observedAt, statewide and independent of any hotspot. Deliberately not limited to the FIRMS bounding box: a fire outside the monitored box is invisible to the satellite feed, so this is how it becomes visible at all. Extinguished incidents are excluded - CAL FIRE's feed carries the whole year, so an unfiltered nearest-by-distance sort names a closed fire on nearly every run. Absence means no incident is listed as burning, not that none is."
+        },
+        "nearestIncidentDirection": {
+          "type": "string",
+          "knownValues": ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"],
+          "description": "Compass direction of the nearest actively-burning named incident from the node, computed from its published coordinates. See nearestHotspotDirection."
+        },
+        "nearestIncidentBearingDeg": {
+          "type": "string",
+          "description": "Initial great-circle bearing to the nearest actively-burning named incident, degrees true. Stringified — DAG-CBOR has no float type."
         },
         "nearestIncidentDistanceMi": {
           "type": "string",

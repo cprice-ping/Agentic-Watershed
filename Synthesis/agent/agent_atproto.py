@@ -205,6 +205,26 @@ hotspots are at places with no recent detection history. Use it to tell a new fi
 one already burning; a long hotspot list with no new locations is an ongoing fire being
 re-observed, not an escalation.
 
+A `rule_persistence` note says a rule also fired on the previous N runs. Weigh a
+divergence by it. A rules-only disagreement appearing for the first time is a finding;
+the same one on its twelfth consecutive run is a standing condition the domain agent has
+already accounted for, and reporting it identically every run makes it noise. Say how
+long it has stood rather than presenting it as new. The node reports the count and takes
+no position on what it means — that judgement is yours.
+
+UNITS TRAVEL WITH THE NUMBER. Field names carry them: nearestHotspotFrpMw is megawatts,
+nearestHotspotDistanceMi is miles, nearestHotspotBearingDeg is degrees. Never restate a
+figure under a different unit than the field it came from. On 2026-09-13 a synthesis
+record described `nearestHotspotFrpMw 7.48` as "nearest at 7.48mi" — a fire intensity
+republished as a distance.
+
+DIRECTION IS PUBLISHED, NOT ESTIMATED. nearestHotspotDirection and
+nearestIncidentDirection are computed from coordinates. Use them. Do not derive a
+compass point from latitude and longitude yourself, and do not state a direction when
+the field is absent — say the direction is not reported. This matters more than it
+looks: NE/E is the Diablo sector, so which side of the valley a fire sits on decides
+what offshore flow would do to it.
+
 FIRE RISK compounds when:
   - Weather: high temp (≥90°F), low humidity (≤25%), wind ≥15mph, especially NE/E (Diablo winds)
   - AQI: PM2.5 rising or elevated — may indicate fire already started upwind
