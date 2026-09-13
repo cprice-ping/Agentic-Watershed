@@ -247,3 +247,66 @@ def strip_note(entry: str) -> str:
     """A note entry without its marker, for display."""
     e = str(entry)
     return e[len(NOTE_PREFIX):] if is_note(e) else e
+
+
+def rule_name(entry: str) -> str:
+    """The rule identifier from a fired-rule or note entry."""
+    return strip_note(entry).split(":")[0].strip()
+
+
+def consecutive_runs_fired(conn, rules: list[str], limit: int = 40) -> dict:
+    """For each rule name, how many consecutive prior runs it also fired on.
+
+    Counting back from the most recent recorded observation, stopping at the
+    first run where a rule did not fire. Failed runs are skipped rather than
+    breaking a streak — an agent that crashed did not evaluate anything, and
+    treating that as "the rule stopped firing" would reset the count on an
+    outage.
+
+    This exists because a rule that fires forever is indistinguishable from
+    one that just started. On 2026-09-13 a synthesis advisory reported Fire's
+    rules-only divergence as "the one flag-worthy item this run" — correctly,
+    the first time. But the Steele Fire sits inside the unconditional radius
+    and is in the incident feed, so those rules will fire every twelve hours
+    until it drops out, while the domain model correctly stops flagging under
+    its persistence exception. Left alone, that becomes an alarm that cannot
+    fall silent, one layer above the node.
+
+    Duration is reported rather than significance. The node says how long a
+    rule has been firing; whether twelve runs of the same thing is news stays
+    the consumer's call. Synthesis deliberately does not import node
+    thresholds — a grader that adopts the gradee's definition of success
+    measures nothing — and "ignore this divergence" would be exactly that.
+    """
+    counts = {r: 0 for r in rules}
+    if not rules:
+        return counts
+    try:
+        rows = conn.execute(
+            "SELECT rules_fired, status FROM agent_observations "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    except Exception:
+        try:
+            rows = conn.execute(
+                "SELECT rules_fired FROM agent_observations "
+                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        except Exception:
+            return counts
+
+    live = {r for r in rules}
+    for row in rows:
+        if not live:
+            break
+        if is_failed_row(row):
+            continue
+        try:
+            fired = {rule_name(e) for e in json.loads(row["rules_fired"] or "[]")
+                     if not is_note(e)}
+        except (TypeError, ValueError):
+            fired = set()
+        for r in list(live):
+            if r in fired:
+                counts[r] += 1
+            else:
+                live.discard(r)
+    return counts

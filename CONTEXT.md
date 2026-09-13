@@ -2495,6 +2495,74 @@ files, so a file mounted for one service is excluded everywhere. Narrowing
 that needs a service-to-Dockerfile mapping, and the looser version has never
 been the failure — every instance so far was a file mounted nowhere.
 
+### The divergence arrived, and brought two more (2026-09-13 18:00)
+
+The first synthesis run with the rules fields present, and the mechanism did
+exactly what it was built for:
+
+> this run's fire observation shows flagged=false but rules_flagged=true …
+> I'm reporting this disagreement rather than resolving it
+
+It also reached `flagReason`, so a rules-only finding travelled node
+arithmetic → published field → prompt → reasoning → advisory for the first
+time. The instruction that mattered was the one telling it not to pick a side,
+and it held.
+
+Reading that record turned up three things.
+
+**A new alarm that cannot fall silent, one layer up.** The Steele Fire sits
+inside the unconditional radius and stays in the incident feed while it burns,
+so `hotspot_within_20mi` and `active_incident_within_20mi` fire every run
+while the model correctly stops flagging under its persistence exception.
+`shadow_report.py` has documented that exact pattern as *expected* for Fire
+since the rules were written — and that caveat never reached Synthesis, which
+now calls it "the one flag-worthy item this run" and will keep doing so twice
+a day until the fire drops out. `frp_rising` again, at a different altitude.
+
+The fix keeps the separation intact. Telling Synthesis to discount Fire's
+persistent divergences would let the node define what counts as a finding,
+which is the ledger-mirror failure. So the node reports **duration** instead:
+a `rule_persistence` note saying a rule also fired on the previous N runs.
+That is a measurement, not a de-escalation, and whether twelve runs of the
+same thing is still news stays with the reader. Failed runs are skipped rather
+than breaking a streak — an agent that crashed did not evaluate anything, and
+letting an outage reset the count would make a standing condition look new.
+
+**A compass bearing that nobody computed.** The summary read "Steele Fire
+(~14mi NE of Napa)". The fire block carried distances and no bearing at all;
+`get_nearest_hotspots` returns latitude and longitude, so the agents were
+estimating compass points in prose and Synthesis was repeating them. Not
+decorative — NE is the Diablo sector, and the same summary warned Diablo began
+in two days, so which side of the valley the fire sat on decided what offshore
+flow would mean, resting on mental arithmetic nothing could check.
+
+Bearing is now computed and published for the nearest hotspot and the nearest
+incident, and both prompts say to use the field rather than derive one. A
+sixteen-point rose rather than eight, because the distinction the prompts draw
+is NE/E against everything else and an eight-point rose settles that by
+rounding.
+
+That also forced a merge that was overdue. `haversine_mi` existed twice —
+`Fire/collector.py` and a copy in `ATProto/publisher.py` whose comment said
+the publisher "ships in its own image and cannot import it". That stopped
+being true when the ATProto image began copying repo-root modules, and adding
+bearing alongside would have made two copies of one function into four. Both
+now import `geo.py`.
+
+`check_image_files.py` caught `geo.py` missing from both Dockerfiles before
+either image was built, which is the first time that check has paid for
+itself.
+
+**Megawatts published as miles.** "nearest at 7.48mi/79th percentile" — the
+prior record has that as `nearestHotspotFrpMw 7.48`. A fire intensity restated
+as a distance, the same shape as the River gage height that was really a
+timestamp. Field names carry units, so the prompt now says a figure and its
+unit travel together and names this instance.
+
+Three defects in one record, and all three are the same defect: a quantity
+separated from the frame that gives it meaning. A rule firing without how long
+it has been firing, a distance without a direction, a number without its unit.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

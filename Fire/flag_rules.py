@@ -36,7 +36,8 @@ from pathlib import Path
 # The note channel's marker, defined once at the repo root because
 # shadow_report.py has to recognise exactly what this module writes.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from agent_runtime import NOTE_PREFIX  # noqa: E402
+from agent_runtime import (NOTE_PREFIX, rule_name,  # noqa: E402
+                           consecutive_runs_fired)
 
 # Every threshold comes from thresholds.py, which agent.py's prompt,
 # mcp_server.py's queries and ATProto/publisher.py's currency window are also
@@ -467,6 +468,27 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
         v.fire("collector_never_polled", "no poll rows")
     elif row["status"] == "error":
         v.fire("collector_error", (row["error_message"] or "")[:120] or "status=error")
+
+    # How long each of those has been firing. A note, because duration is a
+    # measurement and not a reason to alarm — nor a reason to stop.
+    #
+    # Without it a rule firing for the twelfth consecutive run looks identical
+    # to one firing for the first. The Steele Fire sits inside the
+    # unconditional radius and stays in the incident feed while it burns, so
+    # hotspot_within_20mi and active_incident_within_20mi fire every run,
+    # while the model correctly stops flagging under the persistence
+    # exception. That produced a rules-only divergence on 2026-09-13 which
+    # Synthesis reported as the flag-worthy item of the run — right the first
+    # time, and about to be wrong twice a day for as long as the fire lasts.
+    #
+    # The node reports the count and stops there. Whether a rule firing for
+    # the twelfth time is still news belongs to whoever is reading, not to
+    # the node whose own model declined to flag it.
+    streaks = consecutive_runs_fired(conn, [rule_name(f) for f in v.fired])
+    for name, prior in sorted(streaks.items()):
+        if prior:
+            v.note("rule_persistence",
+                   f"{name} also fired on the previous {prior} run(s)")
 
     return v
 

@@ -39,3 +39,9 @@ COPY AQI/thresholds.py ./AQI/thresholds.py
 #
 # That static check now exists: check_image_files.py at the repo root.
 COPY agent_runtime.py ./agent_runtime.py
+
+# geo.py replaced this file's own copy of the haversine formula, whose comment
+# used to say the publisher "cannot import it" — true until this image began
+# copying repo-root modules. check_image_files.py caught its absence here
+# before the image was ever built.
+COPY geo.py ./geo.py

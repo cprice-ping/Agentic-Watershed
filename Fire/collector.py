@@ -28,14 +28,18 @@ import csv
 import io
 import json
 import logging
-import math
 import os
 import sqlite3
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+
+# geo.py lives at the repo root so the publisher's separate image can share
+# one definition of the distance formula instead of carrying a copy.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # ---------------------------------------------------------------------------
 # Configuration  (location-specific values come from node_config.json)
@@ -137,14 +141,12 @@ def init_db(conn: sqlite3.Connection) -> None:
 # Geometry
 # ---------------------------------------------------------------------------
 
-def haversine_mi(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance in miles between two lat/lon points."""
-    r_mi = 3958.8
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return r_mi * 2 * math.asin(math.sqrt(a))
+# Re-exported from geo.py rather than defined here. Three modules import
+# haversine_mi from this one (mcp_server, incidents_collector, and this
+# file's own distance column), and ATProto/publisher.py had a second copy of
+# the formula because it ships in an image that could not reach Fire/. Both
+# images now copy repo-root modules, so there is one definition again.
+from geo import haversine_mi, direction_from  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------

@@ -769,6 +769,11 @@ def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None
     if nearest is not None and nearest["name"] and nearest["distance_mi"] is not None:
         result["nearestIncidentName"] = nearest["name"]
         result["nearestIncidentDistanceMi"] = _atproto_safe(nearest["distance_mi"])
+        deg, point = _direction_from(_FIRE_HOME_LAT, _FIRE_HOME_LON,
+                                     nearest["latitude"], nearest["longitude"])
+        if point is not None:
+            result["nearestIncidentBearingDeg"] = deg
+            result["nearestIncidentDirection"] = point
 
     if hotspot_lat is None or hotspot_lon is None:
         return result
@@ -792,17 +797,15 @@ def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None
     return result
 
 
-def _haversine_mi(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance in miles. Same formula as Fire/collector.py; the
-    publisher ships in its own image and cannot import it."""
-    import math
-    r_mi = 3958.8
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = (math.sin(dphi / 2) ** 2
-         + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
-    return r_mi * 2 * math.asin(math.sqrt(a))
+# Was a second copy of the formula, with a comment saying the publisher
+# "ships in its own image and cannot import it". That stopped being true when
+# this image started copying repo-root modules, and adding bearing alongside
+# would have turned two copies of one function into four.
+from geo import (haversine_mi as _haversine_mi,  # noqa: E402
+                 direction_from as _direction_from)
+
+_FIRE_HOME_LAT = _NODE_CFG["fire"]["home_lat"]
+_FIRE_HOME_LON = _NODE_CFG["fire"]["home_lon"]
 
 
 def _frp_percentile(conn: sqlite3.Connection, frp) -> int | None:
@@ -915,6 +918,18 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
         result = dict(row) if row else {}
         if frp_pct is not None:
             result["frpPercentile"] = frp_pct
+        # Which way the fire is, not only how far. A distance alone left the
+        # compass point to whoever was writing the prose, and on 2026-09-13
+        # a published advisory said "~14mi NE of Napa" with nothing able to
+        # check it — in the same breath as a Diablo warning, where NE is the
+        # sector that makes the difference.
+        if row is not None:
+            deg, point = _direction_from(
+                _FIRE_HOME_LAT, _FIRE_HOME_LON,
+                row["latitude"], row["longitude"])
+            if point is not None:
+                result["bearingDeg"] = deg
+                result["direction"] = point
         if peak is not None:
             # Emitted even when the peak IS the nearest hotspot. Omitting it
             # then would make absence mean "same as nearest", which is a fact
@@ -1168,6 +1183,10 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
         fire_block["nearestHotspotFrpMw"] = _atproto_safe(numerics["frp"])
     if "frpPercentile" in numerics:
         fire_block["nearestHotspotFrpPercentile"] = numerics["frpPercentile"]
+    if numerics.get("direction"):
+        fire_block["nearestHotspotDirection"] = numerics["direction"]
+        fire_block["nearestHotspotBearingDeg"] = _atproto_safe(
+            numerics["bearingDeg"])
     if numerics.get("maxFrp") is not None:
         fire_block["maxHotspotFrpMw"] = _atproto_safe(numerics["maxFrp"])
         fire_block["maxHotspotDistanceMi"] = _atproto_safe(numerics["maxFrpDistanceMi"])

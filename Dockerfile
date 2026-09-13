@@ -22,6 +22,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # publishers.json missed the Synthesis build twice already.
 COPY agent_runtime.py ./
 
+# Great-circle distance and bearing, shared with the publisher's separate
+# image so there is one definition rather than a copy per image.
+COPY geo.py ./
+
 COPY River ./River
 COPY Weather ./Weather
 COPY AQI ./AQI
