@@ -2361,15 +2361,52 @@ invisible because the fallback is the same number. The test now asserts the
 lookup returns the declared value when handed a deliberately wrong default,
 which is what caught it.
 
-**Still open, and now the more interesting half.** The published `flagged` bit
-is the model's, and the lexicon says flagReason is empty when it is false. So
-a rules-only divergence — rules fired, model did not flag — publishes as an
-unflagged record with an empty reason, and the 2026-08-26 case is exactly
-that: 8.89 to 32.04 MW at 38.6 miles, above p95, and the agent's summary never
-mentions it. Nothing about that leaves the node. Putting it in flagReason
-would break the field's contract; it wants its own field, something like
-`rulesFired` as an array on domain records, which is a lexicon change touching
-the subscriber and the Viewer too.
+**The other half.** The published `flagged` bit is the model's, and the
+lexicon says flagReason is empty when it is false. So a rules-only divergence
+— rules fired, model did not flag — published as an unflagged record with an
+empty reason, and the 2026-08-26 case is exactly that: 8.89 to 32.04 MW at
+38.6 miles, above p95, and the agent's summary never mentions it. Nothing
+about it left the node. Putting it in flagReason would break that field's
+contract, so it needed its own. Done next, below.
+
+### Both verdicts on the record (2026-09-13)
+
+Three fields on domain records: `rulesFlagged`, `rulesFired`, `rulesNoted`.
+The node has always evaluated its flag criteria twice — the model sets
+`flagged`, flag_rules evaluates the same criteria as arithmetic — and only the
+first ever left the machine. `flagged` is untouched; the rules are still
+recorded rather than enforced.
+
+Absence carries meaning and is the part worth getting right. All three fields
+are omitted when no verdict exists — an older record, or a run where
+evaluation raised — rather than published as false and empty. A negative
+result nobody computed is not a negative result, and publishing one would be
+the `hotspotCount: 0` shape again. `rulesFired: []` means evaluated and
+nothing matched; the field being absent means not evaluated. The Viewer and
+the Synthesis prompt both honour that distinction rather than treating a
+missing field as a clean bill.
+
+`rulesNoted` is separate from `rulesFired` because `Verdict` has two channels
+and the lexicon should say the same thing the code does. Publishing them in
+one array behind the `note:` prefix would have leaked a storage detail of a
+single TEXT column into a public contract.
+
+The consumers were the real work, and the Synthesis side was nearly a
+non-delivery. Its prompt renders `summary`, `flagged` and the domain blocks —
+so `flagReason` had been arriving since yesterday and was never shown to the
+agent at all. Publishing a field that nothing reads is the same defect in a
+different place, so the prompt now carries the verdict and, more importantly,
+what to do with it: both agreeing is ordinary, `flagged` true with no rule
+behind it is judgement to weigh, and rules true with `flagged` false is the
+case to report rather than resolve. That last instruction matters because the
+tempting move for a model is to decide which side is right.
+
+The Viewer calls out the same case in the heading — "Rules matched — not
+flagged by the agent" — instead of leaving it in the raw record where nobody
+looks.
+
+37 checks, including the Viewer's `renderRules` run under node against the
+2026-08-26 shape, and escaping asserted, since rule text now reaches the DOM.
 
 ### What generalises, and what doesn't
 

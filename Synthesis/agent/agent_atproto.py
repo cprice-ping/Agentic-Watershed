@@ -92,9 +92,10 @@ FIRE_CONFIRM_ALERTS   = frozenset({"Red Flag Warning", "Fire Weather Watch"})  #
 # container also cannot see the domain code at all, which enforces this.
 #
 # Divergence between these and the node's is therefore expected and worth
-# seeing rather than eliminating. rules_fired already records which node rule
-# matched and on what values; publishing it as a real flagReason would make
-# that visible here without Synthesis having to agree with it.
+# seeing rather than eliminating. As of 2026-09-13 the node publishes its
+# deterministic verdict alongside the model's — rulesFlagged, rulesFired and
+# rulesNoted — so which node rule matched and on what values is visible here
+# without Synthesis having to agree with it.
 #
 # These were the only usable signal
 # while the publisher emitted an empty activeAlerts on every record and no
@@ -177,6 +178,28 @@ You receive:
 Your job is to reason ACROSS domains and ACROSS time to produce a unified risk picture.
 Don't just assess current conditions — assess trajectory. Are conditions improving or
 deteriorating? Are we approaching a known risk window? How does today compare to recent days?
+
+TWO VERDICTS PER OBSERVATION. Nodes assess their flag criteria twice. `flagged` is the
+domain model's judgement; `rules_flagged` is the same criteria evaluated as arithmetic,
+with `rules_fired` naming each rule that matched and the values that matched it. The
+rules are recorded, never enforced — they have never changed `flagged`.
+
+  - Both agree: ordinary. Cite the rule values, they are measured.
+  - `rules_flagged` true, `flagged` false: THE CASE THAT MATTERS. The node's own
+    arithmetic found something its summary does not mention. Treat the rule values as
+    real observations and say plainly that the domain agent did not report them. Do not
+    assume the model knew better; do not assume the rule is wrong either. Report the
+    disagreement rather than resolving it.
+  - `flagged` true, `rules_flagged` false: the model flagged on judgement with no
+    arithmetic behind it. Weigh it accordingly — it may be a real reading of the prose,
+    or an alarm with nothing under it. Check whether the summary names anything concrete.
+  - Fields absent entirely: that node produced no deterministic verdict for the run.
+    Absent is not false; say nothing about rules for that observation.
+
+`rules_noted` is measured and deliberately NOT grounds for a flag — most often which
+hotspots are at places with no recent detection history. Use it to tell a new fire from
+one already burning; a long hotspot list with no new locations is an ongoing fire being
+re-observed, not an escalation.
 
 FIRE RISK compounds when:
   - Weather: high temp (≥90°F), low humidity (≤25%), wind ≥15mph, especially NE/E (Diablo winds)
@@ -1136,6 +1159,35 @@ def write_predictions(obs: dict,
 # Context assembly
 # ---------------------------------------------------------------------------
 
+def _rule_verdict_for_prompt(raw: dict) -> dict:
+    """The node's deterministic verdict, when it says something.
+
+    Nodes evaluate their flag criteria twice: the domain model sets `flagged`,
+    and flag_rules evaluates the same criteria as arithmetic. Both now travel
+    on the record. This surfaces the second one so a divergence is visible
+    here rather than only in the node's own logs.
+
+    The case worth catching is `flagged` false with `rules_flagged` true: a
+    finding the domain agent did not report. On 2026-08-26 a Napa node's rules
+    measured 8.89 to 32.04 MW at 38.6 miles while that run's summary read "No
+    hotspots detected within 20 miles". Nothing reached synthesis.
+
+    Omitted entirely when the record carries no verdict — an older record, or
+    a run where evaluation failed — because absent and false are different
+    claims. Empty lists are dropped too, to keep a quiet record cheap: notes
+    ride on most Fire records and the prompt is already the expensive part of
+    a run.
+    """
+    if "rulesFlagged" not in raw:
+        return {}
+    out: dict = {"rules_flagged": bool(raw.get("rulesFlagged"))}
+    if raw.get("rulesFired"):
+        out["rules_fired"] = raw["rulesFired"]
+    if raw.get("rulesNoted"):
+        out["rules_noted"] = raw["rulesNoted"]
+    return out
+
+
 def gather_context(lookback_hours: float = 24.0,
                    memory_runs: int = 14,
                    obs_per_type: int = 6,
@@ -1249,6 +1301,7 @@ def gather_context(lookback_hours: float = 24.0,
                     "node": r["node_id"],
                     "summary": r["summary"],
                     "flagged": bool(r["flagged"]),
+                    **_rule_verdict_for_prompt(raw),
                     # Domain-specific numeric/structured fields for trajectory reading
                     **{k: v for k, v in raw.items()
                        if k in ("watershed", "weather", "aqi", "fire") and v},

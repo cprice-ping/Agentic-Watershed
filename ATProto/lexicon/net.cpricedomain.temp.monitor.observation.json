@@ -50,6 +50,25 @@
             "description": "Brief reason if flagged. Empty string if not flagged. On domain records this is generated rather than written by the agent: it names the deterministic rule(s) that matched and the values that matched them, or states that the flag was the model's judgement with no rule behind it. Those rules are evaluated independently of the model's `flagged` bit and have never overridden it, so this explains the flag with the best evidence available rather than asserting the model's motive. Synthesis records carry the synthesis agent's own one-line label here instead."
           },
 
+          "rulesFlagged": {
+            "type": "boolean",
+            "description": "The deterministic verdict for this run, computed by the node's flag_rules for this domain independently of the model. ABSENT means the rules did not produce a verdict — a record written before shadow recording, or a run where evaluation failed — which is not the same as a verdict of false. Compare against `flagged` to see where the model and the arithmetic disagreed: `flagged` false with this true is a finding the model did not report, and is the direction that matters. These rules have never overridden `flagged`; they are recorded, not enforced."
+          },
+
+          "rulesFired": {
+            "type": "array",
+            "maxLength": 20,
+            "items": { "type": "string", "maxLength": 300 },
+            "description": "Each deterministic rule that matched, with the values that matched it, e.g. 'hotspot_within_20mi: 14.0mi, confidence=n'. Present and empty when the rules ran and nothing matched; absent when they did not run. Only these contribute to `rulesFlagged`."
+          },
+
+          "rulesNoted": {
+            "type": "array",
+            "maxLength": 20,
+            "items": { "type": "string", "maxLength": 300 },
+            "description": "Facts the rules measured that are deliberately not grounds for a flag, e.g. 'new_locations: 2 place(s) with no detection within 0.62mi in the last 14d, nearest 21.6mi'. Recorded because a consumer often needs them to interpret a flag or its absence — whether a hotspot is newly arrived or the same one seen yesterday is not itself alarming, and is what makes the difference between an ongoing fire and a new one. Never contributes to `rulesFlagged`."
+          },
+
           "agentModel": {
             "type": "string",
             "description": "The LLM or SLM used to produce this observation. e.g. 'claude-haiku-4-5', 'phi-4-mini', 'qwen2.5-3b'. Allows synthesis agents to weight observations by model capability if desired."

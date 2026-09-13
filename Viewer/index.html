@@ -276,6 +276,27 @@ h1.eyebrow, h2.eyebrow {
 }
 .numeric b { color: var(--text); font-weight: 400; margin-right: 4px; }
 
+/* The node's deterministic verdict, next to the model's.
+   A rule that fired while the agent did not flag is the case worth seeing —
+   the node's own arithmetic found something its summary never mentioned —
+   so it is called out rather than left in the raw record. */
+.rules { margin-bottom: 12px; }
+.rules-head {
+  font-size: .7rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 5px;
+}
+.rules-head.divergent { color: var(--warn); }
+.rule-line {
+  font-family: var(--mono);
+  font-size: .74rem;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+.rule-line.note { color: var(--text-3); }
+
 /* NWS alerts in effect — empty until the publisher started sending them */
 .alerts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .alert-chip {
@@ -753,6 +774,32 @@ const NUMERIC_FIELD_LABELS = {
 
 // NWS alert names in effect at observedAt. Absent on every record published
 // before the publisher started reading the collector's alerts table.
+// The node's deterministic verdict alongside the model's `flagged`.
+//
+// Absent fields mean the run produced no verdict — an older record, or one
+// where rule evaluation failed. That is not a verdict of false, so nothing is
+// rendered rather than showing an empty result as a clean bill.
+function renderRules(rv) {
+  if (typeof rv.rulesFlagged !== "boolean") return "";
+  const fired = rv.rulesFired || [];
+  const noted = rv.rulesNoted || [];
+  if (!fired.length && !noted.length) return "";
+
+  // Rules fired while the agent did not flag: the node measured something its
+  // own summary does not mention. The reason this field exists.
+  const divergent = rv.rulesFlagged && !rv.flagged;
+  const head = divergent
+    ? "Rules matched — not flagged by the agent"
+    : "Rules";
+
+  let h = `<div class="rules">`;
+  h += `<div class="rules-head${divergent ? " divergent" : ""}">${esc(head)}</div>`;
+  for (const f of fired) h += `<div class="rule-line">${esc(f)}</div>`;
+  for (const n of noted) h += `<div class="rule-line note">${esc(n)}</div>`;
+  h += `</div>`;
+  return h;
+}
+
 function renderAlerts(block) {
   const alerts = (block && block.activeAlerts) || [];
   if (!Array.isArray(alerts) || !alerts.length) return "";
@@ -951,6 +998,7 @@ async function render(uri) {
       blocks += `<span class="domain-time">${fmtTime(rv.observedAt)}</span>`;
       blocks += `</div>`;
       blocks += `<p class="domain-summary">${esc(rv.summary || "")}</p>`;
+      blocks += renderRules(rv);
       blocks += renderAlerts(domainBlock);
       blocks += renderNumericFields(domainBlock);
       blocks += atUriChip(rec.uri);
