@@ -2408,6 +2408,39 @@ looks.
 37 checks, including the Viewer's `renderRules` run under node against the
 2026-08-26 shape, and escaping asserted, since rule text now reaches the DOM.
 
+**First run against it, 2026-09-13 06:00.** One thing worked and one did not.
+
+The one that worked is the chain the last two days built. Fire's `hotspotCount`
+went from 0 to 48 between polls, which reads as explosive growth, and the
+synthesis record says: "hotspotCount rose from 0 to 48 between the two polls
+but the summary explicitly states 'no new locations detected', consistent with
+re-observation of the same cluster across satellite passes, not growth." The
+new-locations tool reached the Fire agent, the Fire agent put it in its
+summary, and Synthesis used it to refuse a false escalation.
+
+The one that did not: "No rules_flagged/flagged fields present in fire
+observations to compare (both false/absent), consistent with steady
+containment progress." The fire records in that run predate the publisher
+change, so the absence is correct. Reasoning from it is not — that is a
+missing field cited as support for good news, which is the exact failure the
+absent-is-not-false design exists to prevent, appearing in the first run after
+building it.
+
+The prompt already said "Absent is not false; say nothing about rules for that
+observation", and that was not enough. Naming a field and asking for silence
+about it makes the field salient and invites the model to account for the
+silence; completeness reads as diligence. The instruction now names the error
+instead of asking for quiet: absence is not evidence in either direction,
+never write that it is consistent with or reassuring about any conclusion, and
+the error to avoid is reading a check that did not run as a check that passed.
+
+Worth noting as a general shape. Three times now the fix for a model
+misreading a field has been to state the failure mode rather than the rule —
+the 20-mile radius bullet spelling out that low confidence still counts, the
+FRP percentile explaining what a superlative requires, and now this. A rule
+tells a model what to do; naming the error tells it what not to conclude, and
+these have all been errors of conclusion.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
