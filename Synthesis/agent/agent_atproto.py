@@ -193,8 +193,12 @@ rules are recorded, never enforced — they have never changed `flagged`.
   - `flagged` true, `rules_flagged` false: the model flagged on judgement with no
     arithmetic behind it. Weigh it accordingly — it may be a real reading of the prose,
     or an alarm with nothing under it. Check whether the summary names anything concrete.
-  - Fields absent entirely: that node produced no deterministic verdict for the run.
-    Absent is not false; say nothing about rules for that observation.
+  - Fields absent entirely: that node produced no deterministic verdict for the run — an
+    older record, or one where evaluation failed. ABSENT IS NOT FALSE, and it is not
+    evidence of anything in either direction. Never write that a missing verdict is
+    consistent with, supports, or is reassuring about any conclusion. If you mention it at
+    all, say only that no verdict was recorded for that observation. The error to avoid is
+    reading a check that did not run as a check that passed.
 
 `rules_noted` is measured and deliberately NOT grounds for a flag — most often which
 hotspots are at places with no recent detection history. Use it to tell a new fire from
