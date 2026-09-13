@@ -21,13 +21,21 @@ COPY ATProto ./ATProto
 # so this image crashed on import — cron on the Pi runs from a full checkout
 # and never hit it.
 COPY node_config.json ./node_config.json
+
+# All three, not only the two loaded today. _load_domain_thresholds takes the
+# domain as an argument and resolves BASE / domain / "thresholds.py", so the
+# image can be asked for any of them; shipping two of three makes the third a
+# latent crash the moment someone adds a line. check_image_files.py found
+# this — AQI/thresholds.py was reachable and absent.
 COPY Fire/thresholds.py ./Fire/thresholds.py
 COPY Weather/thresholds.py ./Weather/thresholds.py
+COPY AQI/thresholds.py ./AQI/thresholds.py
 
 # Same reason, third instance: publisher.py imports agent_runtime for the note
 # marker that keeps notes out of flagReason. Adding a root-level import to a
 # file in an image that copies only its own directory breaks that image on
 # import, and nothing on the Pi would show it — cron runs from a checkout
-# where every path resolves. Worth a static check that root modules imported
-# by anything in an image appear as COPY lines here.
+# where every path resolves.
+#
+# That static check now exists: check_image_files.py at the repo root.
 COPY agent_runtime.py ./agent_runtime.py

@@ -2441,6 +2441,60 @@ FRP percentile explaining what a superlative requires, and now this. A rule
 tells a model what to do; naming the error tells it what not to conclude, and
 these have all been errors of conclusion.
 
+### The images and the checkout are different machines (2026-09-13)
+
+Four times a file the code reaches for was missing from the image that runs
+it, and each was invisible everywhere except the deployed container:
+
+    publishers.json     Synthesis image, twice. The subscriber fell back to a
+                        built-in single DID and was correct by coincidence; a
+                        second node would have been ignored silently.
+    node_config.json    ATProto image, with each domain's thresholds.py.
+    + thresholds.py     That image crashed on import.
+    agent_runtime.py    root image (2026-09-10), and nearly the ATProto image
+                        (2026-09-12) — caught while writing flagReason.
+
+The Pi never shows any of it, because cron runs from a full checkout where
+every path resolves. Three of the four were data files rather than imports,
+so an import check alone would have caught one.
+
+`check_image_files.py` reads the COPY lines, works out which files land in
+each image, and asks whether the Python that lands there can find what it
+reaches for: imports that resolve to repo modules, filenames appearing as
+literals, and scripts an entrypoint invokes. Static, no build required, which
+matters because there is no Docker on the Pi.
+
+Three things it needed that were not obvious at the start.
+
+Runtime mounts are read from docker-compose.yml rather than kept as an ignore
+list, because that file is what actually decides them. `node_config.json` is
+deliberately absent from the root image so one image serves any node, and a
+check that called that a defect would be wrong every time and be turned off.
+
+`.py` had to join the literal scan. `publisher.py` reaches each domain's
+thresholds through `BASE / domain / "thresholds.py"` with importlib, which an
+AST walk cannot see at all.
+
+And for those literals, every match matters, not just whether one is present.
+The first version asked "does any file with this basename exist in the image",
+which passed while `Fire/thresholds.py` was missing because `Weather`'s had
+been copied. When the path is assembled at runtime, a copied sibling says
+nothing about the one the code will want.
+
+That stricter rule immediately found a live gap: `AQI/thresholds.py` was
+reachable from the generic loader and not in the image. Not yet a crash —
+nothing loads AQI thresholds today — but a latent one the moment somebody adds
+the line. Fixed by copying it rather than by loosening the check.
+
+Verified against nine deliberate omissions, including all four historical
+ones, with the clean tree silent. A check that has only ever passed has not
+been tested; these were reintroduced one at a time in a scratch copy.
+
+One limit worth stating. Mounts are matched by basename across all compose
+files, so a file mounted for one service is excluded everywhere. Narrowing
+that needs a service-to-Dockerfile mapping, and the looser version has never
+been the failure — every instance so far was a file mounted nowhere.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
