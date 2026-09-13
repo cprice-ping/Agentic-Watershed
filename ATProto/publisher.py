@@ -64,7 +64,7 @@ NODE_ID   = _NODE_CFG["node_id"]
 # The note marker, so a note recorded next to a fired rule never reaches a
 # published record as though it were the reason for the flag.
 sys.path.insert(0, str(BASE))
-from agent_runtime import is_note  # noqa: E402
+from agent_runtime import is_note, strip_note  # noqa: E402
 
 
 def _lexicon_max_bytes(field: str, default: int) -> int:
@@ -87,6 +87,19 @@ def _lexicon_max_bytes(field: str, default: int) -> int:
         return int(props[field]["maxLength"])
     except (OSError, KeyError, ValueError, TypeError) as exc:
         log.warning("Could not read %s maxLength from the lexicon (%s); "
+                    "using %d", field, exc, default)
+        return default
+
+
+def _lexicon_item_max_bytes(field: str, default: int) -> int:
+    """An array field's per-item maxLength, from the lexicon. See above."""
+    try:
+        doc = json.loads(
+            (Path(__file__).parent / "lexicon" / f"{LEXICON}.json").read_text())
+        props = doc["defs"]["main"]["record"]["properties"]
+        return int(props[field]["items"]["maxLength"])
+    except (OSError, KeyError, ValueError, TypeError) as exc:
+        log.warning("Could not read %s item maxLength from the lexicon (%s); "
                     "using %d", field, exc, default)
         return default
 
@@ -135,6 +148,8 @@ log = logging.getLogger("atproto.publisher")
 
 # Resolved after logging is configured, because the fallback path warns.
 FLAG_REASON_MAX_BYTES = _lexicon_max_bytes("flagReason", 200)
+RULE_LIST_MAX_ITEMS = _lexicon_max_bytes("rulesFired", 20)
+RULE_ENTRY_MAX_BYTES = _lexicon_item_max_bytes("rulesFired", 300)
 
 
 # ---------------------------------------------------------------------------
@@ -968,6 +983,47 @@ def _fired_rules(row: dict) -> list[str]:
     return [str(e) for e in entries if not is_note(e)]
 
 
+def _noted_rules(row: dict) -> list[str]:
+    """Notes recorded on this run — measured, never grounds for a flag."""
+    try:
+        entries = json.loads(row.get("rules_fired") or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [strip_note(str(e)) for e in entries if is_note(e)]
+
+
+def _rule_verdict_fields(row: dict) -> dict:
+    """The deterministic verdict, for the record.
+
+    flagReason explains the flag and is therefore empty whenever `flagged` is
+    false — which silently discards the divergence that matters most. On
+    2026-08-26 the rules found 8.89 to 32.04 MW at 38.6 miles, above the 95th
+    percentile of everything this node had recorded, and the agent's summary
+    that run reads "No hotspots detected within 20 miles. All nearest
+    detections are low-confidence". The record published `flagged: false` and
+    an empty reason, so nothing about it left the node at all.
+
+    These three fields carry the verdict alongside the model's, without
+    touching `flagged` — the rules remain shadow. A consumer comparing the two
+    can see a finding the model did not report.
+
+    All three are omitted when no verdict was recorded, rather than published
+    as false and empty. A row from before shadow recording, or one where
+    evaluation raised, did not compute a negative result, and publishing one
+    would assert something nobody checked. Absence says "not evaluated";
+    `rulesFired: []` says "evaluated, nothing matched".
+    """
+    if row.get("rules_flagged") is None:
+        return {}
+    fired = [_fit(r, RULE_ENTRY_MAX_BYTES) for r in _fired_rules(row)]
+    noted = [_fit(n, RULE_ENTRY_MAX_BYTES) for n in _noted_rules(row)]
+    return {
+        "rulesFlagged": bool(row.get("rules_flagged")),
+        "rulesFired": fired[:RULE_LIST_MAX_ITEMS],
+        "rulesNoted": noted[:RULE_LIST_MAX_ITEMS],
+    }
+
+
 def _flag_reason(row: dict) -> str:
     """One line saying why this record is flagged, or "" when it is not.
 
@@ -1022,6 +1078,7 @@ def build_watershed_record(row: dict, observed_at: str) -> dict:
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": _flag_reason(row),
+        **_rule_verdict_fields(row),
         "agentModel": row.get("model") or "unknown",
         "watershed": watershed_block,
     }
@@ -1061,6 +1118,7 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": _flag_reason(row),
+        **_rule_verdict_fields(row),
         "agentModel": row.get("model") or "unknown",
         "weather": weather_block,
     }
@@ -1084,6 +1142,7 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": _flag_reason(row),
+        **_rule_verdict_fields(row),
         "agentModel": row.get("model") or "unknown",
         "aqi": aqi_block,
     }
@@ -1130,6 +1189,7 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": _flag_reason(row),
+        **_rule_verdict_fields(row),
         "agentModel": row.get("model") or "unknown",
         "fire": fire_block,
     }
