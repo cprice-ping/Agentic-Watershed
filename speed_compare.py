@@ -261,8 +261,35 @@ def summarise(label: str, model: str, runs: list[dict]) -> None:
         rate = [r["output_tokens"] / r["seconds"] for r in runs
                 if r["output_tokens"] and r["seconds"]]
         if rate:
+            # Reported because it is the number vendors quote, and flagged
+            # because it rewards emitting more tokens. A model that reasons
+            # scores far better here while taking longer to produce an
+            # answer: mercury-2.5 measured 562 tok/s with reasoning on and
+            # 231 with it off, and was three times slower in wall clock with
+            # it on. Wall clock is the number that decides anything.
             print(f"  output tok/s median {statistics.median(rate):6.1f}   "
-                  f"mean {statistics.fmean(rate):6.1f}")
+                  f"mean {statistics.fmean(rate):6.1f}   "
+                  f"(rewards verbosity — compare wall clock, not this)")
+    # Does this model slow down as the prompt grows? The agents' contexts
+    # vary sevenfold across the record, so a backend whose latency tracks
+    # context behaves very differently in a busy fire week than a quiet one.
+    ctxs = [r.get("ctx_chars") for r in runs]
+    if len(runs) >= 3 and all(c for c in ctxs):
+        try:
+            r_ctx = statistics.correlation(ctxs, secs)
+            shape = ("tracks context" if r_ctx > 0.5 else
+                     "flat in context" if abs(r_ctx) < 0.3 else "mixed")
+            # Paired, not independent min/max: the fastest call is often
+            # not the shortest context, and printing them side by side
+            # would assert a pairing the data does not contain.
+            smallest = min(runs, key=lambda r: r["ctx_chars"])
+            largest = max(runs, key=lambda r: r["ctx_chars"])
+            print(f"  vs context   r={r_ctx:+.2f} ({shape})   "
+                  f"{smallest['seconds']:.2f}s at {smallest['ctx_chars']:,} chars"
+                  f" -> {largest['seconds']:.2f}s at {largest['ctx_chars']:,}")
+        except (statistics.StatisticsError, ValueError):
+            pass
+
     if costs:
         print(f"  cost         ${sum(costs):.5f} over {len(costs)} run(s)  "
               f"(${statistics.fmean(costs):.5f}/run, "
@@ -328,12 +355,14 @@ def main() -> None:
                 if backend == "anthropic":
                     r = call_anthropic(args.baseline, system, tool, ctx,
                                        args.max_tokens)
+                    r["ctx_chars"] = len(ctx)
                     if not warm:
                         anth_runs.append(r)
                     name = "haiku"
                 else:
                     r = call_openrouter(args.model, system, tool, ctx,
                                         args.reasoning, args.max_tokens)
+                    r["ctx_chars"] = len(ctx)
                     if r.get("provider"):
                         providers.add(r["provider"])
                     if not warm:
