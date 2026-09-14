@@ -221,14 +221,19 @@ class BlueskySession:
         log.info("Logged in as %s (DID: %s)", self.handle, self.did)
 
     def create_record(self, collection: str, record: dict) -> str:
-        """Create a record in the PDS. Returns the AT URI."""
+        """Create a record in the PDS. Returns the AT URI.
+
+        Every record passes through atproto_safe_record on the way out. The
+        per-field calls in the builders stay — they document intent where the
+        value is produced — but this is what makes forgetting one harmless.
+        """
         resp = self.client.post(
             "/xrpc/com.atproto.repo.createRecord",
             headers={"Authorization": f"Bearer {self.access_jwt}"},
             json={
                 "repo": self.did,
                 "collection": collection,
-                "record": record,
+                "record": atproto_safe_record(record),
             },
         )
         resp.raise_for_status()
@@ -772,7 +777,7 @@ def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None
         deg, point = _direction_from(_FIRE_HOME_LAT, _FIRE_HOME_LON,
                                      nearest["latitude"], nearest["longitude"])
         if point is not None:
-            result["nearestIncidentBearingDeg"] = deg
+            result["nearestIncidentBearingDeg"] = _atproto_safe(deg)
             result["nearestIncidentDirection"] = point
 
     if hotspot_lat is None or hotspot_lon is None:
@@ -952,6 +957,37 @@ def _atproto_safe(value):
     data model (only null/boolean/integer/string/cid/bytes/array/object).
     Stringify floats to preserve exact values instead of lossily rounding."""
     return str(value) if isinstance(value, float) else value
+
+
+def atproto_safe_record(value):
+    """_atproto_safe over a whole record, recursively.
+
+    Calling _atproto_safe field by field is a remember-to-call-it rule, and on
+    2026-09-13 it was not remembered: nearestIncidentBearingDeg went out as a
+    raw 21.9 while nearestHotspotBearingDeg, added in the same change, was
+    wrapped. The PDS rejected every fire record for a full day — two agent
+    observations could not publish, so Synthesis ran with no fire domain at
+    all — and the lexicon description for the field that broke it says
+    "Stringified — DAG-CBOR has no float type".
+
+    Applied to the whole record immediately before it is sent, so the rule
+    holds for every field of every builder rather than for the ones someone
+    thought of. No float is ever valid here, so this cannot mask a real
+    decision; it only removes the chance to forget.
+
+    bool is checked before int deliberately — bool is a subclass of int in
+    Python, and DAG-CBOR has a boolean type, so True must stay True rather
+    than becoming 1.
+    """
+    if isinstance(value, dict):
+        return {k: atproto_safe_record(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [atproto_safe_record(v) for v in value]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return str(value)
+    return value
 
 
 # ---------------------------------------------------------------------------
