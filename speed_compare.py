@@ -108,14 +108,15 @@ def load_examples(path: Path, n: int) -> list[dict]:
     return [rows[int(i * step)] for i in range(n)]
 
 
-def call_anthropic(model: str, system: str, tool: dict, context: str) -> dict:
+def call_anthropic(model: str, system: str, tool: dict, context: str,
+                   max_tokens: int = 2048) -> dict:
     """The agents' exact request shape: forced tool use, same max_tokens."""
     import anthropic
     client = anthropic.Anthropic()
     started = time.perf_counter()
     msg = client.messages.create(
         model=model,
-        max_tokens=2048,
+        max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": context}],
         tools=[tool],
@@ -133,7 +134,7 @@ def call_anthropic(model: str, system: str, tool: dict, context: str) -> dict:
 
 
 def call_openrouter(model: str, system: str, tool: dict, context: str,
-                    reasoning: str | None) -> dict:
+                    reasoning: str | None, max_tokens: int = 2048) -> dict:
     """Same schema, expressed the way an OpenAI-shaped API takes it."""
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
@@ -149,7 +150,7 @@ def call_openrouter(model: str, system: str, tool: dict, context: str,
             "json_schema": {"name": tool["name"], "strict": True,
                             "schema": tool["input_schema"]},
         },
-        "max_tokens": 2048,
+        "max_tokens": max_tokens,
     }
     # Omitted by default so the first run measures the model's out-of-box
     # behaviour. mercury-2.5 has tunable reasoning; --reasoning is how you
@@ -171,10 +172,16 @@ def call_openrouter(model: str, system: str, tool: dict, context: str,
         parsed = json.loads(text) if text else None
     except (json.JSONDecodeError, TypeError):
         parsed = None
+    # Reasoning tokens are billed as completion tokens but never appear in
+    # content, so a model that reasons by default looks like a model that
+    # writes enormously verbose answers. Separating them is what turns "it
+    # emitted 1,990 tokens" into "it spent 1,900 of them thinking".
+    detail = usage.get("completion_tokens_details") or {}
     return {
         "seconds": elapsed,
         "input_tokens": usage.get("prompt_tokens"),
         "output_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": detail.get("reasoning_tokens"),
         "parsed": parsed,
         "stop": choice.get("finish_reason"),
         # Which upstream OpenRouter actually routed to. Worth printing: the
@@ -191,9 +198,35 @@ def cost_usd(model: str, tok_in, tok_out) -> float | None:
     return (tok_in / 1e6) * price[0] + (tok_out / 1e6) * price[1]
 
 
+def is_truncated(run: dict) -> bool:
+    """Did this call get cut off rather than finish?
+
+    A truncated call has not done the task, so its latency is the time to
+    emit max_tokens and stop — not the time to answer. Averaging those into
+    a speed figure produces a number that looks like a measurement and is
+    not one.
+    """
+    return run.get("stop") in ("length", "max_tokens") or run.get("parsed") is None
+
+
 def summarise(label: str, model: str, runs: list[dict]) -> None:
     if not runs:
         print(f"\n{label} ({model}): no successful runs")
+        return
+
+    truncated = [r for r in runs if is_truncated(r)]
+    runs = [r for r in runs if not is_truncated(r)]
+    if truncated:
+        print(f"\n{label}  ({model})")
+        print(f"  *** {len(truncated)} of {len(truncated) + len(runs)} call(s) "
+              f"hit the token cap or returned nothing parseable.")
+        print("  *** Those did not answer, so their latency is the time to be"
+              "\n  *** cut off. They are excluded below; with any of them "
+              "present the\n  *** comparison is not yet valid. Try --reasoning "
+              "none, or raise\n  *** --max-tokens, and re-run until this line "
+              "is gone.")
+    if not runs:
+        print("  No completed calls to summarise.")
         return
     secs = [r["seconds"] for r in runs]
     outs = [r["output_tokens"] for r in runs if r["output_tokens"]]
@@ -204,7 +237,10 @@ def summarise(label: str, model: str, runs: list[dict]) -> None:
     def p90(xs):
         return sorted(xs)[min(len(xs) - 1, int(len(xs) * 0.9))]
 
-    print(f"\n{label}  ({model}, {len(runs)} run(s))")
+    if not truncated:
+        print(f"\n{label}  ({model}, {len(runs)} run(s))")
+    else:
+        print(f"  --- over the {len(runs)} completed call(s) ---")
     print(f"  latency      median {statistics.median(secs):6.2f}s   "
           f"mean {statistics.fmean(secs):6.2f}s   "
           f"p90 {p90(secs):6.2f}s   "
@@ -215,6 +251,13 @@ def summarise(label: str, model: str, runs: list[dict]) -> None:
     if outs:
         print(f"  output tok   median {statistics.median(outs):8.0f}   "
               f"total {sum(outs):8.0f}")
+        # Billed as completion tokens, absent from content. Without this line
+        # a model that reasons by default reads as one that writes essays.
+        reas = [r["reasoning_tokens"] for r in runs if r.get("reasoning_tokens")]
+        if reas:
+            print(f"    of which reasoning  median {statistics.median(reas):6.0f}"
+                  f"   total {sum(reas):8.0f}"
+                  f"   ({100 * sum(reas) / sum(outs):.0f}% of output)")
         rate = [r["output_tokens"] / r["seconds"] for r in runs
                 if r["output_tokens"] and r["seconds"]]
         if rate:
@@ -237,6 +280,10 @@ def main() -> None:
     ap.add_argument("--reasoning", default=None,
                     choices=["none", "low", "medium", "high"],
                     help="OpenRouter reasoning effort; omitted entirely if unset")
+    ap.add_argument("--max-tokens", type=int, default=2048,
+                    help="output cap for both sides (default 2048, what the "
+                         "agents use). Raise it to tell 'the model is verbose' "
+                         "apart from 'the reasoning trace ate the budget'.")
     ap.add_argument("--only", choices=["anthropic", "openrouter"], default=None,
                     help="run just one side")
     ap.add_argument("--data", type=Path, default=None)
@@ -279,12 +326,14 @@ def main() -> None:
         for backend in order:
             try:
                 if backend == "anthropic":
-                    r = call_anthropic(args.baseline, system, tool, ctx)
+                    r = call_anthropic(args.baseline, system, tool, ctx,
+                                       args.max_tokens)
                     if not warm:
                         anth_runs.append(r)
                     name = "haiku"
                 else:
-                    r = call_openrouter(args.model, system, tool, ctx, args.reasoning)
+                    r = call_openrouter(args.model, system, tool, ctx,
+                                        args.reasoning, args.max_tokens)
                     if r.get("provider"):
                         providers.add(r["provider"])
                     if not warm:
