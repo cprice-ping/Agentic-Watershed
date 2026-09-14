@@ -2563,6 +2563,51 @@ Three defects in one record, and all three are the same defect: a quantity
 separated from the frame that gives it meaning. A rule firing without how long
 it has been firing, a distance without a direction, a number without its unit.
 
+### A float cost a day of fire records (2026-09-14)
+
+The bearing work shipped with `nearestIncidentBearingDeg` as a raw float while
+`nearestHotspotBearingDeg`, added in the same change, was wrapped in
+`_atproto_safe`. DAG-CBOR has no float type, so the PDS rejected it:
+
+    InvalidRequest: Expected one of null, boolean, integer, string, cid,
+    bytes, array or object value type (got 21.9)
+    at $.record.fire.nearestIncidentBearingDeg
+
+Every fire publish failed for a day. Two agent observations could not leave
+the node, so the 09-14 synthesis ran with no fire domain at all — on a node
+whose nearest named incident is an active fire fourteen miles away.
+
+Three things about it are worth keeping.
+
+The lexicon description for the field that broke publishing reads "Stringified
+— DAG-CBOR has no float type". The rule was known, written down, in the same
+file, one field away, and applied to its neighbour. Knowing a rule is not a
+mechanism for following it.
+
+`_atproto_safe` is called per field, which makes every new numeric field a
+fresh chance to forget, and the chance is taken eventually. It is now applied
+recursively to the whole record inside `create_record`, immediately before the
+POST — so the rule holds for every field of every builder rather than for the
+ones someone remembered. No float is ever valid in a record, so a blanket
+sweep cannot mask a real decision. The per-field calls stay, because they
+document intent where the value is produced; the sweep is what makes
+forgetting one harmless. `bool` is checked before `float` and `int`, since
+`bool` subclasses `int` in Python and DAG-CBOR does have booleans.
+
+And the verification of the fix was itself wrong first. The regression harness
+copied the repo, reverted the fix in the copy, and ran the test — which
+hardcoded the real repo path, so it loaded the unmodified file both times and
+reported success either way. That is the same defect as the check that has
+only ever passed, committed while demonstrating a fix for a different one. The
+test now takes its root from the environment, and with that corrected it
+catches both the original one-line omission and the state with no guard at
+all.
+
+Nothing was lost. `mark_published` only runs after a successful create, so the
+two observations stay unpublished and the next publisher run picks them up —
+though they carry their original `observedAt`, so whether Synthesis still sees
+them depends on its lookback window.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

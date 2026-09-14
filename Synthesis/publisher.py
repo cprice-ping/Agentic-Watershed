@@ -122,6 +122,36 @@ def mark_published(conn: sqlite3.Connection, source_id: int, observed_at: str,
 # ATProto session (shared with node publisher — could extract to a lib later)
 # ---------------------------------------------------------------------------
 
+def _atproto_safe_record(value):
+    """Stringify every float in a record. DAG-CBOR has no float type.
+
+    Synthesis publishes one numeric field today (nodeCount, already an int),
+    so nothing here is currently at risk — this is here so that adding one
+    later cannot repeat what happened on the node. On 2026-09-13 a bearing
+    went out as a raw 21.9 and the PDS rejected every fire record for a day,
+    leaving a synthesis run with no fire domain at all.
+
+    A second copy of the node's atproto_safe_record, deliberately. The two
+    publishers deploy as independent containers and this one builds from
+    Synthesis/ rather than the repo root, so a shared root module is not in
+    its build context at all — unlike ATProto/publisher.py, which is why
+    haversine could be merged into geo.py and this cannot. Ten lines of pure
+    function against restructuring an image.
+
+    bool before float: bool is an int subclass and DAG-CBOR has booleans, so
+    True must survive as True.
+    """
+    if isinstance(value, dict):
+        return {k: _atproto_safe_record(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_atproto_safe_record(v) for v in value]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return str(value)
+    return value
+
+
 class BlueskySession:
     def __init__(self, handle: str, app_password: str):
         self.handle = handle
@@ -145,7 +175,8 @@ class BlueskySession:
         resp = self.client.post(
             "/xrpc/com.atproto.repo.createRecord",
             headers={"Authorization": f"Bearer {self.access_jwt}"},
-            json={"repo": self.did, "collection": collection, "record": record},
+            json={"repo": self.did, "collection": collection,
+                  "record": _atproto_safe_record(record)},
         )
         resp.raise_for_status()
         return resp.json().get("uri", "")
