@@ -2608,6 +2608,64 @@ two observations stay unpublished and the next publisher run picks them up —
 though they carry their original `observedAt`, so whether Synthesis still sees
 them depends on its lookback window.
 
+### A baseline made of the thing it was measuring (2026-09-15)
+
+The 2026-09-14 watershed record carried the new rules fields correctly —
+`rulesFired: []`, `rulesFlagged: false`, and `flagReason: "model judgement;
+no deterministic rule matched"` on a low-water flag the rules deliberately
+decline to encode. The machinery worked. What it surfaced was two older
+problems underneath.
+
+**The tool withheld the answer and handed over both operands.**
+`get_anomalies` does the right thing with a floor reading: refuses to score
+it, puts it under `at_rating_floor`, and attaches "No deviation percentage is
+given: this reading is at the rating floor, so a percentage against the
+baseline would describe the gauge rather than the river." Then it shipped
+`value: 0.0` and `baseline_mean: 0.826` in the same object, and the published
+summary read "100% below 30-day baseline".
+
+Third instance of that shape this week. Fire's tools withheld a bearing and
+supplied latitude and longitude, and the agent wrote "14mi NE of Napa". The
+Synthesis prompt said to stay silent about absent rule fields, and the model
+reasoned from their absence. Withholding a conclusion while supplying its
+inputs is not withholding it — it relocates the arithmetic to where nobody
+can check it. The floor rows now carry no baseline at all.
+
+**And the baseline itself was contaminated.** This was the user's question,
+and it was sharper than the defect above. The baseline was `AVG(value)` over
+thirty days with no floor filter, so for a gauge pinned at 0.00 for weeks it
+was the mean of mostly non-measurements. It was not a normal; it was a
+number produced by how long the river had been unmeasurable.
+
+Worse, it moved the wrong way. Every additional day at the floor added more
+zeros, pulled the mean down, and SHRANK the deviation percentage — a dry
+spell that deepened would read as a milder anomaly. The record said
+"sustained 7+ days" and "45-100% below 30-day baseline" in one sentence,
+with the second number quietly being eaten by the first.
+
+Baselines are now the mean of measurable readings only, with
+`baseline_basis` stating what share of the window each one rests on. Below
+`MIN_MEASURABLE_SHARE_FOR_BASELINE` (a quarter) no mean is produced at all
+and the parameter is listed under `no_baseline` with the reasoning attached —
+the same choice `notable_frp_at` makes returning None under twenty readings
+rather than approximating a percentile from a handful. For yesterday's
+conditions the payload now contains no pair of numbers a percentage could be
+built from.
+
+Two things went wrong while fixing it, both caught by the tests. Withholding
+the baseline made the floor branch unreachable in exactly the case it exists
+for, because the missing-baseline `continue` ran first — a river at its floor
+long enough to have no baseline is precisely a river whose floor readings
+must still be reported. And the first version of the sinking-yardstick test
+compared a baselined window against one that was correctly refused a
+baseline, so it was measuring nothing.
+
+Still open, and not a coding question: gage height never hits the floor, so
+its baseline is clean, but the gauge datum is arbitrary and often set below
+the streambed. Whether a percentage change in a datum-relative measurement
+means anything is a question for someone hydrological, and the "45%" half of
+that range rests on it.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's

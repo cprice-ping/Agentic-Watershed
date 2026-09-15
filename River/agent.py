@@ -157,7 +157,16 @@ def gather_context() -> str:
     # Anomaly check
     log.info("  → get_anomalies")
     anomalies = call_mcp_tool("get_anomalies", {"threshold_pct": 40.0})
-    sections.append(f"=== ANOMALY SCAN (>40% deviation from 30-day mean) ===\n{anomalies}")
+    # The header used to read "30-day mean", which is not what the baseline
+    # is and was part of how "100% below 30-day baseline" ended up in a
+    # published summary for a river sitting at its rating floor.
+    sections.append(
+        "=== ANOMALY SCAN (>40% deviation from the measurable-reading mean) ===\n"
+        "Baselines exclude readings at the rating floor. A parameter under "
+        "`no_baseline` has no usable normal in this window — do not describe "
+        "it as a percentage above or below anything, and do not build one "
+        "from other numbers here.\n"
+        f"{anomalies}")
 
     # Recent trend, hourly rather than every reading. The raw 48-hour series
     # was 768 rows and about 60,000 tokens — most of this prompt — to convey
