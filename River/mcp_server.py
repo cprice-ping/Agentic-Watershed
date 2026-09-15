@@ -431,14 +431,21 @@ def get_anomalies(threshold_pct: float = 50.0, lookback_days: int = 30) -> str:
     recent_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
     with _db() as conn:
-        # Compute baseline mean per station+parameter over lookback window
-        baselines = conn.execute(
+        # The baseline is built from measurable readings only — see
+        # hydrology.MIN_MEASURABLE_SHARE_FOR_BASELINE. Averaging the whole
+        # window, floor included, produced a "normal" made largely of
+        # non-measurements, and one that sank a little further every day the
+        # river stayed at the floor.
+        #
+        # Every row in the window is pulled rather than aggregated in SQL,
+        # because which rows are at the floor is a question about the
+        # parameter name and the value together, and that lives in
+        # hydrology.at_floor rather than in a WHERE clause.
+        window = conn.execute(
             """
-            SELECT station_id, parameter_code, parameter_name,
-                   AVG(value) as mean_val, unit
+            SELECT station_id, parameter_code, parameter_name, value, unit
             FROM readings
             WHERE collected_at >= ? AND value IS NOT NULL
-            GROUP BY station_id, parameter_code
             """,
             (cutoff,),
         ).fetchall()
@@ -455,16 +462,61 @@ def get_anomalies(threshold_pct: float = 50.0, lookback_days: int = 30) -> str:
             (recent_cutoff,),
         ).fetchall()
 
-    # Build baseline lookup
-    baseline_map = {
-        (r["station_id"], r["parameter_code"]): r["mean_val"]
-        for r in baselines
-    }
+    # Build the baseline lookup: mean of measurable readings, plus what
+    # share of the window that mean rests on. A key is absent entirely when
+    # too little of the window was measurable — absent means "no usable
+    # normal", which is a different claim from a small number.
+    totals: dict = {}
+    for r in window:
+        key = (r["station_id"], r["parameter_code"])
+        seen, kept, total = totals.get(key, (0, 0, 0.0))
+        at_floor = hydrology.at_floor(r["parameter_name"], r["value"])
+        totals[key] = (seen + 1,
+                       kept + (0 if at_floor else 1),
+                       total + (0.0 if at_floor else r["value"]))
+
+    baseline_map: dict = {}
+    baseline_basis: dict = {}
+    for key, (seen, kept, total) in totals.items():
+        share = kept / seen if seen else 0.0
+        baseline_basis[key] = {
+            "readings_in_window": seen,
+            "measurable_readings": kept,
+            "measurable_share_pct": round(100 * share, 1),
+        }
+        if kept and share >= hydrology.MIN_MEASURABLE_SHARE_FOR_BASELINE:
+            baseline_map[key] = total / kept
 
     anomalies = []
     floor_pinned = []
+    unbaselined: list = []
     for row in recent:
         key = (row["station_id"], row["parameter_code"])
+
+        # Checked before the baseline is looked up, not after. A floor
+        # reading needs no baseline to be reported, and testing the baseline
+        # first made this branch unreachable in the one situation it exists
+        # for: a river pinned at its floor long enough that no baseline is
+        # computable is exactly a river whose floor readings must still be
+        # reported.
+        if hydrology.at_floor(row["parameter_name"], row["value"]):
+            d = dict(row)
+            # No baseline_mean here, deliberately. Withholding the percentage
+            # while supplying both operands is not withholding it: on
+            # 2026-09-14 this row carried value 0.0 and baseline_mean 0.826
+            # next to a note saying no percentage would be given, and the
+            # published summary read "100% below 30-day baseline". If the
+            # ratio is meaningless, so is the pair of numbers that makes it.
+            d["value_note"] = hydrology.floor_note(row["parameter_name"],
+                                                   row["value"])
+            d["deviation_note"] = (
+                "No deviation percentage and no baseline are given for this "
+                "reading: it sits at the rating floor, so any comparison "
+                "against a baseline would describe the gauge rather than the "
+                "river. Do not derive one.")
+            floor_pinned.append(d)
+            continue
+
         mean = baseline_map.get(key)
         if mean is None or mean == 0:
             continue
@@ -472,28 +524,58 @@ def get_anomalies(threshold_pct: float = 50.0, lookback_days: int = 30) -> str:
         # by a 30-day mean of 0.826 cfs gave "100% deviation" for a 0.0 that
         # is the instrument's floor, and that number reached a published
         # record as "severe drought conditions emerging".
-        if hydrology.at_floor(row["parameter_name"], row["value"]):
-            d = dict(row)
-            d["baseline_mean"] = round(mean, 3)
-            d["value_note"] = hydrology.floor_note(row["parameter_name"],
-                                                   row["value"])
-            d["deviation_note"] = (
-                "No deviation percentage is given: this reading is at the "
-                "rating floor, so a percentage against the baseline would "
-                "describe the gauge rather than the river.")
-            floor_pinned.append(d)
-            continue
         deviation_pct = abs(row["value"] - mean) / abs(mean) * 100
         if deviation_pct >= threshold_pct:
             d = dict(row)
             d["baseline_mean"] = round(mean, 3)
+            d["baseline_basis"] = baseline_basis.get(key)
             d["deviation_pct"] = round(deviation_pct, 1)
             anomalies.append(d)
+
+    # Which parameters have no usable baseline at all. Built from the window
+    # rather than from the rows that happened to be scored, because "there is
+    # no 30-day normal for discharge here" is a fact about the record and
+    # stays true whether or not the current reading is at the floor. Saying it
+    # outright is the point: the floor rows already carry "do not derive one",
+    # and this week has been a lesson in how weak an instruction to refrain is
+    # next to simply not providing the thing.
+    for key in dict.fromkeys((r["station_id"], r["parameter_code"]) for r in recent):
+        if key in baseline_map:
+            continue
+        basis = baseline_basis.get(key)
+        if not basis:
+            continue
+        name = next((r["parameter_name"] for r in recent
+                     if (r["station_id"], r["parameter_code"]) == key), None)
+        unbaselined.append({
+            "station_id": key[0],
+            "parameter_code": key[1],
+            "parameter_name": name,
+            **basis,
+            "why": (
+                f"Fewer than "
+                f"{hydrology.MIN_MEASURABLE_SHARE_FOR_BASELINE:.0%} of the "
+                f"{lookback_days}-day window was above the rating floor, so no "
+                f"baseline is computed and none should be assumed. A mean over "
+                f"mostly floor readings describes how long the gauge has been "
+                f"unmeasurable rather than what is normal here, and it sinks "
+                f"further every day the floor persists — which would make a "
+                f"deepening dry spell read as a milder anomaly."),
+        })
 
     anomalies.sort(key=lambda x: x["deviation_pct"], reverse=True)
     result = {"anomalies": anomalies}
     if floor_pinned:
         result["at_rating_floor"] = floor_pinned
+    if unbaselined:
+        result["no_baseline"] = unbaselined
+    result["baseline_note"] = (
+        f"Baselines are the mean of MEASURABLE readings over "
+        f"{lookback_days} days — readings at the rating floor are excluded "
+        f"from them, and baseline_basis says how much of the window each "
+        f"mean rests on. Where too little was measurable, the parameter is "
+        f"listed under no_baseline with no mean at all rather than given a "
+        f"thin one.")
     if not anomalies:
         result["note"] = (
             f"No scored anomalies (>{threshold_pct}% deviation) in the last "

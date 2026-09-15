@@ -66,6 +66,24 @@ DIEL_PERIOD_HOURS = 24.0
 # are far enough apart in the cycle that comparing them reintroduces the bug.
 SAME_PHASE_TOLERANCE_HOURS = 1.0
 
+# Smallest share of a baseline window that must be above the rating floor for
+# the mean to describe the river rather than the gauge.
+#
+# get_anomalies averaged every reading in its 30-day window, floor included,
+# and called the result a baseline. At a gauge pinned at 0.00 for weeks that
+# is the mean of mostly non-measurements, and it behaves backwards: each day
+# of continued floor adds more zeros, pulls the mean down, and SHRINKS the
+# deviation percentage. A dry spell that deepens reads as a milder anomaly.
+# The 2026-09-14 record said "sustained 7+ days" and "45-100% below 30-day
+# baseline" in one sentence, with the second number being eaten by the first.
+#
+# A quarter is a judgement, not a measurement. It is set where a baseline
+# still rests on a week's worth of measurable readings in a 30-day window.
+# Below it there is no usable normal and none is reported — the same choice
+# notable_frp_at makes returning None under twenty readings rather than
+# approximating a percentile from a handful.
+MIN_MEASURABLE_SHARE_FOR_BASELINE = 0.25
+
 
 def is_discharge(parameter_name: str | None) -> bool:
     return any(k in (parameter_name or "").lower() for k in _DISCHARGE_LABELS)
