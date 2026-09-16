@@ -244,12 +244,33 @@ def get_readings_since(hours_ago: float = 24.0) -> str:
                        "qualifier_legend": _qualifier_legend(rows)})
 
 
+def _next_hour(hour_label: str) -> str:
+    """The hour bucket one hour after this one, in the query's own format.
+
+    Used to tell a continuous run of hours from one with a hole in it. The
+    labels come from `substr(collected_at,1,13) || ':00'`, so they are
+    "YYYY-MM-DDTHH:00" and comparing them as text would make 23:00 and the
+    next 00:00 look non-adjacent.
+    """
+    try:
+        dt = datetime.strptime(hour_label, "%Y-%m-%dT%H:00")
+    except (TypeError, ValueError):
+        return ""          # unparseable: never contiguous, so never spanned
+    return (dt + timedelta(hours=1)).strftime("%Y-%m-%dT%H:00")
+
+
 @mcp.tool()
 def get_hourly_series(hours_ago: float = 48.0) -> str:
     """
-    Return the last N hours as one row per hour per parameter: min, max, and
-    how many readings that hour held. Use this for the shape of recent
-    conditions rather than get_readings_since, which returns every reading.
+    Return the last N hours grouped into one block per station+parameter,
+    each holding spans of consecutive hours over which min, max and
+    qualifiers did not change. Use this for the shape of recent conditions
+    rather than get_readings_since, which returns every reading.
+
+    A span states its own inclusive `from` and `to` and how many hours it
+    covers, so no value depends on its position in a list. A collector gap
+    ends a span instead of being spanned over — a range always covers every
+    hour inside it.
 
     The collector polls every 15 minutes, so 48 hours of two stations and two
     parameters is 768 rows — about 60,000 tokens, most of River's prompt, to
@@ -283,34 +304,104 @@ def get_hourly_series(hours_ago: float = 48.0) -> str:
     if not rows:
         return f"No readings found in the last {hours_ago} hours."
 
-    out = []
+    # Grouped into one block per (station, parameter), with consecutive
+    # unchanged hours collapsed into a span.
+    #
+    # The flat form repeated station_id, station_name, parameter_name and
+    # unit on every one of ~192 rows: measured on a real 48-hour window,
+    # 56% of the payload was key names and repeated dimension values, for
+    # data whose non-time columns hold two distinct values each. It was four
+    # series with a shared time axis wearing a table costume.
+    #
+    # Spans rather than parallel arrays, which would have been smaller still.
+    # A parallel array detaches every value from its hour and relies on the
+    # reader counting positions against a list 48 entries long — and a value
+    # arriving without the frame that gives it meaning is the defect this
+    # repo keeps rediscovering, most recently a gage height that was really a
+    # timestamp. Every span carries its own `from` and `to`, so nothing here
+    # depends on position.
+    #
+    # The compression is proportional to how little happened, which is the
+    # right shape: a quiet 48 hours collapses to four spans (97% smaller),
+    # while a window containing the 2026-08-31 surge keeps 59 spans (86%)
+    # because that detail is the thing worth having.
     legend = {}
+    series: dict = {}
     for r in rows:
         d = dict(r)
-        # Qualifiers are aggregated per hour, so a rare code stays visible
-        # even though the individual readings are gone. Glossed inline only
-        # when notable, exactly as the row-level tools do.
         codes = [c for c in (d.get("qualifiers") or "").split(",") if c]
         for c in codes:
             legend.setdefault(c, qualifiers.describe(c))
-        if any(qualifiers.is_notable(c) for c in codes):
-            d["qualifier_note"] = qualifiers.describe(",".join(codes))
+
+        key = (d["station_id"], d["parameter_name"])
+        block = series.get(key)
+        if block is None:
+            block = {
+                "station_id": d["station_id"],
+                "parameter_name": d["parameter_name"],
+                "unit": d["unit"],
+                "spans": [],
+            }
+            series[key] = block
+
+        at_floor = hydrology.at_floor(d.get("parameter_name"), d.get("value_min"))
+        # Qualifiers are aggregated per hour, so a rare code stays visible
+        # even though the individual readings are gone. Glossed once per span
+        # when notable, as the row-level tools do per row.
+        note = (qualifiers.describe(",".join(codes))
+                if any(qualifiers.is_notable(c) for c in codes) else None)
+        shape = (d["value_min"], d["value_max"], d.get("qualifiers"), note, at_floor)
+
+        prev = block["spans"][-1] if block["spans"] else None
+        # A span may only extend across CONSECUTIVE hours. A collector gap
+        # must break it: "from 02:00 to 09:00" over a window missing four of
+        # those hours would assert coverage that does not exist, which is the
+        # same failure as a baseline built from readings that were not
+        # measurements.
+        contiguous = prev is not None and _next_hour(prev["to"]) == d["hour"]
+        if prev is not None and contiguous and prev["_shape"] == shape:
+            prev["to"] = d["hour"]
+            prev["hours"] += 1
+            continue
+
+        span = {"from": d["hour"], "to": d["hour"], "hours": 1,
+                "min": d["value_min"], "max": d["value_max"],
+                "readings": d["readings"], "_shape": shape}
+        if d.get("qualifiers"):
+            span["qualifiers"] = d["qualifiers"]
+        if note:
+            span["qualifier_note"] = note
         # A flag, not a sentence. The floor note is ~140 characters and the
-        # hourly minimum is at the floor for most discharge rows, so spelling
-        # it out per row rebuilds the per-row repetition the qualifier legend
-        # was just created to remove. Explained once below.
-        if hydrology.at_floor(d.get("parameter_name"), d.get("value_min")):
-            d["min_at_rating_floor"] = True
-        out.append(d)
+        # hourly minimum is at the floor for most discharge spans; spelling it
+        # out per span rebuilds the repetition the legend removed. Explained
+        # once below.
+        if at_floor:
+            span["min_at_rating_floor"] = True
+        block["spans"].append(span)
+
+    blocks = []
+    for block in series.values():
+        for s in block["spans"]:
+            s.pop("_shape", None)
+            # Collapsed away when a span is a single hour, since from and to
+            # already say so.
+            if s["hours"] == 1:
+                del s["to"]
+        blocks.append(block)
 
     result = {
-        "hourly": out,
+        "series": blocks,
         "qualifier_legend": legend,
-        "note": ("One row per hour per parameter: min, max and reading count. "
-                 "Call get_readings_since only if individual readings matter; "
-                 "for a trend they do not."),
+        "note": ("One block per station+parameter. Each span is a run of "
+                 "CONSECUTIVE hours over which min, max and qualifiers did "
+                 "not change; `from`/`to` are inclusive and `hours` counts "
+                 "them, so a span always covers every hour in its range. A "
+                 "single-hour span has no `to`. A gap in collection ends a "
+                 "span rather than being spanned over. Call "
+                 "get_readings_since only if individual readings matter; for "
+                 "a trend they do not."),
     }
-    if any(r.get("min_at_rating_floor") for r in out):
+    if any(s.get("min_at_rating_floor") for b in blocks for s in b["spans"]):
         result["min_at_rating_floor_means"] = hydrology.floor_note(
             "Streamflow", hydrology.DISCHARGE_FLOOR_CFS)
     return compact_json(result)
