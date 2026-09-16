@@ -175,7 +175,15 @@ def gather_context() -> str:
     # in the day's range, and the same-phase reading from yesterday.
     log.info("  → get_hourly_series (48h)")
     recent = call_mcp_tool("get_hourly_series", {"hours_ago": 48.0})
-    sections.append(f"=== HOURLY MIN/MAX: LAST 48 HOURS ===\n{recent}")
+    sections.append(
+        "=== HOURLY MIN/MAX: LAST 48 HOURS ===\n"
+        "Grouped per station+parameter. A span is a run of consecutive hours "
+        "over which min, max and qualifiers did not change; `from` and `to` "
+        "are inclusive and `hours` counts them. Four spans across two days "
+        "means the river was flat, not that readings are missing — a "
+        "collection gap ends a span instead of being covered by one, so "
+        "every hour inside a range was measured.\n"
+        f"{recent}")
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     context = f"Agent run at: {now}\n\n" + "\n\n".join(sections)
