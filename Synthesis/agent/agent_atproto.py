@@ -459,6 +459,29 @@ def read_recent_observations(lookback_hours: float = 24.0,
     """
     Read recent observations from the subscriber DB, grouped by type.
     Returns dict of {observation_type: [records]} sorted newest first.
+
+    Windowed and ordered on `observed_at` — when the node saw the conditions
+    — not `received_at`, which is when this container fetched the record.
+
+    Those were the same query for a long time without being the same thing,
+    and the reason it never showed is that subscriber.db is rebuilt from
+    scratch on every run. Every row therefore carries roughly the same
+    `received_at`, so `received_at >= cutoff` was always true and the ORDER BY
+    was arbitrary within a domain. The window was enforced entirely by the
+    subscriber's own `observedAt` filter, and this clause was inert while
+    reading like the thing that enforced it.
+
+    Harmless only while the database stays ephemeral. The moment anyone makes
+    it persistent to save a re-fetch — an obvious optimisation — the agent
+    reads everything ever fetched while its log says 27 hours. compute_trends
+    already re-sorted on observed_at before taking its oldest and newest, so
+    half the codebase was defending against this query rather than trusting
+    it.
+
+    COALESCE because a record with no `observedAt` is stored rather than
+    dropped: subscriber.py skips the window check when the field is missing
+    instead of discarding the record, so filtering on a bare `observed_at`
+    would silently delete exactly the rows it deliberately let through.
     """
     if not subscriber_db.exists():
         log.warning("Subscriber DB not found at %s", subscriber_db)
@@ -477,8 +500,8 @@ def read_recent_observations(lookback_hours: float = 24.0,
                    observed_at, received_at, summary, flagged,
                    flag_reason, agent_model, raw_record
             FROM observations
-            WHERE received_at >= ?
-            ORDER BY observation_type, received_at DESC
+            WHERE COALESCE(observed_at, received_at) >= ?
+            ORDER BY observation_type, COALESCE(observed_at, received_at) DESC
             """,
             (cutoff,),
         ).fetchall()

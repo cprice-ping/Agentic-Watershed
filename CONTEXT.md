@@ -2726,6 +2726,49 @@ structure matches what it actually is. A better structure beat a better
 format here by 30 points, needed no new dependency or spec, and gave up
 nothing.
 
+### A filter that was never doing anything (2026-09-16)
+
+Synthesis has no cross-run deduplication and never has. `subscriber.db` is
+rebuilt from scratch on every run — only `synthesis.db` and
+`synth_publisher.db` are copied back to the file share — so there is no
+memory of which node records a previous pass consumed. It is a 27-hour
+rolling window, and everything inside it is re-read every twelve hours.
+
+That is deliberate. The window is sized to survive one missed node run
+(15 hours left only three hours of slack over a 12-hour agent cadence, and
+the 2026-09-09 reboot erased watershed and weather from an advisory
+entirely), and surviving a missed run necessarily means re-reading the runs
+that did not fail. Continuity is supposed to come from the agent's own
+memory of prior syntheses, which is why the `rule_persistence` note matters:
+without knowing how long something has been true, a re-read is
+indistinguishable from a new event.
+
+Explaining that turned up a dead clause. `read_recent_observations` windowed
+and ordered on `received_at` — when this container fetched the record — not
+`observed_at`, when the node saw the conditions. In a database rebuilt every
+run, every row carries the same `received_at`, so `received_at >= cutoff` was
+always true and the ORDER BY was arbitrary within a domain. The window was
+enforced entirely by the subscriber's `observedAt` filter while this clause
+read like the thing enforcing it.
+
+Harmless only while the database stays ephemeral, and the obvious
+optimisation — make it persistent to skip a re-fetch — would have turned it
+into an agent reading everything ever fetched while its log said 27 hours.
+`compute_trends` already re-sorted on `observed_at` before taking its oldest
+and newest, so part of the codebase was defending against this query rather
+than trusting it.
+
+`COALESCE(observed_at, received_at)` rather than a bare `observed_at`:
+subscriber.py skips the window check when `observedAt` is missing instead of
+discarding the record, so filtering on the bare column would have silently
+deleted exactly the rows it deliberately let through.
+
+The test for it caught a worse habit of mine. The midnight-crossing case in
+the hourly-span suite was anchored to a fixed clock hour, which sat outside
+the query window for most of the day — it passed when written and failed
+that afternoon. A test whose result depends on when it runs is worse than
+no test, because it spends its credibility before it is needed.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
