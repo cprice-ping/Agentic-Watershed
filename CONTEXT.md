@@ -2666,6 +2666,66 @@ the streambed. Whether a percentage change in a datum-relative measurement
 means anything is a question for someone hydrological, and the "45%" half of
 that range rests on it.
 
+### Four series wearing a table costume (2026-09-16)
+
+Prompted by a question about whether TOON — Token-Oriented Object Notation,
+which encodes uniform arrays CSV-style to drop repeated keys — was worth
+adopting. The answer turned out to be that three of its four ideas were
+already here, and the fourth was pointing at the wrong problem.
+
+Already done independently: `compact_json` strips whitespace, the qualifier
+legend declares a repeated string once and references it by code, the floor
+note became a boolean plus one container-level sentence, and
+`get_hourly_series` aggregates 15-minute readings into hourly buckets. That
+last one matters most — cutting rows beats cutting encoding.
+
+Not done: dropping repeated key names. Measured on a real 48-hour window,
+**56% of that payload was key names and repeated dimension values**. TOON
+would have taken it 60% smaller.
+
+But the column cardinality said something more useful. Across 192 rows there
+were 48 distinct hours and *two or fewer distinct values in every other
+column*; `readings` and `qualifiers` were constant. That is not tabular data.
+It is four series sharing a time axis, wearing a table costume, and a format
+change would only have compressed the costume.
+
+Restructuring instead:
+
+    flat rows (what it was)           39,372 chars
+    grouped, every value labelled     15,688      60% off  (matches TOON)
+    grouped, parallel arrays           4,454      89% off
+    grouped, spans                        911      92-97% off
+
+Parallel arrays were rejected despite being smallest-but-one. They detach
+every value from its hour and make the reader count positions against a
+48-entry list, and a value arriving without the frame that gives it meaning
+is the defect this repo keeps rediscovering — wind units, hotspot currency,
+diel phase, megawatts printed as miles, a gage height that was a timestamp,
+a baseline made of the thing it measured. Adopting a representation whose
+premise is "the label lives somewhere else" would have been buying tokens
+with the exact currency this project keeps running out of.
+
+Spans keep it. Consecutive hours with unchanged min, max and qualifiers
+collapse into one entry that states its own inclusive `from`, `to` and hour
+count, so nothing depends on position. The compression is proportional to how
+little happened, which is the right shape: a quiet 48 hours becomes four
+spans, while a window containing the 2026-08-31 surge keeps 59 of them,
+because that detail is the thing worth having.
+
+The part that needed care is gaps. A span may only cover consecutive hours —
+"from 02:00 to 09:00" across a window missing four of them would assert
+coverage that does not exist, which is the same failure as a baseline built
+from readings that were not measurements. A collection gap ends a span. The
+test asserts that every span's stated range matches its hour count, and that
+a run crossing midnight still joins, since comparing "23:00" and "00:00" as
+text would call them non-adjacent.
+
+Worth keeping as a general shape: when a payload looks repetitive, the
+question to ask first is not how to encode it more tightly but whether its
+structure matches what it actually is. A better structure beat a better
+format here by 30 points, needed no new dependency or spec, and gave up
+nothing.
+
 ### What generalises, and what doesn't
 
 The tempting conclusion is that models can't handle deterministic rules. That's
