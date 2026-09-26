@@ -22,6 +22,13 @@ env/
 *.env
 !.env.example
 
+# The PDS's data directory (docker-compose.yml's default location) holds every
+# account's signing key. One `git add .` in a node's checkout would publish
+# them. Same for tunnel credentials restored next to the repo.
+pds-data/
+cloudflared/
+.cloudflared/
+
 # macOS
 .DS_Store
 .AppleDouble

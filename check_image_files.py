@@ -62,6 +62,11 @@ _SH_INVOKE = re.compile(r"(?:python3?|sh|bash)\s+(\S+\.(?:py|sh))")
 # The WORKDIR everything here uses. Entrypoints name absolute in-image paths.
 _IMAGE_ROOT = "/app/"
 
+# Any in-image path a crontab names. The node's schedule runs inside its
+# image, so a job whose script was never copied fails only when it fires —
+# twice a day for the incidents collector, with nothing failing before then.
+_CRON_TARGET = re.compile(r"(/app/\S+\.(?:py|sh))")
+
 
 def mounted_at_runtime() -> set[str]:
     """Basenames supplied by a bind mount rather than baked into an image.
@@ -195,6 +200,16 @@ def check(dockerfile: Path, verbose: bool, mounted: set[str]) -> list[str]:
             if wanted not in present:
                 problems.append(
                     f"{rel}: {f} runs `{target}`, not copied")
+
+    for f in sorted(p for p in present if p.suffix == ".crontab"):
+        for line in (context / f).read_text().splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            for target in _CRON_TARGET.findall(line):
+                wanted = Path(target[len(_IMAGE_ROOT):])
+                if wanted not in present:
+                    problems.append(
+                        f"{rel}: {f} schedules `{target}`, not copied")
 
     for f in sorted(present):
         if f.suffix != ".py":

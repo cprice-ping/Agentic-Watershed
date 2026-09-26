@@ -166,7 +166,7 @@ was caught.
 
 ### Prerequisites
 
-- Raspberry Pi 5 (or any Linux system), or any machine for a new node
+- Any Docker host — a laptop, a cloud VM, a Pi
 - Docker + Compose plugin (`docker compose version`) — the supported path
 - Anthropic API key
 - AirNow API key (free)
@@ -175,15 +175,15 @@ was caught.
 
 ```bash
 cp .env.example .env      # fill in real values
-docker compose build
+GIT_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
 ```
 
-Each service is invoked one-shot via cron (`docker compose run --rm <service> ...`),
-not run as a long-lived daemon — see "Cron schedule" below. `node_config.json`
-and `.env` are bind-mounted, not baked into the image, so the same build works
-for any node — just point cron at a different checkout with its own config.
-Deploying a new node, or migrating an existing venv+cron setup over without
-losing history: see `DEPLOYMENT.md`.
+One compose file is the whole node: the PDS, the Cloudflare tunnel in front
+of it, and a `node` container whose scheduler runs every collector, agent and
+the publisher — see "Cron schedule" below. Each job is still one-shot and
+run-to-completion; only the scheduler is long-lived. `node_config.json`,
+`.env` and all data are mounted, not baked into the image, so the same build
+works for any node. Setting up, restoring or moving a node: see `DEPLOYMENT.md`.
 
 ### Without Docker (legacy / alternative)
 
@@ -219,36 +219,13 @@ ATPROTO_PDS_URL=https://napa-node-01.watershed-agent.dev
 
 ## Cron schedule
 
-Docker Compose (recommended — run from the repo root):
+Compose node: the schedule is `node.crontab` at the repo root, run by
+supercronic inside the `node` container in Pacific time (`NODE_TZ`). That
+file is the source of truth — edit it, rebuild `node`, and the change is
+live. Jobs get the container's environment directly, so there is no
+`. /etc/environment` prefix to get wrong. Output: `docker compose logs node`.
 
-```cron
-# === Collectors ===
-*/15 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm river python collector.py >> River/logs/collector.log 2>&1
-*/30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm weather python collector.py >> Weather/logs/collector.log 2>&1
-*/30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm aqi python collector.py >> AQI/logs/collector.log 2>&1
-*/30 * * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm fire python collector.py >> Fire/logs/collector.log 2>&1
-
-# === Domain Agents ===
-# River, Weather, Fire dropped from 4x/day to 2x/day (2026-07-20) — Haiku's
-# aggregate cost across 16 agent runs/day was the dominant driver in the
-# token-cost review, well ahead of Synthesis on Sonnet at 2x/day. Latency
-# stays well inside the "up to a day" tolerance the detection pipeline is
-# built around (see CONTEXT.md). AQI stays at 4x/day — PM2.5 is the fastest-
-# moving signal in the system and the one Synthesis's own reasoning leans on
-# as an early smoke/fire indicator, so it's worth the extra runs. The
-# publisher's existing 4x/day schedule was always sized around AQI's cadence,
-# not a symmetric one-per-domain design, so it still covers every agent's
-# output within a few hours without needing its own adjustment.
-0 0,12 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm river python agent.py >> River/logs/agent.log 2>&1
-0 1,13 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm weather python agent.py >> Weather/logs/agent.log 2>&1
-0 2,8,14,20 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm aqi python agent.py >> AQI/logs/agent.log 2>&1
-0 3,15 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm fire python agent.py >> Fire/logs/agent.log 2>&1
-
-# === ATProto Publisher ===
-15 3,9,15,21 * * * cd /home/cprice/Agentic-Watershed && docker compose run --rm atproto-publisher python publisher.py >> ATProto/logs/publisher.log 2>&1
-```
-
-Without Docker (legacy — same schedule, `.venv/bin/python` instead of `docker compose run`):
+Without Docker (legacy — the same schedule from host cron, with per-stack venvs; node-01 ran this way on the Pi until 2026-09-23):
 
 ```cron
 # === Collectors ===
@@ -256,6 +233,7 @@ Without Docker (legacy — same schedule, `.venv/bin/python` instead of `docker 
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Weather && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/AQI && .venv/bin/python collector.py >> logs/collector.log 2>&1
 */30 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python collector.py >> logs/collector.log 2>&1
+50 2,14 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/Fire && .venv/bin/python incidents_collector.py >> logs/incidents.log 2>&1
 
 # === Domain Agents (River/Weather/Fire 2x/day, AQI 4x/day — see note above) ===
 0 0,12 * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python agent.py >> logs/agent.log 2>&1

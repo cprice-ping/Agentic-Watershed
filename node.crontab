@@ -1,0 +1,31 @@
+# The node's schedule. supercronic runs this inside the `node` container
+# (see Dockerfile and docker-compose.yml); it is the single source of truth for
+# when anything runs. Times are in the container's TZ, which docker-compose.yml
+# sets to Pacific — the zone node-01's crontab ran in on the Pi, and the one
+# CONTEXT.md's reasoning about agent timing assumes. Leave it unset and every
+# job silently shifts by seven or eight hours.
+#
+# No `. /etc/environment &&` prefix: supercronic hands every job the
+# container's own environment, which compose loads from .env. That prefix, and
+# the three ways of getting it wrong that DEPLOYMENT.md records, do not exist
+# here.
+#
+# Absolute /app paths so check_image_files.py can confirm each target is in
+# the image — a job pointing at a file the image lacks fails only when it
+# fires, which for the incidents collector is twice a day.
+
+# === Collectors ===
+*/15 * * * * /app/run-job.sh /app/River/collector.py
+*/30 * * * * /app/run-job.sh /app/Weather/collector.py
+*/30 * * * * /app/run-job.sh /app/AQI/collector.py
+*/30 * * * * /app/run-job.sh /app/Fire/collector.py
+50 2,14 * * * /app/run-job.sh /app/Fire/incidents_collector.py
+
+# === Domain agents (River/Weather/Fire 2x/day, AQI 4x/day — see CONTEXT.md) ===
+0 0,12 * * * /app/run-job.sh /app/River/agent.py
+0 1,13 * * * /app/run-job.sh /app/Weather/agent.py
+0 2,8,14,20 * * * /app/run-job.sh /app/AQI/agent.py
+0 3,15 * * * /app/run-job.sh /app/Fire/agent.py
+
+# === ATProto publisher ===
+15 3,9,15,21 * * * /app/run-job.sh /app/ATProto/publisher.py

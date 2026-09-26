@@ -1,82 +1,95 @@
-# Containerized node stack: collectors, domain agents, and the ATProto
-# publisher. Deliberately excludes the PDS — that's ATProto/pds/docker-compose.yml,
-# already deployed and running; a full "transferable node" is this file PLUS
-# that one, run together.
+# A whole node: the PDS that holds its identity and records, the Cloudflare
+# tunnel that makes the PDS reachable, and the `node` container that runs the
+# collectors, domain agents and publisher on a schedule. `docker compose up -d`
+# on any Docker host — a laptop, an Azure VM, a Pi — is the node.
 #
-# All services are invoked one-shot via cron, not run as long-lived daemons —
-# matches this project's "stateless, cron-triggered, run-to-completion" agent
-# design (see CONTEXT.md). Cron calls `docker compose run --rm <service> ...`
-# instead of `.venv/bin/python ...`; nothing else about the scheduling model
-# changes. See README.md's "Cron schedule" section for the actual cron lines.
+# What is NOT in the repo, and has to be put next to it before `up`:
 #
-# Portability: node_config.json and .env are bind-mounted, not baked into
-# the images — the same built images work for any node. To deploy a new
-# node, copy this repo, write a new node_config.json and .env, done. No
-# image rebuild required unless the code itself changes.
+#   .env                    API keys, PDS account credentials, TUNNEL_TOKEN
+#                           (template: .env.example)
+#   ATProto/pds/pds.env     PDS secrets, including the PLC rotation key
+#                           (template: ATProto/pds/pds.env.example)
+#   pds-data/               the PDS's data directory — accounts, repo, keys
+#   <Stack>/data/           each stack's SQLite history, if restoring a node
+#
+# pds-data/ and pds.env are the node's identity. The rest can be rebuilt or
+# reissued; those two cannot. Back them up like credentials, not like a cache.
+#
+# ONE PDS PER IDENTITY. Never run this with a restored pds-data/ in two places
+# at once — two PDS instances writing the same DID's repo is split-brain, and
+# the tunnel will happily route to whichever one connected last.
+
+x-logging: &logging
+  # Docker keeps container stdout; without a cap it grows until the disk is
+  # full. 5 x 10 MB is weeks of this node's output.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
-  river:
+  pds:
+    image: ghcr.io/bluesky-social/pds:latest
+    restart: unless-stopped
+    env_file: ATProto/pds/pds.env
+    volumes:
+      # Everything durable (accounts, repo records, blob store) lives under
+      # /pds inside the container. Without this mount, recreating the
+      # container destroys the node's identity and history.
+      #
+      # Relative by default so the node is self-contained in this directory;
+      # was /home/cprice/pds-data on the Pi. Override with PDS_DATA_DIR in .env.
+      - ${PDS_DATA_DIR:-./pds-data}:/pds
+    ports:
+      # Loopback only, for health checks from the host. Public traffic comes
+      # through the tunnel, never through this port — on a cloud VM, binding
+      # 0.0.0.0 here would put the PDS on the internet beside the tunnel.
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      # node, not wget or curl: the PDS is a Node app, so node is the one
+      # binary its image is certain to carry.
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/xrpc/_health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *logging
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # TUNNEL_TOKEN (from .env) says which tunnel this is; the mounted config
+    # says where its traffic goes. See ATProto/pds/cloudflared.yml.
+    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml", "run"]
+    environment:
+      # Not `:?` — that would make every compose command fail without a
+      # token, including the tunnel-less first run DEPLOYMENT.md starts with.
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    volumes:
+      - ./ATProto/pds/cloudflared.yml:/etc/cloudflared/config.yml:ro
+    depends_on:
+      pds:
+        condition: service_healthy
+    logging: *logging
+
+  node:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: agentic-watershed-domain:latest
-    working_dir: /app/River
+      args:
+        # GIT_COMMIT=$(git rev-parse --short HEAD) docker compose build
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    image: agentic-watershed-node:latest
+    restart: unless-stopped
     env_file: .env
+    environment:
+      # The schedule in node.crontab is written in node-01's local time.
+      # Containers default to UTC; without this every job runs 7-8 hours off.
+      TZ: ${NODE_TZ:-America/Los_Angeles}
     volumes:
       - ./node_config.json:/app/node_config.json:ro
       - ./River/data:/app/River/data
-    command: ["python", "collector.py"]
-
-  weather:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: agentic-watershed-domain:latest
-    working_dir: /app/Weather
-    env_file: .env
-    volumes:
-      - ./node_config.json:/app/node_config.json:ro
       - ./Weather/data:/app/Weather/data
-    command: ["python", "collector.py"]
-
-  aqi:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: agentic-watershed-domain:latest
-    working_dir: /app/AQI
-    env_file: .env
-    volumes:
-      - ./node_config.json:/app/node_config.json:ro
       - ./AQI/data:/app/AQI/data
-    command: ["python", "collector.py"]
-
-  fire:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: agentic-watershed-domain:latest
-    working_dir: /app/Fire
-    env_file: .env
-    volumes:
-      - ./node_config.json:/app/node_config.json:ro
       - ./Fire/data:/app/Fire/data
-    command: ["python", "collector.py"]
-
-  atproto-publisher:
-    build:
-      context: .
-      dockerfile: ATProto/Dockerfile
-    image: agentic-watershed-atproto:latest
-    working_dir: /app/ATProto
-    env_file: .env
-    volumes:
-      - ./node_config.json:/app/node_config.json:ro
-      # Read-only: the publisher only reads domain observations, it never
-      # writes back to a domain's DB.
-      - ./River/data:/app/River/data:ro
-      - ./Weather/data:/app/Weather/data:ro
-      - ./AQI/data:/app/AQI/data:ro
-      - ./Fire/data:/app/Fire/data:ro
       - ./ATProto/data:/app/ATProto/data
-    command: ["python", "publisher.py"]
+    logging: *logging

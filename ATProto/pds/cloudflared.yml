@@ -1,0 +1,10 @@
+# Ingress for the node's Cloudflare tunnel, mounted into the cloudflared
+# container by docker-compose.yml. Which tunnel to run comes from
+# TUNNEL_TOKEN in .env, not from here, so this file is the same for every node.
+#
+# One catch-all rule: whatever hostname Cloudflare routes to this tunnel goes
+# to the PDS. `pds` is the compose service name — on the compose network it
+# resolves to the PDS container. The Pi's version said http://localhost:3000,
+# which inside the cloudflared container is cloudflared itself.
+ingress:
+  - service: http://pds:3000

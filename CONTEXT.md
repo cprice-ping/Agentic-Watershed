@@ -406,6 +406,13 @@ Required environment variables:
 
 ## Cron (current)
 
+Since the move to the compose node (2026-09), the live schedule is
+`node.crontab`, run by supercronic inside the `node` container in Pacific
+time — the same times as below, without the `. /etc/environment && cd ...`
+wrapper, which the container makes unnecessary. What follows is node-01's
+Pi crontab as it stood when the SD card failed on 2026-09-23, kept because
+the reasoning after it refers to it.
+
 ```cron
 # === Collectors ===
 */15 * * * * . /etc/environment && cd /home/cprice/Agentic-Watershed/River && .venv/bin/python collector.py >> logs/collector.log 2>&1
