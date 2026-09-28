@@ -1,24 +1,37 @@
-# Mirrors .gitignore — none of this belongs baked into an image.
-# Data must be bind-mounted at runtime, not copied in at build time,
-# or every container recreate would start from a blank/stale DB.
+# What must never reach an image. Data must be bind-mounted at runtime, not
+# copied in at build time, or every container recreate would start from a
+# blank or stale DB — and secrets baked into a layer go wherever the image goes.
+#
+# Every pattern is anchored with **/ on purpose. .dockerignore patterns match
+# from the context root only: a bare `*.env` excludes ./x.env and nothing
+# deeper. This file used to say `*.env`, so ATProto/pds/pds.env — the PDS's
+# PLC rotation key — was copied into any image built on the node by
+# `COPY ATProto ./ATProto`. `.venv/` and `__pycache__/` had the same gap.
 **/data/
 **/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite-*
 **/logs/
-*.log
+**/*.log
 
-.venv/
-venv/
-env/
-__pycache__/
-*.py[cod]
+**/.venv/
+**/venv/
+**/env/
+**/__pycache__/
+**/*.py[cod]
 
-.env
-.env.*
-*.env
+**/.env
+**/.env.*
+!.env.example
+**/*.env
+pds-data/
+cloudflared/
+**/.cloudflared/
 
 .git/
 .github/
 
-.DS_Store
+**/.DS_Store
 .vscode/
 .idea/

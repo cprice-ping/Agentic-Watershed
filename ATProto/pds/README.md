@@ -1,4 +1,13 @@
-# Self-hosted PDS (Pi)
+# Self-hosted PDS
+
+> **Running it:** the PDS and its tunnel are the `pds` and `cloudflared`
+> services in the root `docker-compose.yml`, alongside the node itself — see
+> `DEPLOYMENT.md`. The one-time setup below is how node-01's tunnel, secrets
+> and account were first created on the Pi, and is still the way to mint a
+> *new* node's identity. Where it runs cloudflared as a host service or
+> starts the PDS from this directory, the compose file now does that instead:
+> the tunnel runs from `TUNNEL_TOKEN` with the ingress in `cloudflared.yml`
+> here, and the PDS data lives in `./pds-data` at the repo root.
 
 Runs the official [bluesky-social/pds](https://github.com/bluesky-social/pds)
 so domain agent nodes have their own ATProto identity instead of borrowing
@@ -114,9 +123,10 @@ Node hostname: `napa-node-01.watershed-agent.dev`.
 
 ## Persistence
 
-Everything durable — accounts, repo records, blob store, PLC rotation key —
-lives under `/pds` inside the container, bind-mounted to the host path in
-`docker-compose.yml`. Recreating the container without that mount destroys
+Everything durable — accounts, repo records, blob store, account signing
+keys — lives under `/pds` inside the container, bind-mounted from
+`./pds-data` by the root `docker-compose.yml`. The PLC rotation key is not
+in there: it is in `pds.env`, and is just as irreplaceable. Recreating the container without that mount destroys
 the node's entire identity and history. Back up that directory like you
 would any other credential store, not like a cache.
 

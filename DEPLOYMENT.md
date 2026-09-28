@@ -1,89 +1,211 @@
 # Deploying a node
 
-A node is: `docker-compose.yml` (collectors, domain agents, ATProto publisher)
-plus `ATProto/pds/docker-compose.yml` (the self-hosted PDS — see
-`ATProto/pds/README.md` for that half, it's unchanged by this doc).
+A node is `docker-compose.yml`, three services on one Docker host:
 
-Both images built from this repo are generic — nothing node-specific is
-baked in. `node_config.json` and `.env` are bind-mounted at runtime, not
-copied into the image. **A new node is: clone this repo, write a new
-`node_config.json` and `.env`, done.** Rebuilding the image is only needed
-when the code itself changes, not when moving to new hardware or a new
-location.
+- `pds` — the self-hosted PDS: the node's identity, account and published records
+- `cloudflared` — the Cloudflare tunnel that makes the PDS reachable at its
+  public hostname, with no inbound ports open on the host
+- `node` — collectors, domain agents and the ATProto publisher, run on the
+  schedule in `node.crontab` by supercronic inside the container
 
-## Fresh node setup
+The image is generic; nothing node-specific is baked in. What makes a
+particular node *that* node lives next to the repo, not in it:
 
-1. **Prerequisites**: Docker + Compose plugin (`docker compose version` should
-   work), Anthropic API key, AirNow API key.
+| Path | What | If lost |
+|---|---|---|
+| `pds-data/` | PDS accounts, repo, signing keys | **Identity gone.** Cannot be regenerated. |
+| `ATProto/pds/pds.env` | PDS secrets incl. the PLC rotation key | **Identity gone.** Cannot be regenerated. |
+| `.env` | API keys, PDS account password, `TUNNEL_TOKEN` | Reissue keys, reset password |
+| `<Stack>/data/*.db`, `ATProto/data/publisher.db` | collector history, agent observations | History gone; node still works |
+| `node_config.json` | location, stations, DID | Committed to git |
 
-2. **Set up the PDS first** — see `ATProto/pds/README.md`. You need its DID
-   before you can finish `node_config.json` below.
+Back up the first two like credentials. node-01's survived its SD card
+failing (2026-09-23) only because the card degraded slowly enough to copy
+them off; there was no other copy.
 
-3. **Write `node_config.json`** (repo root, not committed — see below for why
-   the current one *is* committed and what that means for you):
-   ```json
-   {
-     "node_id": "napa-node-02",
-     "location": "Calistoga, California",
-     "did": "did:plc:...",
-     "pds_url": "https://napa-node-02.watershed-agent.dev",
-     "weather": { "observation_station": "...", "alert_zones": ["..."] },
-     "watershed": { "usgs_stations": { "...": "..." } },
-     "aqi": { "lat": 0.0, "lon": 0.0, "reporting_area": "..." }
-   }
-   ```
+**One PDS per identity.** Never run a restored `pds-data/` in two places at
+once — two PDS instances writing one DID's repo is split-brain, and the
+tunnel routes to whichever connected last. Stop the old one before starting
+the new one, every time.
 
-4. **Write `.env`** from `.env.example` — API keys plus the PDS account
-   credentials from step 2.
+## Restoring node-01 (from the 2026-09-23 SD card rescue)
 
-5. **Build**:
+Do this on a laptop first, then move it to the VM (next section). The
+rescue folder is laid out as `pds.env`, `pds-data/`, `cloudflared/`,
+`env-and-crontab.txt`, and `watershed-data/` mirroring the repo.
+
+1. **Clone and place the state:**
    ```bash
-   docker compose build
+   git clone https://github.com/cprice-ping/Agentic-Watershed.git && cd Agentic-Watershed
+   R=~/Documents/RPi                       # the rescue folder
+   rsync -a $R/pds-data/ ./pds-data/
+   cp $R/pds.env ATProto/pds/pds.env
+   for s in River Weather AQI Fire ATProto; do rsync -a $R/watershed-data/$s/data/ ./$s/data/; done
    ```
 
-6. **Add cron** — see README.md's "Cron schedule" section for the exact
-   lines; they call `docker compose run --rm <service> python <script>.py`
-   from the repo root instead of `.venv/bin/python`.
+2. **Write `.env`.** The part of `env-and-crontab.txt` above the `===` line
+   is node-01's `/etc/environment`; its `export KEY=value` lines work as-is.
+   Copy them into `.env`, check them against `.env.example`, and add
+   `TUNNEL_TOKEN` (step 3). This is a good moment to rotate any key that
+   has ever been pasted somewhere it shouldn't have been.
 
-7. **Add the new node's DID to `Synthesis/publishers.json`** so Synthesis
-   picks up its records — no other Synthesis changes needed (see
+3. **Get the tunnel token** for the existing tunnel — same tunnel, same
+   hostname, so DNS, the DID document and Synthesis all stay as they are.
+   The rescued `cert.pem` authorizes it; no cloudflared install needed:
+   ```bash
+   docker run --rm -v "$R/cloudflared:/creds:ro" cloudflare/cloudflared:latest \
+     tunnel --origincert /creds/cert.pem token 1c85673d-8117-45e1-93c6-b2676365c7c4
+   ```
+   The output is one long string; put it in `.env` as `TUNNEL_TOKEN=...`.
+   (The Cloudflare dashboard shows the same token under Networks → Tunnels.)
+
+4. **Build**, stamping the commit so every job can say what code it is:
+   ```bash
+   GIT_COMMIT=$(git rev-parse --short HEAD) docker compose build
+   ```
+
+5. **PDS only, on loopback** — nothing is public yet:
+   ```bash
+   docker compose up -d pds
+   curl -s http://127.0.0.1:3000/xrpc/_health
+   curl -s "http://127.0.0.1:3000/xrpc/com.atproto.repo.listRecords?repo=did:plc:ggztd5hjk3cnkhgzdk4rmqan&collection=net.cpricedomain.temp.monitor.observation&limit=1"
+   ```
+   The second should return the most recent observation published before
+   the card failed. An empty list means the wrong `pds-data/` is mounted.
+
+6. **Run each job once by hand** before trusting the schedule:
+   ```bash
+   docker compose run --rm node /app/run-job.sh /app/River/collector.py
+   docker compose run --rm node /app/run-job.sh /app/Weather/collector.py
+   docker compose run --rm node /app/run-job.sh /app/AQI/collector.py
+   docker compose run --rm node /app/run-job.sh /app/Fire/collector.py
+   docker compose run --rm node /app/run-job.sh /app/River/agent.py
+   ```
+   Each collector should log rows written; the agent should end with an
+   observation stored. Then check the history survived the move:
+   ```bash
+   sqlite3 River/data/watershed.db "SELECT COUNT(*), MIN(collected_at), MAX(collected_at) FROM readings;"
+   ```
+
+7. **Start the tunnel.** From here the node is public — the Pi must stay off.
+   ```bash
+   docker compose up -d cloudflared
+   docker compose logs cloudflared | grep -i "registered tunnel connection"
+   curl -s https://napa-node-01.watershed-agent.dev/xrpc/_health
+   ```
+   If the logs say the tunnel connected but the public URL returns 502/503,
+   the tunnel is using ingress from the Cloudflare dashboard rather than
+   `ATProto/pds/cloudflared.yml`: set its public hostname's service to
+   `http://pds:3000` there.
+
+8. **Publish once by hand**, then **start the schedule:**
+   ```bash
+   docker compose run --rm node /app/run-job.sh /app/ATProto/publisher.py
+   docker compose up -d node
+   docker compose logs -f node
+   ```
+
+On a laptop the node stops whenever the laptop sleeps, and everything it
+runs is real — real API calls, real records published under the node's DID.
+That's fine for a day of testing; it is not a home for the node.
+
+## Moving the node to an Azure VM
+
+Same subscription as Synthesis, and ideally the same region. The node still
+reaches Synthesis only through its public PDS, exactly as before — sharing a
+subscription doesn't change that, and shouldn't.
+
+1. **Create the VM.** B-series is burstable, which fits a workload that
+   idles and then spikes on the cron schedule. `Standard_B2s` (2 vCPU, 4 GB)
+   is comfortable; `Standard_B1ms` (1 vCPU, 2 GB) is the floor — the PDS,
+   an agent and its MCP subprocess can all be running at once.
+   ```bash
+   RG=<resource group>   # Synthesis's, or a new one
+   az vm create -g $RG -n napa-node-01 --image Ubuntu2404 --size Standard_B2s \
+     --admin-username cprice --ssh-key-values ~/.ssh/id_ed25519.pub \
+     --storage-sku StandardSSD_LRS --public-ip-sku Standard
+   ```
+
+2. **Lock SSH to your own address.** The tunnel is outbound-only, so the
+   only inbound port the VM needs is 22, and only from you:
+   ```bash
+   az network nsg rule list -g $RG --nsg-name napa-node-01NSG -o table
+   az network nsg rule update -g $RG --nsg-name napa-node-01NSG -n default-allow-ssh \
+     --source-address-prefixes "$(curl -s https://ifconfig.me)/32"
+   ```
+   Never add a rule for 3000, 80 or 443 — compose binds the PDS to
+   loopback, and the tunnel is the only way in.
+
+3. **Install Docker** on the VM:
+   ```bash
+   curl -fsSL https://get.docker.com | sudo sh
+   sudo usermod -aG docker $USER      # then log out and back in
+   ```
+
+4. **Stop the laptop's node, then copy it.** Stop first — this is the
+   one-PDS-per-identity rule:
+   ```bash
+   # laptop
+   docker compose down
+   VM=cprice@<vm-ip>
+   ssh $VM 'git clone https://github.com/cprice-ping/Agentic-Watershed.git'
+   rsync -a pds-data .env $VM:Agentic-Watershed/
+   rsync -a ATProto/pds/pds.env $VM:Agentic-Watershed/ATProto/pds/
+   for s in River Weather AQI Fire ATProto; do rsync -a $s/data/ $VM:Agentic-Watershed/$s/data/; done
+   ```
+
+5. **Start it** on the VM and repeat the checks from steps 5–8 above:
+   ```bash
+   cd ~/Agentic-Watershed
+   GIT_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
+   docker compose ps
+   curl -s https://napa-node-01.watershed-agent.dev/xrpc/_health
+   ```
+
+6. **Confirm Synthesis sees it** on its next run (`0 6,18 * * *` UTC).
+   Nothing in `Synthesis/publishers.json` changes — same DID, same hostname.
+
+Enable Azure Backup on the VM, or at least scheduled disk snapshots, and
+keep an off-box copy of `pds-data/` and `pds.env` besides.
+
+## Deploying a code change to a compose node
+
+```bash
+cd ~/Agentic-Watershed && git pull
+GIT_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build node
+```
+
+Only `node` is rebuilt; the PDS and tunnel keep running. Recreating `node`
+kills any job in flight, so avoid the top of the hour, when agents start.
+Confirm what's running rather than assuming the build took — every job
+prints its commit:
+
+```bash
+docker compose logs --since 2h node | grep "run-job:" | tail -3
+```
+
+A change to `node.crontab` is a code change like any other: it's baked into
+the image, so it takes effect on the same rebuild. `docker compose logs node`
+replaces the per-stack log files the Pi's cron lines wrote.
+
+## Adding a new node
+
+1. Create its PDS account and DID — see `ATProto/pds/README.md` — with its
+   own tunnel and hostname.
+2. Write its `node_config.json` (see "Why `node_config.json` is committed"
+   below) and `.env`.
+3. `docker compose up -d --build`, then the checks above.
+4. Add its DID to `Synthesis/publishers.json` so Synthesis picks up its
+   records — no other Synthesis changes needed (see
    `Synthesis/subscriber.py`'s per-DID PDS resolution, documented in
    `CONTEXT.md`).
 
-## Migrating node-01 from venv+cron to this
-
-Node-01 is currently running via per-stack venvs and host cron, with real
-history in `River/data/watershed.db`, `Weather/data/weather.db`,
-`AQI/data/aqi.db`, `Fire/data/fire.db`, and `ATProto/data/publisher.db`.
-**Don't start fresh** — those databases already exist on disk in exactly the
-paths the compose file bind-mounts (`./River/data`, etc.), so switching over
-preserves them automatically. No export/import step.
-
-1. `git pull` this branch on the Pi.
-2. Copy `.env.example` to `.env` and fill in the same values currently in
-   `/etc/environment` (`ANTHROPIC_API_KEY`, `AIRNOW_API_KEY`, `FIRMS_API_KEY`,
-   `BSKY_HANDLE`, `BSKY_APP_PASSWORD`, `ATPROTO_PDS_URL`). `FIRMS_API_KEY` is
-   new if Fire wasn't running before — register a free `MAP_KEY` at
-   https://firms.modaps.eosdis.nasa.gov/api/map_key/.
-3. `node_config.json` already exists and is already correct for node-01 —
-   nothing to change there (it already has a `"fire"` block if you've pulled
-   past the point Fire was added).
-4. `docker compose build`
-5. **Test one service manually before touching cron**:
-   ```bash
-   docker compose run --rm river python collector.py
-   sqlite3 River/data/watershed.db "SELECT * FROM readings ORDER BY collected_at DESC LIMIT 3;"
-   ```
-   Confirm it wrote a new row and didn't error. Repeat for `weather`, `aqi`,
-   `fire`, and (once there's something to publish) `atproto-publisher`.
-6. **Swap the cron lines** — comment out the old `.venv/bin/python` lines,
-   uncomment/add the `docker compose run --rm ...` ones (README.md has
-   both, clearly marked). Don't delete the old venvs yet.
-7. Watch the next few scheduled runs' logs before removing the venvs. If
-   anything's wrong, reverting is just switching the cron lines back — the
-   venvs and the databases are both still there untouched.
-
 ## Migrating node-01 to cheaper hardware (e.g. a Raspberry Pi Zero 2 W)
+
+> Written before node-01 moved to the compose setup above, and kept for the
+> reasoning about a RAM-constrained device. Its PDS steps name
+> `ATProto/pds/docker-compose.yml`, which no longer exists — the PDS is the
+> `pds` service in the root `docker-compose.yml` now.
 
 This is a different migration than the one above — same node, same identity,
 new physical hardware, and (deliberately) **not** a move to docker-compose.
@@ -195,11 +317,12 @@ touching any production identity or history:
    as the dev/experimentation box — the MLX fine-tuning work, local model
    pilots, whatever comes next. It already has everything installed for that.
 
-## Deploying a code change to node-01 (venv + cron)
+## Deploying a code change to a venv + cron node (legacy)
 
-node-01 still runs from a git checkout with per-stack venvs and cron, not
-from the containers above. Most merges need only a pull; the rest of this
-section is for the cases that need more.
+How node-01 ran on the Pi until its SD card failed on 2026-09-23: a git
+checkout with per-stack venvs and host cron. Kept for any node still run
+that way; a compose node is covered above. Most merges need only a pull;
+the rest of this section is for the cases that need more.
 
 ```bash
 cd /home/cprice/Agentic-Watershed && git pull
@@ -208,12 +331,15 @@ cd /home/cprice/Agentic-Watershed && git pull
 That is the whole deploy for a change to an agent prompt, an MCP tool, a
 collector's parsing, or the publisher. Cron picks it up on the next run.
 
-Check what is actually running rather than assuming the pull took. Every
-agent logs its commit at startup:
+Check what is actually running rather than assuming the pull took:
 
 ```bash
-grep "Code version" */logs/agent.log | tail -4
+git -C /home/cprice/Agentic-Watershed log -1 --oneline
 ```
+
+(This used to say every agent logs a `Code version` line at startup. None
+does — the grep found nothing and looked like an answer. On a compose node,
+`run-job.sh` prints the image's commit at the start of every job.)
 
 This exists because a pull once reported "Already up to date" while the
 checkout sat on a detached commit, and Fire ran four weeks of stale code
