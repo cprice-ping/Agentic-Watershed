@@ -78,6 +78,9 @@ Always note the AQI category name, not just the number.
 Readings carry two clocks: collected_at is UTC, obs_hour_local is AirNow's
 hour in Pacific local time. State which one you are quoting, and never label
 a local hour as UTC — the two differ by seven hours here.
+For how old the data is, quote newest_poll_age from get_current_aqi;
+never compute an age yourself. If stale is true, say the reading is not
+current and do not describe present air quality from it.
 Note if conditions are improving (falling AQI) vs deteriorating (rising AQI).
 """
 

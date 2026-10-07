@@ -23,6 +23,7 @@ from thresholds import (  # noqa: E402
     PM25,
     PM25_UNHEALTHY_SENSITIVE, PM25_RISE_POINTS, PM25_RISE_WINDOW_HOURS,
     PM25_JUMP_TO, PM25_JUMP_FROM, CATEGORY_UNHEALTHY, SERIES_WINDOW_HOURS,
+    COLLECTOR_STALE_AFTER_HOURS,
 )
 
 
@@ -108,6 +109,26 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
         v.fire("category_unhealthy",
                f"{row['parameter']} category {row['category_number']} "
                f"(AQI {row['aqi']}) at {row['collected_at']}")
+
+    # Rule 5 — the collector has stopped. A data-quality flag, not a
+    # condition finding: every rule above reads a window that is empty when
+    # nothing has been collected, so without this a dead collector evaluates
+    # as clean air. Mirrors River's collector_stale. Added 2026-10-07, when
+    # the AQI collector had stored nothing for fifteen days and every rule
+    # here was silent about it.
+    newest = conn.execute(
+        "SELECT MAX(collected_at) AS t FROM observations"
+    ).fetchone()
+    if newest is None or newest["t"] is None:
+        v.fire("collector_never_polled", "no observations")
+    else:
+        t = _parse(newest["t"])
+        if t is not None:
+            age = (now - t).total_seconds() / 3600.0
+            if age > COLLECTOR_STALE_AFTER_HOURS:
+                v.fire("collector_stale",
+                       f"newest observation {age:.1f}h old "
+                       f"(>{COLLECTOR_STALE_AFTER_HOURS:g}h)")
 
     return v
 
