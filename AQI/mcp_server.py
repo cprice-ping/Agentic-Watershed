@@ -167,7 +167,53 @@ def get_current_aqi() -> str:
 
     if not rows:
         return "No AQI observations in database yet. Run the collector first."
-    return json.dumps(_rows_to_dicts(rows))
+
+    # Age computed here rather than left to the model. On 2026-10-07, after a
+    # two-week outage, the agent read a collected_at of 2026-09-22 06:00 UTC
+    # against a run time of 2026-10-07 22:49 UTC and wrote "about 8 hours
+    # old" — off by fifteen days, in a record bound for publication. Date
+    # arithmetic is something code does exactly and a model does not.
+    now = datetime.now(timezone.utc)
+    readings = _rows_to_dicts(rows)
+    ages = []
+    for r in readings:
+        t = _parse_utc(r.get("collected_at"))
+        if t is not None:
+            r["poll_age_hours"] = round((now - t).total_seconds() / 3600.0, 1)
+            ages.append(r["poll_age_hours"])
+
+    result = {"readings": readings}
+    if ages:
+        newest = min(ages)
+        result["newest_poll_age_hours"] = newest
+        # The same figure in the unit a sentence would use, so quoting it
+        # never needs a conversion: 376.8 hours is not a number to divide by
+        # 24 in prose.
+        result["newest_poll_age"] = (f"{newest:g} hours" if newest < 48
+                                     else f"{newest / 24:.1f} days")
+        result["stale"] = newest > thresholds.COLLECTOR_STALE_AFTER_HOURS
+        result["age_note"] = (
+            "poll_age_hours, newest_poll_age_hours and newest_poll_age are computed in code at "
+            "query time from collected_at. Quote them; do not work out an age "
+            "from the timestamps yourself. "
+            + (f"stale=true: the newest poll is more than "
+               f"{thresholds.COLLECTOR_STALE_AFTER_HOURS:g}h old, so these "
+               "readings do not describe current conditions and the absence of "
+               "a smoke signal tells you nothing."
+               if result["stale"] else
+               "AirNow's observed hour normally trails the poll by an hour or two.")
+        )
+    return compact_json(result)
+
+
+def _parse_utc(ts):
+    """collected_at is ISO8601 UTC; a malformed value yields no age rather
+    than a wrong one."""
+    try:
+        t = datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 @mcp.tool()

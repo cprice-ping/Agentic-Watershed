@@ -34,6 +34,12 @@ CATEGORY_UNHEALTHY = 4
 # number rather than the category column.
 PM25_UNHEALTHY_AQI = 151
 
+# The collector polls every 30 minutes and AirNow publishes hourly, so the
+# newest poll is normally well under an hour old. Past this, the reading is
+# not current and the absence of any smoke signal is uninformative. Same
+# figure as River's collector_stale rule.
+COLLECTOR_STALE_AFTER_HOURS = 3.0
+
 # How much history the series tools return by default.
 SERIES_WINDOW_HOURS = 24.0
 TREND_WINDOW_DAYS   = 7
