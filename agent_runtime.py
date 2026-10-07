@@ -118,7 +118,16 @@ def call_mcp_tool(server_path: Path, tool_name: str,
                 log.warning("MCP %s", last_error)
             continue
 
-        for line in reversed(stdout.strip().splitlines()):
+        # "\n" only, never splitlines(). MCP's stdio transport delimits
+        # messages with newlines, and JSON escapes every newline inside a
+        # message — but not U+0085, U+2028 or U+2029, which splitlines() also
+        # treats as line breaks. A tool result containing any of them was cut
+        # into fragments that each failed to parse, and the call reported "no
+        # usable result" for a reply that was complete and correct. That is
+        # how the River agent first failed in its container (2026-10-07),
+        # three tool calls in, on data the Pi had served for months.
+        reply = None
+        for line in reversed(stdout.split("\n")):
             line = line.strip()
             if not line:
                 continue
@@ -127,18 +136,36 @@ def call_mcp_tool(server_path: Path, tool_name: str,
             except json.JSONDecodeError:
                 continue
             if response.get("id") == 1:
-                content = response.get("result", {}).get("content", [])
-                if content:
-                    return content[0].get("text", "")
+                reply = response
+                break
+
+        if reply is not None:
+            content = (reply.get("result") or {}).get("content") or []
+            if content:
+                return content[0].get("text", "")
 
         # Answered, but not with anything usable. Not retried: a malformed
         # reply is a code fault, and a second identical spawn will produce a
         # second identical reply.
+        #
+        # Say which of the three failures this was. All three used to read
+        # "no usable result" plus the first 200 characters of stderr — which
+        # is always the server's "Processing request" banner, so the one line
+        # of evidence shown was the one line that never varies. The tail is
+        # where a traceback ends up.
+        if reply is None:
+            what = (f"no reply to the call (server exit code {proc.returncode}, "
+                    f"{len(stdout)} bytes on stdout, last: {stdout[-200:]!r})")
+        elif reply.get("error"):
+            err = reply["error"]
+            what = f"a JSON-RPC error: {err.get('code')} {err.get('message')}"
+        else:
+            what = "an empty result"
         if stderr and log:
-            log.debug("MCP stderr: %s", stderr[:500])
+            log.debug("MCP stderr: %s", stderr[-2000:])
         raise MCPUnavailable(
-            f"{tool_name} returned no usable result"
-            + (f"; stderr: {stderr[:200]}" if stderr else ""))
+            f"{tool_name} returned {what}"
+            + (f"; stderr tail: {stderr.strip()[-300:]}" if stderr.strip() else ""))
 
     raise MCPUnavailable(last_error or f"{tool_name} unavailable")
 

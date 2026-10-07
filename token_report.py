@@ -38,22 +38,39 @@ SOURCES = {
 
 # USD per million tokens, first-party Anthropic API rates.
 PRICING = {
+    "claude-haiku-5-5":  (0.10,  0.50),
     "claude-haiku-4-5":  (1.00,  5.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
     "claude-sonnet-5":   (2.00, 10.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-opus-4-6":   (5.00, 25.00),
     "claude-opus-5":     (5.00, 25.00),
 }
 
+# Models whose rate card depends on the prompt's length: above the threshold
+# (input tokens in that one request) the whole request bills at these rates.
+# Priced per run, not on the summed totals, because the totals cannot say
+# which runs crossed the line — and River's prompts have run close to it
+# (~90K input per run before the hourly-span change, on a tokenizer Haiku
+# 5.5 counts about 30% higher).
+LONG_PROMPT_PRICING = {
+    "claude-haiku-5-5": (100_000, (0.50, 2.50)),
+}
+
 BATCH_DISCOUNT = 0.5
 
 
 def _price(model: str, in_tok: int, out_tok: int) -> float | None:
-    """Cost in USD, or None when the model id has no pricing entry — an
-    unpriced model should show as unknown rather than silently as $0.00."""
-    rates = PRICING.get((model or "").strip())
+    """Cost in USD of one run, or None when the model id has no pricing
+    entry — an unpriced model should show as unknown rather than silently as
+    $0.00."""
+    model = (model or "").strip()
+    rates = PRICING.get(model)
     if rates is None:
         return None
+    long = LONG_PROMPT_PRICING.get(model)
+    if long and in_tok > long[0]:
+        rates = long[1]
     return in_tok / 1e6 * rates[0] + out_tok / 1e6 * rates[1]
 
 
@@ -85,10 +102,13 @@ def collect(days: float) -> tuple[dict, int, list[str]]:
                 missing += 1
                 continue
             key = (domain, model or "unknown")
-            acc = by_key.setdefault(key, {"runs": 0, "in": 0, "out": 0})
+            acc = by_key.setdefault(key, {"runs": 0, "in": 0, "out": 0, "cost": 0.0})
             acc["runs"] += 1
             acc["in"] += tin or 0
             acc["out"] += tout or 0
+            run_cost = _price(model, tin or 0, tout or 0)
+            acc["cost"] = None if run_cost is None or acc["cost"] is None \
+                else acc["cost"] + run_cost
 
     return by_key, missing, notes
 
@@ -109,7 +129,7 @@ def main() -> None:
     total = 0.0
     unpriced: set[str] = set()
     for (domain, model), acc in sorted(by_key.items()):
-        cost = _price(model, acc["in"], acc["out"])
+        cost = acc["cost"]
         if cost is None:
             unpriced.add(model)
             shown = "unpriced"
