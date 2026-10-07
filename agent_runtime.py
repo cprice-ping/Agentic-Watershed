@@ -22,9 +22,12 @@ standard library, so the per-domain venvs need nothing new.
 """
 
 import json
+import queue
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,11 +36,16 @@ from pathlib import Path
 # seconds is hung, not slow, and waiting longer would not help.
 MCP_TIMEOUT_SECONDS = 30
 
-# Two attempts, not more. The observed failure is a server that answers and
-# then does not exit, which a second spawn clears; a fault that survives one
-# retry is not transient and the run should end honestly rather than sit in
-# cron for minutes.
+# Two attempts, not more. A fault that survives one retry is not transient
+# and the run should end honestly rather than sit in cron for minutes. (The
+# failure this was first sized for — a server that answers and then does not
+# exit — no longer costs an attempt: the reply is returned as soon as it
+# arrives, and a server that then lingers is killed.)
 MCP_ATTEMPTS = 2
+
+# How long a server gets to exit after its stdin is closed, once the reply is
+# in hand, before it is killed.
+MCP_EXIT_GRACE_SECONDS = 5
 
 
 def compact_json(obj) -> str:
@@ -96,48 +104,15 @@ def call_mcp_tool(server_path: Path, tool_name: str,
 
     last_error = None
     for attempt in range(1, MCP_ATTEMPTS + 1):
-        proc = subprocess.Popen(
-            [sys.executable, str(server_path)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True,
-        )
         try:
-            stdout, stderr = proc.communicate(stdin_data,
-                                              timeout=MCP_TIMEOUT_SECONDS)
+            reply, stdout, stderr, returncode = _exchange(
+                server_path, stdin_data, MCP_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
-            # communicate() does not kill on timeout, so without this the
-            # hung server survives the agent and every timeout leaks one.
-            proc.kill()
-            try:
-                proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
             last_error = (f"{tool_name} timed out after {MCP_TIMEOUT_SECONDS}s "
                           f"(attempt {attempt} of {MCP_ATTEMPTS})")
             if log:
                 log.warning("MCP %s", last_error)
             continue
-
-        # "\n" only, never splitlines(). MCP's stdio transport delimits
-        # messages with newlines, and JSON escapes every newline inside a
-        # message — but not U+0085, U+2028 or U+2029, which splitlines() also
-        # treats as line breaks. A tool result containing any of them was cut
-        # into fragments that each failed to parse, and the call reported "no
-        # usable result" for a reply that was complete and correct. That is
-        # how the River agent first failed in its container (2026-10-07),
-        # three tool calls in, on data the Pi had served for months.
-        reply = None
-        for line in reversed(stdout.split("\n")):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                response = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if response.get("id") == 1:
-                reply = response
-                break
 
         if reply is not None:
             content = (reply.get("result") or {}).get("content") or []
@@ -154,7 +129,7 @@ def call_mcp_tool(server_path: Path, tool_name: str,
         # of evidence shown was the one line that never varies. The tail is
         # where a traceback ends up.
         if reply is None:
-            what = (f"no reply to the call (server exit code {proc.returncode}, "
+            what = (f"no reply to the call (server exit code {returncode}, "
                     f"{len(stdout)} bytes on stdout, last: {stdout[-200:]!r})")
         elif reply.get("error"):
             err = reply["error"]
@@ -168,6 +143,104 @@ def call_mcp_tool(server_path: Path, tool_name: str,
             + (f"; stderr tail: {stderr.strip()[-300:]}" if stderr.strip() else ""))
 
     raise MCPUnavailable(last_error or f"{tool_name} unavailable")
+
+
+def _exchange(server_path: Path, stdin_data: str, timeout: float):
+    """Start one server, send it stdin_data, and read until the reply to id 1.
+
+    Returns (reply or None, stdout read, stderr, exit code). Raises
+    subprocess.TimeoutExpired if neither a reply nor end-of-output arrives
+    within `timeout`.
+
+    Stdin stays open until the reply has been read. This used to be
+    `communicate(stdin_data)`, which writes and closes stdin at once — and
+    the MCP server treats a closed stdin as the client leaving and cancels
+    every request still in flight ("Transport closed: cancel in-flight
+    handlers", mcp/server/lowlevel/server.py; present in every release from
+    1.27, the oldest requirements.txt allows). Whether the reply got out
+    before the cancel was a race. On the Pi it was won for months; in the
+    first container build, on a laptop, it was lost by three of four agents
+    on 2026-10-07 — server exit 0, nothing on stdout but its answer to
+    `initialize`. Why the timing differed there is not established. What is:
+    a tool that yields to the event loop for 5 ms loses every time, and even
+    a zero-length yield loses about one call in five.
+
+    Read line by line from the stream, which splits on newlines only — never
+    str.splitlines(), which also splits on U+0085, U+2028 and U+2029. JSON
+    leaves those three unescaped, so a reply containing one was cut into
+    fragments that each failed to parse.
+    """
+    proc = subprocess.Popen(
+        [sys.executable, str(server_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    lines: queue.Queue = queue.Queue()
+    err_parts: list[str] = []
+
+    # Both pipes drained on their own threads: an undrained stderr that fills
+    # its buffer blocks the server mid-write, which would look like a hang.
+    def pump_stdout():
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    def pump_stderr():
+        err_parts.append(proc.stderr.read())
+
+    pumps = [threading.Thread(target=pump_stdout, daemon=True),
+             threading.Thread(target=pump_stderr, daemon=True)]
+    for pump in pumps:
+        pump.start()
+
+    out: list[str] = []
+    reply = None
+    timed_out = False
+    try:
+        try:
+            proc.stdin.write(stdin_data)
+            proc.stdin.flush()
+        except BrokenPipeError:
+            pass        # server already gone; its output and exit code say why
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            try:
+                line = lines.get(timeout=max(remaining, 0))
+            except queue.Empty:
+                timed_out = True
+                break
+            if line is None:
+                break   # server closed stdout without replying
+            out.append(line)
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, dict) and message.get("id") == 1:
+                reply = message
+                break
+    finally:
+        # Only now is the server told we are done.
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+        # A server that timed out gets no grace: it has already had the whole
+        # budget. One that replied gets a moment to exit on its own, then is
+        # killed rather than waited on forever — without that, a hung server
+        # survives the agent, and every hang leaks one.
+        try:
+            proc.wait(timeout=0 if timed_out else MCP_EXIT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        for pump in pumps:
+            pump.join(timeout=MCP_EXIT_GRACE_SECONDS)
+
+    if timed_out and reply is None:
+        raise subprocess.TimeoutExpired(proc.args, timeout)
+    return reply, "".join(out), "".join(err_parts), proc.returncode
 
 
 # ---------------------------------------------------------------------------
