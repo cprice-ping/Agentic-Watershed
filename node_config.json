@@ -5,7 +5,10 @@
   "pds_url": "https://napa-node-01.watershed-agent.dev",
   "weather": {
     "observation_station": "KAPC",
-    "alert_zones": ["CAZ505", "CAC055"]
+    "alert_zones": [
+      "CAZ505",
+      "CAC055"
+    ]
   },
   "watershed": {
     "usgs_stations": {
@@ -16,11 +19,81 @@
   "aqi": {
     "lat": 38.2975,
     "lon": -122.2869,
-    "reporting_area": "Napa"
+    "reporting_area": "Napa",
+    "purpleair": {
+      "_comment": "Valley-floor sensor selection. centerline runs down the valley floor; sensors within corridor_km of it are candidates, grouped into zones by position along it. Points are town centres, approximate \u2014 check on a map before trusting the selection. discovery_bbox is only the coarse pre-filter for the area search (nwlng, nwlat, selng, selat); the corridor does the real selection. The roster spreads sensors along the valley rather than taking the densest cluster: the line is cut into bin_km bins and at most max_per_bin sensors (nearest the floor) are kept per bin \u2014 two, so each spot has a cross-check.",
+      "centerline": [
+        [
+          38.1749,
+          -122.2608,
+          "American Canyon"
+        ],
+        [
+          38.2975,
+          -122.2869,
+          "Napa"
+        ],
+        [
+          38.4016,
+          -122.3608,
+          "Yountville"
+        ],
+        [
+          38.4363,
+          -122.4011,
+          "Oakville"
+        ],
+        [
+          38.458,
+          -122.4197,
+          "Rutherford"
+        ],
+        [
+          38.5052,
+          -122.4703,
+          "St Helena"
+        ],
+        [
+          38.5788,
+          -122.5797,
+          "Calistoga"
+        ]
+      ],
+      "corridor_km": 3.0,
+      "zones": [
+        {
+          "name": "south valley",
+          "from": "American Canyon",
+          "to": "Napa"
+        },
+        {
+          "name": "mid valley",
+          "from": "Napa",
+          "to": "Oakville"
+        },
+        {
+          "name": "up-valley",
+          "from": "Oakville",
+          "to": "Calistoga"
+        }
+      ],
+      "discovery_bbox": [
+        -122.65,
+        38.62,
+        -122.2,
+        38.15
+      ],
+      "bin_km": 3.0,
+      "max_per_bin": 2
+    }
   },
   "fire": {
     "bbox": "-123.3,37.7,-121.8,39.0",
-    "sources": ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT"],
+    "sources": [
+      "VIIRS_SNPP_NRT",
+      "VIIRS_NOAA20_NRT",
+      "VIIRS_NOAA21_NRT"
+    ],
     "day_range": 2,
     "home_lat": 38.2975,
     "home_lon": -122.2869
