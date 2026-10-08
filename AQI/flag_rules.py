@@ -14,7 +14,12 @@ latest row.
 
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from agent_runtime import NOTE_PREFIX  # noqa: E402
 
 # Every threshold comes from thresholds.py, which agent.py's prompt is also
 # generated from — one definition, so the prompt and these rules cannot
@@ -28,8 +33,16 @@ from thresholds import (  # noqa: E402
 
 
 class Verdict:
+    """Outcome of evaluating the rules, on two channels, as in Fire.
+
+    `fired` forces a flag. `notes` records something measured and worth
+    keeping that is not by itself a reason to alarm — see
+    agent_runtime.NOTE_PREFIX.
+    """
+
     def __init__(self) -> None:
         self.fired: list[str] = []
+        self.notes: list[str] = []
 
     @property
     def must_flag(self) -> bool:
@@ -38,8 +51,11 @@ class Verdict:
     def fire(self, rule: str, detail: str) -> None:
         self.fired.append(f"{rule}: {detail}")
 
+    def note(self, rule: str, detail: str) -> None:
+        self.notes.append(f"{NOTE_PREFIX}{rule}: {detail}")
+
     def as_json(self) -> str:
-        return json.dumps(self.fired)
+        return json.dumps(self.fired + self.notes)
 
 
 def evaluate(conn: sqlite3.Connection) -> Verdict:
@@ -130,7 +146,45 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
                        f"newest observation {age:.1f}h old "
                        f"(>{COLLECTOR_STALE_AFTER_HOURS:g}h)")
 
+    # Note — the monitor behind a pollutant changed. AirNow's current service
+    # returns the closest monitor reporting each pollutant, by straight-line
+    # distance. When that monitor misses an hour it silently substitutes the
+    # next closest, and a series that moves from Vallejo to Sebastopol (west
+    # of the Mayacamas, a different airshed) has changed place, not air. A
+    # note, never a flag: the switch is a fact about provenance, and readings
+    # either side of it should not be compared as if from one instrument.
+    # Rows from before 2026-10-08 carry no site_name and are skipped — an
+    # unrecorded monitor is not a different one.
+    _note_monitor_changes(conn, v, cutoff)
+
     return v
+
+
+def _note_monitor_changes(conn: sqlite3.Connection, v: Verdict,
+                          cutoff: str) -> None:
+    rows = conn.execute(
+        """
+        SELECT parameter, site_name, collected_at FROM observations
+        WHERE collected_at >= ? AND site_name IS NOT NULL AND site_name != ''
+        ORDER BY parameter, collected_at ASC
+        """,
+        (cutoff,),
+    ).fetchall()
+    by_param: dict[str, list] = {}
+    for r in rows:
+        by_param.setdefault(r["parameter"], []).append(r)
+    for param, series in sorted(by_param.items()):
+        changes = [(a["site_name"], b["site_name"], b["collected_at"])
+                   for a, b in zip(series, series[1:])
+                   if a["site_name"] != b["site_name"]]
+        if not changes:
+            continue
+        shown = "; ".join(f"{old} -> {new} at {at[:16]} UTC"
+                          for old, new, at in changes[-3:])
+        more = f" (latest 3 of {len(changes)})" if len(changes) > 3 else ""
+        v.note("monitor_changed",
+               f"{param} {len(changes)}x in {SERIES_WINDOW_HOURS:g}h: "
+               f"{shown}{more}; now {series[-1]['site_name']}")
 
 
 def _parse(ts: str):
