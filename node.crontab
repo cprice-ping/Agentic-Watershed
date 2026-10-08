@@ -21,6 +21,13 @@
 */30 * * * * /app/run-job.sh /app/Fire/collector.py
 50 2,14 * * * /app/run-job.sh /app/Fire/incidents_collector.py
 
+# PurpleAir valley-floor sensors (phase 1: collected and measured, not yet
+# read by the agent). Polled at :05 and :35, off the AirNow collector's
+# minute; the roster is rebuilt once a day. Each call costs API points —
+# see AQI/purpleair_collector.py before adding frequency.
+5,35 * * * * /app/run-job.sh /app/AQI/purpleair_collector.py
+10 4 * * * /app/run-job.sh /app/AQI/purpleair_collector.py --discover
+
 # === Domain agents (River/Weather/Fire 2x/day, AQI 4x/day — see CONTEXT.md) ===
 0 0,12 * * * /app/run-job.sh /app/River/agent.py
 0 1,13 * * * /app/run-job.sh /app/Weather/agent.py
