@@ -87,6 +87,19 @@ CORRECTION_MAX_RAW = 343.0
 # A sensor whose last report is older than this is not current.
 REPORT_MAX_AGE = timedelta(hours=1)
 
+# Roster quality, applied at discovery from readings already stored — no
+# extra API cost. Over the last QUALITY_WINDOW, a sensor is left off the
+# roster if most of its polls had disagreeing channels (with at least
+# QUALITY_MIN_POLLS to judge from), or if its latest reading had no
+# humidity. Both faults persist: on 2026-10-08, 5 of 31 roster sensors had
+# disagreeing channels and 2 reported no humidity, each sitting in a bin
+# capped at two and costing points every poll for nothing. A dropped sensor
+# stays a candidate: once its readings age out of the window it is polled
+# again, and comes back if it has been fixed.
+QUALITY_WINDOW = timedelta(hours=48)
+QUALITY_MIN_POLLS = 3
+QUALITY_MAX_DISAGREE_SHARE = 0.5
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -156,7 +169,37 @@ def init_db(conn: sqlite3.Connection) -> None:
             detail           TEXT
         );
     """)
+    have = {r[1] for r in conn.execute("PRAGMA table_info(pa_sensors)")}
+    if "roster_note" not in have:
+        # Why a corridor sensor is not on the roster, when the reason is its
+        # own record rather than the per-bin cap. NULL otherwise.
+        conn.execute("ALTER TABLE pa_sensors ADD COLUMN roster_note TEXT")
     conn.commit()
+
+
+def sensor_faults(conn: sqlite3.Connection, now: datetime | None = None) -> dict:
+    """{sensor_index: reason} for sensors whose recent record disqualifies
+    them from the roster. See QUALITY_WINDOW."""
+    now = now or datetime.now(timezone.utc)
+    since = (now - QUALITY_WINDOW).isoformat()
+    rows = conn.execute(
+        "SELECT sensor_index, collected_at, excluded_reason FROM pa_readings "
+        "WHERE collected_at >= ? ORDER BY sensor_index, collected_at",
+        (since,)).fetchall()
+    by_sensor: dict[int, list] = {}
+    for r in rows:
+        by_sensor.setdefault(r["sensor_index"], []).append(r["excluded_reason"] or "")
+    faults = {}
+    for idx, reasons in by_sensor.items():
+        if reasons[-1].startswith("no humidity"):
+            faults[idx] = "latest reading had no humidity"
+            continue
+        disagree = sum(r.startswith("channels disagree") for r in reasons)
+        if (len(reasons) >= QUALITY_MIN_POLLS
+                and disagree / len(reasons) > QUALITY_MAX_DISAGREE_SHARE):
+            faults[idx] = (f"channels disagreed on {disagree} of "
+                           f"{len(reasons)} polls in {QUALITY_WINDOW.total_seconds() / 3600:g}h")
+    return faults
 
 
 # ---------------------------------------------------------------------------
@@ -305,18 +348,33 @@ def discover(conn: sqlite3.Connection) -> int:
     # most max_per_bin sensors, nearest the floor first; two, so each spot
     # has a neighbour to expose a faulty sensor. The cap also bounds the
     # poll's cost, since points scale with sensors.
+    #
+    # Sensors with a persistent fault are skipped and the slot goes to the
+    # next nearest in the same bin (sensor_faults).
     bin_km = float(PA_CFG["bin_km"])
     per_bin = int(PA_CFG["max_per_bin"])
+    faults = sensor_faults(conn)
+    conn.execute("UPDATE pa_sensors SET roster_note = NULL")
     roster = []
     for zone, items in sorted(candidates.items()):
         bins: dict[int, list] = {}
         for off, along, idx in items:
             bins.setdefault(int(along // bin_km), []).append((off, idx))
-        chosen = [idx for b in sorted(bins)
-                  for _, idx in sorted(bins[b])[:per_bin]]
+        chosen, skipped = [], 0
+        for b in sorted(bins):
+            healthy = []
+            for _, idx in sorted(bins[b]):
+                if idx in faults:
+                    skipped += 1
+                    conn.execute("UPDATE pa_sensors SET roster_note=? WHERE sensor_index=?",
+                                 (faults[idx], idx))
+                else:
+                    healthy.append(idx)
+            chosen.extend(healthy[:per_bin])
         roster.extend(chosen)
-        log.info("  %s: %d candidate(s) in the corridor, %d on the roster "
-                 "across %d bin(s)", zone, len(items), len(chosen), len(bins))
+        log.info("  %s: %d candidate(s) in the corridor, %d skipped for their "
+                 "record, %d on the roster across %d bin(s)",
+                 zone, len(items), skipped, len(chosen), len(bins))
     conn.executemany("UPDATE pa_sensors SET on_roster=1 WHERE sensor_index=?",
                      [(i,) for i in roster])
     conn.commit()
