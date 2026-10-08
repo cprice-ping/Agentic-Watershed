@@ -574,6 +574,70 @@ def read_recent_synthesis(n: int = 14,
         return []
 
 
+# Synthesis runs every 12 hours. A gap longer than this means more than one
+# scheduled run is missing — an outage or a deliberate pause — and the rows
+# either side of it are not a continuous series.
+HISTORY_GAP_HOURS = 30.0
+
+
+def _mark_history_gaps(prior: list[dict], now: datetime | None = None,
+                       gap_hours: float = HISTORY_GAP_HOURS):
+    """History entries oldest first, with gaps stated rather than implied.
+
+    Returns (entries, notes). An entry that follows a gap carries
+    `follows_gap_days`; each gap, and any gap between the newest entry and
+    this run, gets a note.
+
+    Rows are listed in order and nothing in a list says how far apart they
+    are, so a model reads adjacent rows as adjacent runs. On 2026-10-08 the
+    history jumped from 2026-09-22 to 2026-10-08 — the node was down and
+    Synthesis paused for sixteen days — and the run described it as "the
+    long string of moderate fire-risk assessments", a trajectory nothing
+    observed. Same defect, one layer up, as the node's rule-persistence count
+    running through the outage.
+    """
+    now = now or datetime.now(timezone.utc)
+    entries = [dict(p) for p in reversed(prior)]      # oldest first
+    notes = []
+
+    def at(entry):
+        try:
+            t = datetime.fromisoformat(str(entry.get("observed_at") or "")
+                                       .replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+    def gap_text(hours):
+        return f"{hours / 24:.1f} days" if hours >= 48 else f"{hours:.0f} hours"
+
+    for older, newer in zip(entries, entries[1:]):
+        a, b = at(older), at(newer)
+        if a is None or b is None:
+            continue
+        hours = (b - a).total_seconds() / 3600.0
+        if hours > gap_hours:
+            newer["follows_gap_days"] = round(hours / 24, 1)
+            notes.append(
+                f"No synthesis ran for {gap_text(hours)} between "
+                f"{a.strftime('%Y-%m-%d %H:%M')} UTC and "
+                f"{b.strftime('%Y-%m-%d %H:%M')} UTC. Entries before that gap "
+                "are not recent trajectory: do not describe them and the "
+                "entries after it as one continuous series."
+            )
+    if entries:
+        last = at(entries[-1])
+        if last is not None:
+            hours = (now - last).total_seconds() / 3600.0
+            if hours > gap_hours:
+                notes.append(
+                    f"The most recent entry is {gap_text(hours)} old; no "
+                    "synthesis ran between it and this run. None of this "
+                    "history is recent trajectory."
+                )
+    return entries, notes
+
+
 def seasonal_context() -> str:
     """Return a dynamic seasonal calendar for Napa Valley based on the current date.
 
@@ -1322,10 +1386,12 @@ def gather_context(lookback_hours: float = 24.0,
                 "wind speeds 3.6x too high. Do not read the difference "
                 "between those figures and today's as a change in conditions."
             )
+        entries, gap_notes = _mark_history_gaps(prior)
+        caveats.extend(gap_notes)
         sections.append(
             f"=== SYNTHESIS HISTORY (last {len(prior)} runs — oldest first) ===\n"
             + "\n".join(f"NOTE: {c}" for c in caveats) + "\n"
-            + json.dumps(list(reversed(prior)), indent=2)
+            + json.dumps(entries, indent=2)
         )
     else:
         sections.append("=== SYNTHESIS HISTORY ===\nNone yet — first run.")
