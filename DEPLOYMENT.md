@@ -131,8 +131,15 @@ subscription doesn't change that, and shouldn't.
    ```bash
    az network nsg rule list -g $RG --nsg-name napa-node-01NSG -o table
    az network nsg rule update -g $RG --nsg-name napa-node-01NSG -n default-allow-ssh \
-     --source-address-prefixes "$(curl -s https://ifconfig.me)/32"
+     --source-address-prefixes "$(curl -4 -s https://ifconfig.me)/32"
    ```
+   `-4` matters. The VM's public address is IPv4, so SSH reaches it over
+   IPv4, and that is the source address the rule has to match. On a network
+   with IPv6, a bare `curl` returns the IPv6 address, which Azure rejects
+   with `SecurityRuleInvalidAddressPrefix` next to a `/32`. A failed update
+   leaves the rule as `az vm create` made it, open to any source, so rerun
+   until it succeeds. A home IPv4 address can change; if SSH stops
+   connecting, rerun this command.
    Never add a rule for 3000, 80 or 443 — compose binds the PDS to
    loopback, and the tunnel is the only way in.
 
