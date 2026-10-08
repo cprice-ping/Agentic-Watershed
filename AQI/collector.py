@@ -97,7 +97,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             parameter           TEXT,               -- PM2.5 or OZONE
             aqi                 INTEGER,
             category_number     INTEGER,
-            category_name       TEXT
+            category_name       TEXT,
+            site_id             TEXT,               -- monitor the reading came from
+            site_name           TEXT,
+            reporting_agency    TEXT,
+            aqi_kind            TEXT,               -- 'nowcast'; NULL = not recorded
+            local_tz            TEXT                -- AirNow's zone for obs_hour
         );
 
         CREATE INDEX IF NOT EXISTS idx_aqi_time
@@ -119,13 +124,74 @@ def init_db(conn: sqlite3.Connection) -> None:
             output_tokens   INTEGER
         );
     """)
+    _add_missing_columns(conn)
     conn.commit()
     log.info("Database initialised at %s", DB_PATH)
+
+
+# Columns added when AirNow's observation service changed (2026-10-08). Added
+# in place, so a node's existing history survives; rows from before the change
+# keep NULL in them, which reads as "not recorded", not as any value.
+_ADDED_COLUMNS = {
+    "site_id": "TEXT",
+    "site_name": "TEXT",
+    "reporting_agency": "TEXT",
+    "aqi_kind": "TEXT",
+    "local_tz": "TEXT",
+}
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    have = {r[1] for r in conn.execute("PRAGMA table_info(observations)")}
+    for name, kind in _ADDED_COLUMNS.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE observations ADD COLUMN {name} {kind}")
+            log.info("Added observations.%s", name)
 
 
 # ---------------------------------------------------------------------------
 # AirNow fetch
 # ---------------------------------------------------------------------------
+
+KEPT_PARAMETERS = ("PM2.5", "OZONE")
+
+_CATEGORY_BY_NAME = {name.lower(): num for num, name in AQI_CATEGORIES.items()}
+
+# EPA AQI category upper bounds, for when a name is missing or unrecognised.
+_CATEGORY_UPPER = ((50, 1), (100, 2), (150, 3), (200, 4), (300, 5))
+
+
+def _category_number(name: str, aqi) -> int | None:
+    """The EPA category number, which the flag rules read.
+
+    The new service sends only the name. Taken from the name when it is one
+    of the six EPA names; otherwise from the AQI value's band, logged, since
+    an unrecognised name means the reply changed again.
+    """
+    num = _CATEGORY_BY_NAME.get((name or "").lower())
+    if num is not None:
+        return num
+    if aqi is None:
+        return None
+    log.warning("Unrecognised AirNow category name %r; using the AQI band", name)
+    value = int(aqi)
+    for upper, cat in _CATEGORY_UPPER:
+        if value <= upper:
+            return cat
+    return 6
+
+
+def _hour(value) -> int | None:
+    """hourObserved: "09:00" now, an integer before. Stored as the integer
+    hour, local time, matching existing rows."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).split(":")[0])
+    except ValueError:
+        return None
 
 def get_api_key() -> str:
     key = os.environ.get("AIRNOW_API_KEY", "").strip()
@@ -141,6 +207,20 @@ def fetch_observations(api_key: str) -> list[dict]:
     """
     Fetch current AQI observations for Napa by lat/lon.
     Returns a list of parameter records (one per pollutant).
+
+    /aq/observation/current/ziplatlong/ replaced /aq/observation/latLong/
+    current/, which AirNow retired on 2026-09-30 and which now answers 410.
+    What changed besides the path, from the first live response (2026-10-08):
+
+      - Each reading names the single monitor it came from (siteName,
+        siteID). The old service gave one value per pollutant for the
+        reporting area. The nearest monitor is chosen per pollutant, so
+        PM2.5 and ozone can come from different places (Vallejo and
+        Fairfield in that first response).
+      - The search reached 50 miles ("lookupBoundary") although `distance`
+        asked for 25. Kept in the request in case it is honoured later.
+      - AQI arrives as nowcastAQI, and the category only as a name.
+      - hourObserved is "HH:MM" text with localTimeZone beside it.
     """
     params = {
         "latitude": LOCATION_LAT,
@@ -150,7 +230,7 @@ def fetch_observations(api_key: str) -> list[dict]:
         "API_KEY": api_key,
     }
     resp = httpx.get(
-        f"{AIRNOW_BASE}/aq/observation/latLong/current/",
+        f"{AIRNOW_BASE}/aq/observation/current/ziplatlong/",
         params=params,
         timeout=30,
     )
@@ -166,23 +246,33 @@ def store_observations(conn: sqlite3.Connection, records: list[dict]) -> int:
     rows = []
 
     for r in records:
-        param = r.get("ParameterName", "")
-        aqi = r.get("AQI")
-        cat_num = r.get("Category", {}).get("Number")
-        cat_name = r.get("Category", {}).get("Name", "").strip()
+        param = (r.get("parameterName") or "").strip()
+        # PM2.5 and ozone only, as before. The new service also returns the
+        # nearest PM10 monitor — Downtown Sacramento, about 50 miles away, in
+        # the first response — which says nothing about Napa's air.
+        if param not in KEPT_PARAMETERS:
+            continue
+        aqi = r.get("nowcastAQI")
+        cat_name = (r.get("aqiCategoryName") or "").strip()
+        cat_num = _category_number(cat_name, aqi)
 
         rows.append({
             "collected_at": now,
-            "obs_date": r.get("DateObserved", "").strip(),
-            "obs_hour": r.get("HourObserved"),
-            "reporting_area": r.get("ReportingArea", "").strip(),
-            "state_code": r.get("StateCode", "").strip(),
-            "latitude": r.get("Latitude"),
-            "longitude": r.get("Longitude"),
+            "obs_date": (r.get("dateObserved") or "").strip(),
+            "obs_hour": _hour(r.get("hourObserved")),
+            "reporting_area": (r.get("reportingAreaName") or "").strip(),
+            "state_code": "",           # not in the new service's reply
+            "latitude": None,           # nor are coordinates
+            "longitude": None,
             "parameter": param,
             "aqi": int(aqi) if aqi is not None else None,
-            "category_number": int(cat_num) if cat_num is not None else None,
+            "category_number": cat_num,
             "category_name": cat_name,
+            "site_id": (r.get("siteID") or "").strip() or None,
+            "site_name": (r.get("siteName") or "").strip() or None,
+            "reporting_agency": (r.get("reportingAgency") or "").strip() or None,
+            "aqi_kind": "nowcast",
+            "local_tz": (r.get("localTimeZone") or "").strip() or None,
         })
 
         # Fire-relevant warning
@@ -193,10 +283,11 @@ def store_observations(conn: sqlite3.Connection, records: list[dict]) -> int:
             flag = " 👀"
 
         log.info(
-            "  %s | AQI: %s | %s%s",
+            "  %s | AQI: %s | %s | %s%s",
             param,
             aqi,
             cat_name,
+            r.get("siteName") or "?",
             flag,
         )
 
@@ -204,10 +295,12 @@ def store_observations(conn: sqlite3.Connection, records: list[dict]) -> int:
         """
         INSERT INTO observations (
             collected_at, obs_date, obs_hour, reporting_area, state_code,
-            latitude, longitude, parameter, aqi, category_number, category_name
+            latitude, longitude, parameter, aqi, category_number, category_name,
+            site_id, site_name, reporting_agency, aqi_kind, local_tz
         ) VALUES (
             :collected_at, :obs_date, :obs_hour, :reporting_area, :state_code,
-            :latitude, :longitude, :parameter, :aqi, :category_number, :category_name
+            :latitude, :longitude, :parameter, :aqi, :category_number, :category_name,
+            :site_id, :site_name, :reporting_agency, :aqi_kind, :local_tz
         )
         """,
         rows,

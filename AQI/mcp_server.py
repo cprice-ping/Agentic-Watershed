@@ -151,13 +151,19 @@ def get_current_aqi() -> str:
     poll, so a reading can be current and still describe a slightly earlier
     hour. That gap is real and worth stating, rather than presenting the
     reading as if it were taken at poll time.
+
+    site_name is the single monitor a reading came from, and PM2.5 and ozone
+    can come from different monitors in different towns. Name the monitor
+    when you quote a value; do not present it as a measurement taken in Napa
+    itself. Readings from before 2026-10-08 have no site_name: AirNow's
+    older service reported per reporting area, not per monitor.
     """
     with _db() as conn:
         rows = conn.execute(
             """
             SELECT parameter, aqi, category_number, category_name,
                    obs_date, obs_hour AS obs_hour_local, reporting_area,
-                   collected_at
+                   site_name, collected_at
             FROM observations
             GROUP BY parameter
             HAVING collected_at = MAX(collected_at)
