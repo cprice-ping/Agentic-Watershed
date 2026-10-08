@@ -56,8 +56,8 @@ _SYNTH_CFG = json.loads(_SYNTH_CFG_PATH.read_text()) if _SYNTH_CFG_PATH.exists()
 REGION     = _SYNTH_CFG.get("region", "Napa Valley, California")
 
 MODELS = {
-    "haiku":  "claude-haiku-4-5",
-    "sonnet": "claude-sonnet-5",
+    "haiku":  "claude-haiku-5-5",
+    "sonnet": "claude-sonnet-5-5",
     "opus":   "claude-opus-4-6",
 }
 
@@ -66,6 +66,32 @@ DEFAULT_MODEL = "sonnet"
 # Token counts from the most recent reason() call, recorded with the
 # observation so monthly spend can be attributed rather than estimated.
 _LAST_USAGE: dict[str, int | None] = {"input_tokens": None, "output_tokens": None}
+
+# The model that actually produced the most recent reply, from the response
+# rather than the request. With server-side fallback a declined request is
+# re-run on another model inside the same call, and the record's agentModel
+# must name the one that answered, not the one that was asked.
+_LAST_MODEL: dict[str, str | None] = {"id": None}
+
+# How much the model thinks before answering. Set explicitly: on Sonnet 5.5
+# the levels are recalibrated from Sonnet 5's, so carrying an implicit
+# default across would change behaviour without anyone choosing it. "high"
+# is the API default too; this is a judgment task over many inputs, not
+# extraction, and it runs twice a day. Lower it only against evidence.
+EFFORT = "high"
+
+# Room for adaptive thinking plus the assessment. Thinking counts toward
+# max_tokens; the 2048 that fit a bare tool call on Sonnet 5 could be spent
+# before the answer starts.
+MAX_TOKENS = 16000
+
+# Server-side refusal fallback, on the models that accept "default" mode.
+# Sonnet 5.5's safety classifiers can decline a request; "default" retries
+# the categories Anthropic routes (cyber, frontier_llm) on Sonnet 5 inside the
+# same call. This content should never trigger one — it is opted into so an
+# unexpected decline degrades to an answer rather than a failed run.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+FALLBACK_MODELS = {"claude-sonnet-5-5"}
 
 # ---------------------------------------------------------------------------
 # Prediction resolution constants (Phase 3)
@@ -1382,14 +1408,13 @@ def gather_context(lookback_hours: float = 24.0,
 # Reasoning and output (same as original synthesis agent)
 # ---------------------------------------------------------------------------
 
-# Forced tool use instead of asking for free-text JSON: the API validates
-# the arguments against this schema server-side and hands back an already-
-# parsed dict via the tool_use block's .input, so there's no text response
-# to parse and no possibility of the model prepending prose before its
-# answer — the failure mode hit 2026-07-02 22:56 UTC (a full page of prose,
-# then a well-formed JSON object, which the previous brace-scanning parser
-# had to work around after the fact). Forcing the tool call eliminates the
-# whole class of failure at the source instead of parsing around it.
+# Structured output (output_config.format) instead of asking for free-text
+# JSON: the API constrains the reply to this schema, so there is no prose to
+# parse around — the failure mode hit 2026-07-02 22:56 UTC (a full page of
+# prose, then a well-formed JSON object). This was a forced tool call until
+# 2026-10-08; Sonnet 5.5 rejects forced tool_choice with a 400, and the call
+# only ever existed to get schema-valid JSON back, which is exactly what
+# structured output is for.
 # "unknown" is not a severity — it is the answer for a domain this run never
 # received. Until 2026-09-10 the enum had no such value, so the API itself
 # forbade the honest answer and the model had to pick a level for a domain it
@@ -1404,10 +1429,7 @@ _RISK_ENUM = ["unknown", "none", "low", "moderate", "high", "extreme"]
 # asking a model to notice a gap is asking it to observe nothing.
 KNOWN_DOMAINS = ("watershed", "weather", "aqi", "fire")
 
-_ASSESSMENT_TOOL = {
-    "name": "submit_assessment",
-    "description": "Submit the cross-domain risk assessment for this synthesis run.",
-    "input_schema": {
+_ASSESSMENT_SCHEMA = {
         "type": "object",
         "properties": {
             "summary": {
@@ -1443,23 +1465,48 @@ _ASSESSMENT_TOOL = {
             "summary", "fire_risk", "flood_risk", "air_quality_risk",
             "overall_risk", "flagged", "flag_reason", "reasoning",
         ],
-    },
+        # Required by structured output: a reply may carry these keys and no
+        # others.
+        "additionalProperties": False,
 }
+
+
+def _failed_assessment(why: str, detail: str) -> dict:
+    """The record for a run that produced no assessment.
+
+    A failed run asserts nothing. The risk fields were once "none", which
+    reads as "we checked and all is calm" — the most reassuring possible
+    output for a run that produced no assessment at all.
+    """
+    return {
+        "summary": f"Synthesis agent run failed: {why}.",
+        "fire_risk": "unknown", "flood_risk": "unknown",
+        "air_quality_risk": "unknown", "overall_risk": "unknown",
+        "flagged": True, "flag_reason": why[:200],
+        "reasoning": detail,
+    }
 
 
 def reason(context: str, model_key: str, verbose: bool = False) -> dict:
     model_id = MODELS[model_key]
     log.info("Reasoning with %s (%s)...", model_key, model_id)
 
-    client = anthropic.Anthropic()
-    message = client.messages.create(
+    request = dict(
         model=model_id,
-        max_tokens=2048,
+        max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": context}],
-        tools=[_ASSESSMENT_TOOL],
-        tool_choice={"type": "tool", "name": "submit_assessment"},
+        output_config={
+            "effort": EFFORT,
+            "format": {"type": "json_schema", "schema": _ASSESSMENT_SCHEMA},
+        },
     )
+    client = anthropic.Anthropic()
+    if model_id in FALLBACK_MODELS:
+        message = client.beta.messages.create(
+            betas=[FALLBACK_BETA], fallbacks="default", **request)
+    else:
+        message = client.messages.create(**request)
 
     usage = getattr(message, "usage", None)
     if usage is not None:
@@ -1467,24 +1514,46 @@ def reason(context: str, model_key: str, verbose: bool = False) -> dict:
         _LAST_USAGE["output_tokens"] = getattr(usage, "output_tokens", None)
         log.info("Tokens: %s in / %s out",
                  _LAST_USAGE["input_tokens"], _LAST_USAGE["output_tokens"])
+    _LAST_MODEL["id"] = getattr(message, "model", None) or model_id
+    if _LAST_MODEL["id"] != model_id:
+        log.warning("Answered by %s, not %s — a refusal fallback ran",
+                    _LAST_MODEL["id"], model_id)
 
     if verbose:
         log.info("Raw Claude response:\n%s", message.content)
 
-    tool_use = next((b for b in message.content if b.type == "tool_use"), None)
-    if tool_use is None:
-        log.error("No tool_use block in response despite forced tool_choice: %s", message.content)
-        return {
-            "summary": "Synthesis agent run failed: model did not return a tool call.",
-            # A failed run asserts nothing. These were "none", which reads
-            # as "we checked and all is calm" — the most reassuring possible
-            # output for a run that produced no assessment at all.
-            "fire_risk": "unknown", "flood_risk": "unknown",
-            "air_quality_risk": "unknown", "overall_risk": "unknown",
-            "flagged": True, "flag_reason": "No tool_use block in response",
-            "reasoning": f"Raw content blocks: {message.content}",
-        }
-    return tool_use.input
+    # Checked before content is read: a declined request returns HTTP 200
+    # with no assessment in it.
+    if message.stop_reason == "refusal":
+        details = getattr(message, "stop_details", None)
+        category = getattr(details, "category", None) if details else None
+        log.error("Model declined the request (category %s)", category)
+        return _failed_assessment(
+            f"model declined the request (category {category})",
+            f"stop_details: {details}")
+
+    # Truncated JSON is not an assessment, even if most of it arrived.
+    if message.stop_reason == "max_tokens":
+        log.error("Reply hit max_tokens (%s) before the assessment finished",
+                  MAX_TOKENS)
+        return _failed_assessment(
+            f"reply truncated at max_tokens={MAX_TOKENS}",
+            f"Raw content blocks: {message.content}")
+
+    # By type, never by position: thinking blocks come first.
+    text = next((b.text for b in message.content if b.type == "text"), None)
+    if text is None:
+        log.error("No text block in the reply")
+        return _failed_assessment(
+            "model returned no assessment",
+            f"Raw content blocks: {message.content}")
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        log.error("No usable assessment in the reply: %s", exc)
+        return _failed_assessment(
+            "model returned no usable assessment",
+            f"{exc}; raw content blocks: {message.content}")
 
 
 def write_observation(obs: dict, dry_run: bool = False,
@@ -1635,7 +1704,7 @@ def main() -> None:
     write_predictions(observation, synthesis_db=synthesis_db, dry_run=args.dry_run)
     write_observation(observation, dry_run=args.dry_run, synthesis_db=synthesis_db,
                       grouped=grouped,
-                      model=MODELS[args.model])
+                      model=_LAST_MODEL["id"] or MODELS[args.model])
     log.info("=== Synthesis Agent (ATProto) run complete ===")
 
 
