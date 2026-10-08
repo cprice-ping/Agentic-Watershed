@@ -156,10 +156,15 @@ subscription doesn't change that, and shouldn't.
    docker compose down
    VM=cprice@<vm-ip>
    ssh $VM 'git clone https://github.com/cprice-ping/Agentic-Watershed.git'
-   rsync -a pds-data .env $VM:Agentic-Watershed/
-   rsync -a ATProto/pds/pds.env $VM:Agentic-Watershed/ATProto/pds/
-   for s in River Weather AQI Fire ATProto; do rsync -a $s/data/ $VM:Agentic-Watershed/$s/data/; done
+   rsync -a pds-data .env ${VM}:Agentic-Watershed/
+   rsync -a ATProto/pds/pds.env ${VM}:Agentic-Watershed/ATProto/pds/
+   for s in River Weather AQI Fire ATProto; do rsync -a $s/data/ ${VM}:Agentic-Watershed/$s/data/; done
    ```
+   `${VM}:`, with braces, not `$VM:`. In zsh — the macOS default shell — a
+   colon after a bare variable is a modifier: `$VM:A...` means "make $VM an
+   absolute local path", so rsync quietly copies into a local directory named
+   like `cprice@<ip>gentic-Watershed/` instead of to the VM. It exits 0. The
+   same thing broke the copy off node-01's failing SD card on 2026-09-23.
 
 5. **Start it** on the VM and repeat the checks from steps 5–8 above:
    ```bash
