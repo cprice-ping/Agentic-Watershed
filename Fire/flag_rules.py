@@ -52,7 +52,7 @@ from thresholds import (  # noqa: E402
 
 # The same great-circle distance the collector used to fill distance_mi, so
 # "one kilometre apart" means the same thing here as in that column.
-from collector import haversine_mi  # noqa: E402
+from collector import haversine_mi, direction_from, HOME_LAT, HOME_LON  # noqa: E402
 
 
 def _notable_frp_threshold(conn: sqlite3.Connection) -> float | None:
@@ -72,6 +72,18 @@ def _notable_frp_threshold(conn: sqlite3.Connection) -> float | None:
         "SELECT frp FROM hotspots WHERE frp IS NOT NULL ORDER BY frp ASC")]
     return notable_frp_at(values)
 
+
+def _where(row) -> str:
+    """Distance and compass direction of a hotspot row, e.g. "17.3mi ESE".
+
+    Direction was missing from these rules' detail, so two different
+    detections at similar distances read identically. On 2026-10-08 a run
+    of "17.9mi" in September and "17.3mi" in October — opposite sides of the
+    valley — was taken downstream as one persistent hotspot.
+    """
+    _, point = direction_from(HOME_LAT, HOME_LON,
+                              row["latitude"], row["longitude"])
+    return f"{row['distance_mi']:.1f}mi" + (f" {point}" if point else "")
 
 class Verdict:
     """Outcome of evaluating the rules, on two channels.
@@ -285,7 +297,7 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     # qualifier belongs to the 50-mile rule only.
     row = conn.execute(
         """
-        SELECT distance_mi, confidence FROM hotspots
+        SELECT distance_mi, confidence, latitude, longitude FROM hotspots
         WHERE collected_at >= ? AND distance_mi IS NOT NULL AND distance_mi <= ?
         ORDER BY distance_mi ASC LIMIT 1
         """,
@@ -293,13 +305,13 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     ).fetchone()
     if row:
         v.fire("hotspot_within_20mi",
-               f"{row['distance_mi']:.1f}mi, confidence={row['confidence']}")
+               f"{_where(row)}, confidence={row['confidence']}")
 
     # Rule 2 — any high-confidence hotspot within 50 miles. The two encodings
     # of "high" are defined in thresholds.py alongside the distances.
     row = conn.execute(
         """
-        SELECT distance_mi, confidence FROM hotspots
+        SELECT distance_mi, confidence, latitude, longitude FROM hotspots
         WHERE collected_at >= ? AND distance_mi IS NOT NULL AND distance_mi <= ?
           AND (LOWER(confidence) = ?
                OR (CAST(confidence AS INTEGER) >= ?
@@ -310,7 +322,7 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     ).fetchone()
     if row:
         v.fire("high_confidence_within_50mi",
-               f"{row['distance_mi']:.1f}mi, confidence={row['confidence']}")
+               f"{_where(row)}, confidence={row['confidence']}")
 
     # Rule 3 — FRP rising materially at the same location, to a level that is
     # itself unusual for this collector.

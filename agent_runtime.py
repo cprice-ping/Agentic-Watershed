@@ -354,14 +354,24 @@ def rule_name(entry: str) -> str:
     return strip_note(entry).split(":")[0].strip()
 
 
-def consecutive_runs_fired(conn, rules: list[str], limit: int = 40) -> dict:
+def consecutive_runs_fired(conn, rules: list[str], limit: int = 40,
+                           max_gap_hours: float = 36.0) -> dict:
     """For each rule name, how many consecutive prior runs it also fired on.
 
     Counting back from the most recent recorded observation, stopping at the
     first run where a rule did not fire. Failed runs are skipped rather than
     breaking a streak — an agent that crashed did not evaluate anything, and
-    treating that as "the rule stopped firing" would reset the count on an
-    outage.
+    treating that as "the rule stopped firing" would reset the count on one
+    bad run.
+
+    A gap does break it. If two evaluations — or the newest one and now — are
+    more than `max_gap_hours` apart, the count stops there: nothing was
+    evaluated in between, so continuity across it is not something the node
+    observed. Without this, the count ran straight through node-01's two-week
+    outage: on 2026-10-08 a synthesis advisory called a 17.3 mi ESE hotspot
+    "unchanged in location" over five consecutive runs, when three of the
+    five were in September and about a different detection, 17.9 mi WSW.
+    36 hours lets a twice-daily agent miss two runs before the streak ends.
 
     This exists because a rule that fires forever is indistinguishable from
     one that just started. On 2026-09-13 a synthesis advisory reported Fire's
@@ -381,6 +391,51 @@ def consecutive_runs_fired(conn, rules: list[str], limit: int = 40) -> dict:
     counts = {r: 0 for r in rules}
     if not rules:
         return counts
+    try:
+        rows = conn.execute(
+            "SELECT rules_fired, status, observed_at FROM agent_observations "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    except Exception:
+        try:
+            rows = conn.execute(
+                "SELECT rules_fired, observed_at FROM agent_observations "
+                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        except Exception:
+            return counts
+
+    max_gap = max_gap_hours * 3600.0
+    newer = datetime.now(timezone.utc)
+    live = {r for r in rules}
+    for row in rows:
+        if not live:
+            break
+        if is_failed_row(row):
+            continue
+        at = _parse_iso(row["observed_at"])
+        # An undated run cannot show continuity either; stop rather than
+        # assume it.
+        if at is None or (newer - at).total_seconds() > max_gap:
+            break
+        newer = at
+        try:
+            fired = {rule_name(e) for e in json.loads(row["rules_fired"] or "[]")
+                     if not is_note(e)}
+        except (TypeError, ValueError):
+            fired = set()
+        for r in list(live):
+            if r in fired:
+                counts[r] += 1
+            else:
+                live.discard(r)
+    return counts
+
+
+def _parse_iso(ts):
+    try:
+        t = datetime.fromisoformat(str(ts or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
     try:
         rows = conn.execute(
             "SELECT rules_fired, status FROM agent_observations "
