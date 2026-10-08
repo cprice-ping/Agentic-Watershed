@@ -63,8 +63,8 @@ from agent_runtime import (  # noqa: E402
 _NODE_CFG = json.loads((Path(__file__).parent.parent / "node_config.json").read_text())
 
 MODELS = {
-    "haiku": "claude-haiku-4-5",
-    "sonnet": "claude-sonnet-5",
+    "haiku": "claude-haiku-5-5",
+    "sonnet": "claude-sonnet-5-5",
     "opus": "claude-opus-4-6",
 }
 

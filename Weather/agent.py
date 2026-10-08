@@ -54,8 +54,8 @@ from agent_runtime import (  # noqa: E402
 )
 
 MODELS = {
-    "haiku": "claude-haiku-4-5",
-    "sonnet": "claude-sonnet-5",
+    "haiku": "claude-haiku-5-5",
+    "sonnet": "claude-sonnet-5-5",
     "opus": "claude-opus-4-6",
 }
 
