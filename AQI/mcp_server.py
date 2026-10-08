@@ -228,9 +228,10 @@ def get_aqi_since(hours_ago: float = 24.0) -> str:
     Return all AQI observations from the last N hours, ordered by time.
     Use this to see if AQI is rising, falling, or stable.
 
-    Check site_name before reading a change as a trend: AirNow substitutes
-    the next-closest monitor when the usual one misses an hour, so a step in
-    the series where site_name also changes is a change of place, not of air.
+    Check site_name before reading a change as a trend: AirNow reports the
+    closest monitor with a reading, which can change between polls, so a step
+    in the series where site_name also changes is a change of place, not of
+    air.
 
     Args:
         hours_ago: How many hours back to look (default 24)

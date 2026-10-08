@@ -4,7 +4,7 @@ Living document. Update this as the project evolves so coding agents and
 collaborators can pick up where things left off without needing the full
 conversation history.
 
-Last updated: 2026-07-02
+Last updated: 2026-10-08
 
 ---
 
@@ -14,9 +14,11 @@ A distributed system of autonomous agents connected by identity and a federated 
 The domain is Napa Valley environmental data. That's the concrete surface — the actual
 subject is the architecture:
 
-- **Edge agents with workload identity** — each node runs on a Raspberry Pi, reasons
-  locally with Claude Haiku, and publishes structured records to ATProto under its own
-  DID. The DID is the agent's identity, not a login credential.
+- **Local agents with workload identity** — each node reasons over its own region's
+  data with Claude Haiku and publishes structured records to ATProto under its own
+  DID. The DID is the agent's identity, not a login credential. Node-01 ran on a
+  Raspberry Pi until 2026-09-23 and has run on an Azure VM since 2026-10-08; what a
+  node is, and where it runs, is in "What a node is" below.
 - **ATProto as message bus, not Bluesky as destination** — domain agents publish to
   their own self-hosted PDS (`napa-node-01.watershed-agent.dev`), reachable via a
   Cloudflare Tunnel — no dependency on `bsky.social` infrastructure for the node's
@@ -35,6 +37,124 @@ subject is the architecture:
 The environmental monitoring domain is well-suited because it has real APIs, genuine
 cross-domain reasoning, and seasonal patterns worth tracking over time. The architecture
 pattern (edge agent → structured record → verified identity → synthesis) is the point.
+
+---
+
+## What a node is (revised 2026-10)
+
+The original framing was an edge device: a Raspberry Pi in Napa that
+collects, reasons and publishes. That framing did not survive contact with
+its own storage, and the reason it failed points at a better one.
+
+### What happened
+
+On 2026-09-23 node-01's SD card failed — read and write I/O errors, ext4
+reporting potential data loss, a 30-minute boot. The PDS crashed with it,
+taking the node's public presence down. Everything irreplaceable was copied
+off the dying card in time: `pds-data/` and `pds.env` (the node's identity),
+the tunnel credentials, the collector and agent databases. The node was
+restored first on a laptop, then on an Azure VM in the same subscription as
+Synthesis, using the single-file compose node built for the purpose
+(`docker-compose.yml`: PDS, tunnel and a supercronic scheduler). The DID,
+the published history and every database came through intact. The move
+also surfaced four defects that would have hit any new node — see
+DEPLOYMENT.md and the 2026-10-07/08 commits: the MCP client racing the
+server's own cancellation, collectors logging API keys, zsh eating
+`$VAR:` in rsync targets, and AirNow having retired its endpoint while the
+node was down.
+
+### The Pi was not the weak point; the card was
+
+A full node writes constantly: four collectors committing to SQLite every
+15-30 minutes, the PDS's SQLite and write-ahead logs, the publisher's
+database, container layers, system logs. That is the small-steady-write
+pattern consumer SD cards handle worst, and this one lasted about three
+months. The planned move to a Raspberry Pi Zero 2 W (DEPLOYMENT.md) would
+have run the same workload on the same kind of storage — the Zero 2 W boots
+from SD only, with 512 MB of RAM that was already tight for the PDS. **As a
+full node it is not viable.** As something smaller it may be (below).
+
+### The revised model
+
+**A node is a local domain-expert service, not a device.** It runs wherever
+storage is managed and backed up — Azure now; the containerization means
+anywhere. It owns:
+
+- the node's identity (DID, PDS) and its published history
+- the domain agents, the shadow rules and the notes
+- provenance: which source, which monitor, how old, what's missing
+- the local knowledge that makes a reading interpretable — the Mayacamas,
+  the Carquinez gap, smoke pooling in a sheltered valley, the rating floor
+
+Almost everything built on this project so far is that last kind of work:
+rating floors, monitor provenance, data age computed in code, gaps stated
+rather than bridged. None of it depended on owning a sensor.
+
+**Sensing comes from wherever it already exists.** USGS, NWS, AirNow, FIRMS
+and CAL FIRE already supply most of it. Where nobody measures what the node
+needs, the first answer is an existing network, not new hardware.
+Hardware is built only for a genuine gap, and then as an edge device in the
+narrow sense: it senses and sends up, holds no identity and nothing
+irreplaceable, writes almost nothing to its own storage, and is replaced by
+re-flashing. A Zero 2 W fits that role; it does not fit the node's.
+
+**Synthesis aggregates nodes.** With a Sonoma or Solano node beside Napa it
+gets a broader but still local context — smoke over Sebastopol before it
+crosses the ridge, Central Valley air arriving past Fairfield. A new node is
+config, a PDS account and DID, and a `publishers.json` entry; the compose
+node made that true in practice, not only on paper.
+
+### The gap this exposes: no air monitor in the valley
+
+AirNow's replacement service (2026-10-08) returns the closest *regulatory*
+monitor reporting each pollutant ("Closest Reading By Pollutant"; it does
+not say how closeness is measured, but a monitor across a ridge being
+chosen suggests terrain is not part of it). Asked from
+Napa it returns Vallejo (PM2.5) and Fairfield (ozone); asked from
+St Helena, Sebastopol — west of the Mayacamas, a different airshed. There
+is no regulatory PM2.5 or ozone monitor in Napa Valley. Smoke pooling in
+the valley while the regional monitors stay clean — the event this node
+most exists to catch — is currently invisible to it. The collector now
+records the monitor behind every reading and a `monitor_changed` note marks
+switches, so the gap is at least visible.
+
+The low-cost sensor network that covers the valley is PurpleAir. Per the
+model above, the node should read it rather than build its own sensors.
+
+### What depending on someone else's sensors costs
+
+1. **Their API can change under you.** AirNow's did, while the node was
+   down, and the AQI collector 410'd on its first run back. The defence is
+   the one already in place: one collector per source, and a stale rule
+   that turns an outage into a recorded fact instead of clean air.
+2. **Crowd-hosted sensors are uneven.** Owners move them, unplug them, or
+   mount them under eaves or beside grills. The node keeps a roster, not a
+   favourite: several sensors per stretch of valley, the A/B channel
+   agreement check PurpleAir exposes, a median, and a record of which
+   sensors contributed and when that set changed.
+3. **Their data license.** Not yet checked: whether PurpleAir's terms allow
+   republishing raw readings, or values derived from them, in public
+   ATProto records. If they don't, the node uses the data in its reasoning
+   and publishes its conclusions, not the readings.
+4. **Cost.** API access is metered in points; current rates not yet checked.
+
+### PurpleAir collector — planned, not built
+
+In order: check API pricing and the data license, get a key, then build.
+
+- Sensors selected inside a valley boundary, grouped by stretch (south,
+  mid, up-valley).
+- Channel agreement checked per sensor; a disagreeing sensor is excluded,
+  and the exclusion recorded.
+- EPA's US-wide correction applied using the sensor's own humidity; raw and
+  corrected values both stored.
+- Its own table and its own label — low-cost sensor, EPA-corrected — never
+  merged into the AirNow series.
+- `sensor_stale` and a roster-change note, mirroring `collector_stale` and
+  `monitor_changed`; any flag rules start shadow-only.
+- What the agent gains: in-valley readings beside the regional regulatory
+  monitor, told which is which — the comparison that would catch smoke
+  settling in the valley before it reaches Vallejo.
 
 ---
 
@@ -77,10 +197,14 @@ agents — is relatively unexplored. That's the generative gap.
 
 ## Current deployment state
 
-Running on a Raspberry Pi 5, Napa, California.
-All stacks deployed under `/home/cprice/Agentic-Watershed/`.
+Since 2026-10-08: an Azure VM (`napa-node-01`, Ubuntu) in the same subscription
+as Synthesis, running the compose node — `docker-compose.yml` with the PDS, the
+Cloudflare tunnel and a `node` container whose scheduler (supercronic) runs
+`node.crontab`. Until 2026-09-23 it ran on a Raspberry Pi 5 in Napa under host
+cron; see "What a node is" for why it moved. The schedules below are unchanged
+by the move, in Pacific time.
 
-### Collectors — all running via cron
+### Collectors — scheduled by `node.crontab`
 
 | Stack | Frequency | Status |
 |-------|-----------|--------|
@@ -89,7 +213,7 @@ All stacks deployed under `/home/cprice/Agentic-Watershed/`.
 | AQI | every 30 min | ✅ Running, storing to `aqi.db` |
 | Fire | every 30 min | ✅ Added 2026-07-06, storing to `fire.db` |
 
-### Domain agents — all running via cron
+### Domain agents — scheduled by `node.crontab`
 
 | Stack | Schedule | Status |
 |-------|----------|--------|
@@ -164,8 +288,8 @@ per-token pricing would suggest and pointed straight at prompt size.
 
 | Component | Status |
 |-----------|--------|
-| PDS (official `bluesky-social/pds`, Docker on the Pi) | ✅ Running, `napa-node-01.watershed-agent.dev` |
-| Cloudflare Tunnel (`cloudflared`, systemd service) | ✅ Live — no inbound ports opened on the Pi's router |
+| PDS (official `bluesky-social/pds`, `pds` compose service) | ✅ Running, `napa-node-01.watershed-agent.dev` |
+| Cloudflare Tunnel (`cloudflared` compose service, `TUNNEL_TOKEN`) | ✅ Live — outbound only; the VM's only inbound port is SSH from one address |
 | Domain: `watershed-agent.dev` | Registered + DNS-hosted directly via Cloudflare Registrar |
 | Node DID | `did:plc:ggztd5hjk3cnkhgzdk4rmqan` (replaces the old `bsky.social`-issued one) |
 
@@ -207,27 +331,16 @@ Accumulating domain observations — first meaningful cross-domain synthesis
 expected after 2-3 days of data. Baseline established on first run (2026-06-22):
 low fire risk, no flood risk, low AQI risk. Marine influence dominant.
 
-### Containerization — built, node-01 migration pending
+### Containerization — live on node-01 since 2026-10-08
 
-`docker-compose.yml` (repo root) containerizes the collectors, domain agents,
-and ATProto publisher — everything except the PDS, which already had its own
-compose file (`ATProto/pds/`). Two images: a shared one for River/Weather/AQI
-(identical deps), a lighter one for the publisher (`httpx` only, no
-`anthropic`/`mcp`). `node_config.json` and `.env` are bind-mounted rather than
-baked in, so the built images are node-agnostic — deploying node-02 is
-"clone, write new config, done," not "rebuild an image with different
-hardcoding." Cron lines change from `.venv/bin/python script.py` to
-`docker compose run --rm <service> python script.py` — same one-shot,
-run-to-completion shape as Synthesis's Azure Container Apps Job, applied
-node-side. See `DEPLOYMENT.md` for fresh-node setup and, more carefully, the
-migration path off node-01's current venv+cron setup without losing its
-existing SQLite history (the compose bind-mounts point at the same
-`<Stack>/data/` paths the venv setup already writes to — no export/import,
-just point cron at the new invocation once a manual test run confirms it
-works).
-
-Not yet cut over on node-01 — this exists as tested-but-unswapped capability,
-same posture as anything else in this doc marked "built, not yet live."
+One compose file is the whole node (`docker-compose.yml`): the PDS, the tunnel,
+and a `node` container built from one image holding all four stacks and the
+publisher. The schedule lives in `node.crontab`, run by supercronic, so jobs get
+the container's environment directly — the `. /etc/environment` prefix and its
+three failure modes are gone. Everything node-specific (`.env`,
+`ATProto/pds/pds.env`, `pds-data/`, each stack's `data/`, `node_config.json`)
+is mounted, not baked in. `run-job.sh` prints the image's commit at the start
+of every job. See `DEPLOYMENT.md` for restoring, moving and updating a node.
 
 ---
 
