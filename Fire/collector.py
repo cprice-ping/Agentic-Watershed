@@ -69,6 +69,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
+
+# httpx logs every request URL at INFO. FIRMS takes its key in the URL path, so
+# that line printed the key on every poll — into the Pi's log files for
+# months, then into `docker compose logs`. (The AirNow key, logged the same
+# way, reached a chat on 2026-10-08.) WARNING keeps httpx's real problems
+# and drops the URLs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("fire.collector")
 
 
@@ -247,7 +254,10 @@ def poll(conn: sqlite3.Connection) -> None:
         try:
             text = fetch_firms(source)
         except (httpx.HTTPError, RuntimeError) as exc:
-            log.error("FIRMS fetch failed for %s: %s", source, exc)
+            # httpx's error text includes the full URL, key and all.
+            log.error("FIRMS fetch failed for %s: %s", source,
+                      str(exc).replace(FIRMS_API_KEY, "<FIRMS_API_KEY>")
+                      if FIRMS_API_KEY else exc)
             failed_sources.append(f"{source}: {exc}")
             continue
         source_rows = parse_firms_csv(text)

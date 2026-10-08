@@ -55,6 +55,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("aqi.collector")
 
+# httpx logs every request URL at INFO. AirNow takes its key as a query parameter, so
+# that line printed the key on every poll — into the Pi's log files for
+# months, then into `docker compose logs`, and on 2026-10-08 into a chat
+# while debugging. WARNING keeps httpx's real problems and drops the URLs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # AQI category thresholds for reference
 AQI_CATEGORIES = {
     1: "Good",
@@ -221,7 +227,9 @@ def poll(conn: sqlite3.Connection) -> None:
     try:
         records = fetch_observations(api_key)
     except httpx.HTTPError as exc:
-        log.error("AirNow fetch failed: %s", exc)
+        # httpx's error text includes the full URL, key and all.
+        log.error("AirNow fetch failed: %s",
+                  str(exc).replace(api_key, "<AIRNOW_API_KEY>"))
         return
 
     if not records:
