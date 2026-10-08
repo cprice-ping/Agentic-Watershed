@@ -22,7 +22,7 @@ Two calls, because the API bills roughly one point per field per sensor
                per 3 km along it, so the roster covers the valley's length
                instead of its densest town. Static
                fields (name, position, altitude) are fetched only here.
-  (default)    every 30 minutes: the roster's sensors by ID, four fields.
+  (default)    hourly: the roster's sensors by ID, four fields.
 
 What the stored values are, and are not:
   - pm_a / pm_b / humidity are PurpleAir's raw cf_1 channels and the sensor's
@@ -67,8 +67,10 @@ DISCOVERY_FIELDS = ["name", "latitude", "longitude", "altitude", "location_type"
                     "last_seen"]
 POLL_FIELDS = ["last_seen", "humidity", "pm2.5_cf_1_a", "pm2.5_cf_1_b"]
 
-# Observed cost, used for the logged estimate until the API's own figure is
-# known: about one point per field per sensor.
+# Rough guide for the logged estimate; the dashboard is the real figure.
+# Measured 2026-10-08: discovery 1,229 points for 204 sensors x 6 fields,
+# a poll 160 for 31 x 4 — not one clean per-field rate, so this splits the
+# difference.
 POINTS_PER_FIELD_SENSOR = 1.1
 
 # Channel agreement. These thresholds are this project's choice, not EPA's:
