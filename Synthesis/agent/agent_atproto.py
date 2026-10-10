@@ -251,6 +251,21 @@ the field is absent — say the direction is not reported. This matters more tha
 looks: NE/E is the Diablo sector, so which side of the valley a fire sits on decides
 what offshore flow would do to it.
 
+DATA AGE IS COMPUTED. The DATA AGE section gives each domain's newest observation and how
+old it is. When it is marked STALE, the summary must say when the reading was taken ("as of
+01:40 PDT") rather than describe it as current conditions, and must not set a present-tense
+risk on it alone. On 2026-10-09 an 11:00 PDT advisory opened "Conditions are cool and humid"
+from a reading taken at 00:40 PDT.
+
+DAILY CYCLES ARE NOT TRENDS. Temperature, humidity, wind speed and ozone rise and fall every
+day. COMPUTED TRENDS compares them only with the same time a day earlier, and says so when no
+such reading exists. Do not build a trend for them from two readings at different times of
+day: evening-to-midnight cooling is the night, not "fire risk easing".
+
+A VALUE AND ITS MONITOR TRAVEL TOGETHER. pm25Site and ozoneSite name the monitor behind each
+AQI value. AirNow substitutes the next closest monitor when one misses an hour, so values from
+different sites are different places, not a change in the air.
+
 FIRE RISK compounds when:
   - Weather: high temp (≥90°F), low humidity (≤25%), wind ≥15mph, especially NE/E (Diablo winds)
   - AQI: PM2.5 rising or elevated — may indicate fire already started upwind
@@ -730,6 +745,64 @@ def _is_diablo(deg: float) -> bool:
     return 22 <= deg <= 112
 
 
+# Quantities with a daily cycle. Compared only with a reading from about the
+# same time of day; see compute_trends.
+_DIURNAL_METRICS = {
+    ("weather", "temperatureF"), ("weather", "humidityPct"),
+    ("weather", "windSpeedMph"), ("aqi", "ozoneAqi"),
+}
+_SAME_PHASE_TOLERANCE_H = 3.0
+
+# Which published field names the monitor behind an AQI value (2026-10-10+).
+_SITE_FIELDS = {"pm25Aqi": "pm25Site", "ozoneAqi": "ozoneSite"}
+
+
+def _parse_obs_time(ts):
+    try:
+        t = datetime.fromisoformat(str(ts or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def data_age_section(grouped: dict[str, list[dict]],
+                     now: Optional[datetime] = None) -> Optional[str]:
+    """How old each domain's newest observation is, computed here.
+
+    On 2026-10-09 an 11:00 PDT run opened its summary "Conditions are cool
+    and humid (59°F…)" from a reading taken at 00:40 PDT. The reasoning knew
+    it was ten hours old; the public summary presented it as now. Ages and
+    local times are computed in code because converting UTC to Pacific is
+    exactly the arithmetic that has gone wrong before.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        local = ZoneInfo("America/Los_Angeles")
+    except Exception:          # no tz database: say UTC rather than guess
+        local = None
+    lines = []
+    for domain in KNOWN_DOMAINS:
+        records = grouped.get(domain) or []
+        times = [t for t in (_parse_obs_time(r.get("observed_at")) for r in records) if t]
+        if not times:
+            continue
+        newest = max(times)
+        hours = (now - newest).total_seconds() / 3600.0
+        when = (newest.astimezone(local).strftime("%H:%M %Z on %b %d")
+                if local else newest.strftime("%H:%M UTC on %b %d"))
+        stale = hours > DATA_AGE_STALE_HOURS
+        lines.append(f"{domain}: newest observation {hours:.1f}h old (taken {when})"
+                     + (" — STALE: say how old in the summary" if stale else ""))
+    if not lines:
+        return None
+    return "=== DATA AGE (computed at run time) ===\n" + "\n".join(lines)
+
+
+# Older than this, a domain's newest observation is not "current conditions".
+DATA_AGE_STALE_HOURS = 3.0
+
+
 def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
     """Extract numeric metrics from raw domain records and compute deltas
     across the observation window.
@@ -795,13 +868,10 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
 
         oldest_raw = json.loads(oldest.get("raw_record") or "{}").get(domain, {}) or {}
         latest_raw = json.loads(latest.get("raw_record") or "{}").get(domain, {}) or {}
-
-        try:
-            t_old = datetime.fromisoformat(oldest["observed_at"].replace("Z", "+00:00"))
-            t_new = datetime.fromisoformat(latest["observed_at"].replace("Z", "+00:00"))
-            hours = max(0.5, (t_new - t_old).total_seconds() / 3600)
-        except (KeyError, ValueError):
-            hours = 12.0
+        parsed = [(r, _parse_obs_time(r.get("observed_at")),
+                   json.loads(r.get("raw_record") or "{}").get(domain, {}) or {})
+                  for r in by_time]
+        t_new = parsed[-1][1]
 
         # Wind magnitudes are only comparable when both ends of the window
         # postdate the collector's unit fix. Before it, a record's wind is
@@ -820,17 +890,64 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
             if domain == "weather" and not wind_comparable and (
                     set(names) & _WIND_MAGNITUDE_FIELDS):
                 continue
-            old_val = next((oldest_raw[n] for n in names
-                            if oldest_raw.get(n) is not None), None)
-            new_val = next((latest_raw[n] for n in names
-                            if latest_raw.get(n) is not None), None)
-            if old_val is None or new_val is None:
-                continue
-            try:
-                old_val, new_val = float(old_val), float(new_val)
-            except (TypeError, ValueError):
+
+            def value(raw):
+                v = next((raw[n] for n in names if raw.get(n) is not None), None)
+                try:
+                    return None if v is None else float(v)
+                except (TypeError, ValueError):
+                    return None
+
+            new_val = value(latest_raw)
+            if new_val is None or t_new is None:
                 continue
 
+            # Which earlier reading this one may honestly be compared with.
+            site_key = _SITE_FIELDS.get(names[0]) if domain == "aqi" else None
+            new_site = latest_raw.get(site_key) if site_key else None
+            pool = [(tt, raw) for r, tt, raw in parsed[:-1]
+                    if tt is not None and value(raw) is not None]
+            if site_key and new_site:
+                # Two readings from different monitors are two places. On
+                # 2026-10-09 this trend compared Vallejo with Berkeley Aquatic
+                # Park and reported PM2.5 "+67% over 18h".
+                others = sorted({raw.get(site_key) or "unrecorded"
+                                 for _, raw in pool
+                                 if raw.get(site_key) != new_site})
+                pool = [(tt, raw) for tt, raw in pool
+                        if raw.get(site_key) == new_site]
+            diurnal = (domain, names[0]) in _DIURNAL_METRICS
+            if diurnal:
+                # A quantity with a daily cycle is compared with the same
+                # time of day, or not at all. On 2026-10-09 a 12h window ran
+                # from late afternoon to after midnight and reported the
+                # overnight cooldown as "fire risk easing" — the River
+                # agent's 2026-09-10 mistake, one layer up.
+                target = t_new - timedelta(hours=24)
+                pool = [(tt, raw) for tt, raw in pool
+                        if abs((tt - target).total_seconds()) <= _SAME_PHASE_TOLERANCE_H * 3600]
+                pool.sort(key=lambda x: abs((x[0] - target).total_seconds()))
+            # Otherwise the earliest comparable reading, as before.
+            base = pool[0] if pool else None
+
+            where = f" at {new_site}" if new_site else ""
+            if base is None:
+                if site_key and new_site and others:
+                    lines.append(
+                        f"  {label}: {new_val:.1f}{unit} now{where}; no earlier "
+                        f"reading from the same monitor in this window, so not "
+                        f"compared (earlier readings came from {', '.join(others)})")
+                elif diurnal:
+                    lines.append(
+                        f"  {label}: {new_val:.1f}{unit} now{where}; no reading "
+                        "from about the same time a day earlier in this window, "
+                        "so no trend — a change over a shorter span is mostly "
+                        "the daily cycle")
+                continue
+
+            t_old, old_raw = base
+            old_val = value(old_raw)
+            hours = max(0.5, (t_new - t_old).total_seconds() / 3600)
             delta = new_val - old_val
             if abs(delta) < 0.05:
                 direction = "stable"
@@ -843,10 +960,13 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
                 note = fall_note
 
             pct = f" ({delta / old_val * 100:+.0f}%)" if old_val != 0 else ""
+            basis = " vs the same time a day earlier" if diurnal else ""
+            unrecorded = (" (monitor not recorded on these records)"
+                          if site_key and not new_site else "")
             lines.append(
-                f"  {label}: {old_val:.1f}{unit} → {new_val:.1f}{unit}"
-                f" ({delta:+.1f}{unit}{pct} over {hours:.0f}h, {direction})"
-                + (f" — {note}" if note else "")
+                f"  {label}: {old_val:.1f}{unit} → {new_val:.1f}{unit}{where}"
+                f" ({delta:+.1f}{unit}{pct} over {hours:.0f}h{basis}, {direction})"
+                + (f" — {note}" if note else "") + unrecorded
             )
 
         # Wind direction: special-case because it's circular and Diablo-relevant
@@ -900,8 +1020,8 @@ def compute_trends(grouped: dict[str, list[dict]]) -> Optional[str]:
 
         if lines:
             sections.append(
-                f"{domain.upper()} ({hours:.0f}h window, "
-                f"{oldest['observed_at'][:16]} → {latest['observed_at'][:16]}):\n"
+                f"{domain.upper()} (latest {latest['observed_at'][:16]} UTC; "
+                f"window from {oldest['observed_at'][:16]}):\n"
                 + "\n".join(lines)
             )
 
@@ -1422,6 +1542,9 @@ def gather_context(lookback_hours: float = 24.0,
         else:
             coverage += "All known domains reported.\n"
         sections.append(coverage)
+        age = data_age_section(grouped)
+        if age:
+            sections.append(age)
 
         for obs_type, records in grouped.items():
             log.info("  %s: %d observation(s)", obs_type, len(records))

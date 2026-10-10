@@ -8,20 +8,21 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["observedAt", "nodeId", "observationType"],
+        "required": [
+          "observedAt",
+          "nodeId",
+          "observationType"
+        ],
         "properties": {
-
           "observedAt": {
             "type": "string",
             "format": "datetime",
             "description": "ISO8601 UTC timestamp of the observation period this record covers."
           },
-
           "nodeId": {
             "type": "string",
             "description": "Human-readable identifier for the physical node. e.g. 'napa-home-01'. Not the DID — the DID is the publisher identity, this is a stable local label."
           },
-
           "observationType": {
             "type": "string",
             "knownValues": [
@@ -32,72 +33,66 @@
             ],
             "description": "The domain of this observation. Synthesis agents filter the firehose by this value. Nodes publish only the types they have data for."
           },
-
           "summary": {
             "type": "string",
             "maxLength": 2000,
             "description": "Plain language summary of conditions. Written for a general audience. The Bluesky post is truncated separately by the publisher to fit the 300-grapheme limit, so this field holds the full text rather than a post-sized one."
           },
-
           "flagged": {
             "type": "boolean",
             "description": "True if conditions in this domain warrant attention. Domain agents set this; synthesis agents aggregate across domains."
           },
-
           "flagReason": {
             "type": "string",
             "maxLength": 200,
             "description": "Brief reason if flagged. Empty string if not flagged. On domain records this is generated rather than written by the agent: it names the deterministic rule(s) that matched and the values that matched them, or states that the flag was the model's judgement with no rule behind it. Those rules are evaluated independently of the model's `flagged` bit and have never overridden it, so this explains the flag with the best evidence available rather than asserting the model's motive. Synthesis records carry the synthesis agent's own one-line label here instead."
           },
-
           "rulesFlagged": {
             "type": "boolean",
             "description": "The deterministic verdict for this run, computed by the node's flag_rules for this domain independently of the model. ABSENT means the rules did not produce a verdict — a record written before shadow recording, or a run where evaluation failed — which is not the same as a verdict of false. Compare against `flagged` to see where the model and the arithmetic disagreed: `flagged` false with this true is a finding the model did not report, and is the direction that matters. These rules have never overridden `flagged`; they are recorded, not enforced."
           },
-
           "rulesFired": {
             "type": "array",
             "maxLength": 20,
-            "items": { "type": "string", "maxLength": 300 },
+            "items": {
+              "type": "string",
+              "maxLength": 300
+            },
             "description": "Each deterministic rule that matched, with the values that matched it, e.g. 'hotspot_within_20mi: 14.0mi, confidence=n'. Present and empty when the rules ran and nothing matched; absent when they did not run. Only these contribute to `rulesFlagged`."
           },
-
           "rulesNoted": {
             "type": "array",
             "maxLength": 20,
-            "items": { "type": "string", "maxLength": 300 },
+            "items": {
+              "type": "string",
+              "maxLength": 300
+            },
             "description": "Facts the rules measured that are deliberately not grounds for a flag, e.g. 'new_locations: 2 place(s) with no detection within 0.62mi in the last 14d, nearest 21.6mi'. Recorded because a consumer often needs them to interpret a flag or its absence — whether a hotspot is newly arrived or the same one seen yesterday is not itself alarming, and is what makes the difference between an ongoing fire and a new one. Never contributes to `rulesFlagged`."
           },
-
           "agentModel": {
             "type": "string",
             "description": "The LLM or SLM used to produce this observation. e.g. 'claude-haiku-4-5', 'phi-4-mini', 'qwen2.5-3b'. Allows synthesis agents to weight observations by model capability if desired."
           },
-
           "watershed": {
             "type": "ref",
             "ref": "#watershedData",
             "description": "Present when observationType is watershed."
           },
-
           "weather": {
             "type": "ref",
             "ref": "#weatherData",
             "description": "Present when observationType is weather."
           },
-
           "aqi": {
             "type": "ref",
             "ref": "#aqiData",
             "description": "Present when observationType is aqi."
           },
-
           "fire": {
             "type": "ref",
             "ref": "#fireData",
             "description": "Present when observationType is fire."
           },
-
           "synthesis": {
             "type": "ref",
             "ref": "#synthesisData",
@@ -106,14 +101,15 @@
         }
       }
     },
-
     "watershedData": {
       "type": "object",
       "description": "Watershed-specific observation fields. All optional to support partial sensor deployments.",
       "properties": {
         "stationIds": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "USGS or other station identifiers contributing to this observation."
         },
         "dischargeMinCfs": {
@@ -142,12 +138,16 @@
         },
         "sevenDayTrend": {
           "type": "string",
-          "knownValues": ["rising", "falling", "stable", "unknown"],
+          "knownValues": [
+            "rising",
+            "falling",
+            "stable",
+            "unknown"
+          ],
           "description": "Direction of flow over the past 7 days."
         }
       }
     },
-
     "weatherData": {
       "type": "object",
       "description": "Weather-specific observation fields.",
@@ -178,7 +178,13 @@
         },
         "windPattern": {
           "type": "string",
-          "knownValues": ["marine", "diablo", "valley", "calm", "unknown"],
+          "knownValues": [
+            "marine",
+            "diablo",
+            "valley",
+            "calm",
+            "unknown"
+          ],
           "description": "Interpreted wind pattern. Diablo (NE/E offshore flow) dramatically increases fire risk. Derived from direction and speed by the publisher; omitted rather than guessed when the sector is ambiguous. 'valley' is never emitted — Napa Valley runs NNW-SSE, so up-valley flow shares a sector with marine air and direction alone cannot separate them."
         },
         "precipMm24h": {
@@ -187,7 +193,9 @@
         },
         "activeAlerts": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "NWS alert event names in effect at observedAt, filtered by each alert's own onset/expires. e.g. ['Red Flag Warning', 'Flood Watch']. An empty array asserts no alert was in effect, not that none were checked."
         },
         "daysSinceMeasurableRain": {
@@ -200,12 +208,17 @@
         },
         "fireRisk": {
           "type": "string",
-          "knownValues": ["none", "low", "moderate", "high", "extreme"],
+          "knownValues": [
+            "none",
+            "low",
+            "moderate",
+            "high",
+            "extreme"
+          ],
           "description": "Weather agent's assessment of fire weather risk. Not currently populated: Weather/agent.py returns only summary, flagged and reasoning, so there is no assessment to carry here."
         }
       }
     },
-
     "aqiData": {
       "type": "object",
       "description": "Air quality observation fields.",
@@ -216,7 +229,14 @@
         },
         "pm25Category": {
           "type": "string",
-          "knownValues": ["Good", "Moderate", "Unhealthy for Sensitive Groups", "Unhealthy", "Very Unhealthy", "Hazardous"],
+          "knownValues": [
+            "Good",
+            "Moderate",
+            "Unhealthy for Sensitive Groups",
+            "Unhealthy",
+            "Very Unhealthy",
+            "Hazardous"
+          ],
           "description": "EPA AQI category for PM2.5."
         },
         "ozoneAqi": {
@@ -241,11 +261,20 @@
         },
         "reportingArea": {
           "type": "string",
-          "description": "AirNow reporting area name. e.g. 'Napa'."
+          "description": "AirNow reporting area name, e.g. 'Napa'. A forecast/display area, not a monitor location: since 2026-10-08 the readings behind it come from monitors outside Napa Valley — see pm25Site and ozoneSite."
+        },
+        "pm25Site": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "The monitor pm25Aqi came from (AirNow siteName). AirNow returns the closest monitor with a reading, which changes between hours — Vallejo, Vacaville, Berkeley — so two pm25Aqi values from different sites are two places, not a trend. Absent on records published before 2026-10-10."
+        },
+        "ozoneSite": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "The monitor ozoneAqi came from (AirNow siteName). See pm25Site."
         }
       }
     },
-
     "fireData": {
       "type": "object",
       "description": "Fire-specific observation fields (NASA FIRMS satellite hotspot detection). All optional.",
@@ -268,7 +297,24 @@
         },
         "nearestHotspotDirection": {
           "type": "string",
-          "knownValues": ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"],
+          "knownValues": [
+            "N",
+            "NNE",
+            "NE",
+            "ENE",
+            "E",
+            "ESE",
+            "SE",
+            "SSE",
+            "S",
+            "SSW",
+            "SW",
+            "WSW",
+            "W",
+            "WNW",
+            "NW",
+            "NNW"
+          ],
           "description": "Compass direction of the nearest hotspot from the node, computed from coordinates. Present only when the hotspot has usable coordinates. This field exists because a distance without a direction is half a location: before it, agents were estimating the compass point from raw latitude and longitude in prose, and a published advisory read '~14mi NE of Napa' with nothing able to check it. The direction is not decorative here — NE/E is the Diablo sector, so which side of the valley a fire sits on changes what offshore flow means for it."
         },
         "nearestHotspotBearingDeg": {
@@ -313,7 +359,24 @@
         },
         "nearestIncidentDirection": {
           "type": "string",
-          "knownValues": ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"],
+          "knownValues": [
+            "N",
+            "NNE",
+            "NE",
+            "ENE",
+            "E",
+            "ESE",
+            "SE",
+            "SSE",
+            "S",
+            "SSW",
+            "SW",
+            "WSW",
+            "W",
+            "WNW",
+            "NW",
+            "NNW"
+          ],
           "description": "Compass direction of the nearest actively-burning named incident from the node, computed from its published coordinates. See nearestHotspotDirection."
         },
         "nearestIncidentBearingDeg": {
@@ -326,43 +389,74 @@
         },
         "hotspotCount": {
           "type": "integer",
-          "description": "How many hotspots are current at observedAt: the same set nearestHotspot* and maxHotspot* are drawn from \u2014 detected inside the collector's currency window and carrying a distance. Until 2026-09-12 this had its own plus or minus 6 hour window and no distance filter, and counted rows by when they were first STORED rather than when detected, so it could read 0 while ten hotspots sat current in the table. A count of 0 now means no current hotspots, which is also what an absent nearestHotspotDistanceMi means."
+          "description": "How many hotspots are current at observedAt: the same set nearestHotspot* and maxHotspot* are drawn from — detected inside the collector's currency window and carrying a distance. Until 2026-09-12 this had its own plus or minus 6 hour window and no distance filter, and counted rows by when they were first STORED rather than when detected, so it could read 0 while ten hotspots sat current in the table. A count of 0 now means no current hotspots, which is also what an absent nearestHotspotDistanceMi means."
         }
       }
     },
-
     "synthesisData": {
       "type": "object",
       "description": "Cross-domain synthesis observation. Published by a synthesis agent, not a domain node.",
       "properties": {
         "fireRisk": {
           "type": "string",
-          "knownValues": ["unknown", "none", "low", "moderate", "high", "extreme"],
+          "knownValues": [
+            "unknown",
+            "none",
+            "low",
+            "moderate",
+            "high",
+            "extreme"
+          ],
           "description": "Fire risk across the region. The value 'unknown' means the domain was not observed this run. It is not a severity level, and it is the required value when the domain is absent from domainsObserved. Without it the vocabulary forced a synthesis agent to assert a level for a domain it never saw, and the least alarming option was 'none': the 2026-09-10 record set floodRisk to 'none' and described the watershed as being at normal seasonal late-summer lows, from zero watershed observations."
         },
         "floodRisk": {
           "type": "string",
-          "knownValues": ["unknown", "none", "low", "moderate", "high", "extreme"],
+          "knownValues": [
+            "unknown",
+            "none",
+            "low",
+            "moderate",
+            "high",
+            "extreme"
+          ],
           "description": "Flood risk across the region. The value 'unknown' means the domain was not observed this run. It is not a severity level, and it is the required value when the domain is absent from domainsObserved. Without it the vocabulary forced a synthesis agent to assert a level for a domain it never saw, and the least alarming option was 'none': the 2026-09-10 record set floodRisk to 'none' and described the watershed as being at normal seasonal late-summer lows, from zero watershed observations."
         },
         "airQualityRisk": {
           "type": "string",
-          "knownValues": ["unknown", "none", "low", "moderate", "high", "extreme"],
+          "knownValues": [
+            "unknown",
+            "none",
+            "low",
+            "moderate",
+            "high",
+            "extreme"
+          ],
           "description": "Air quality risk across the region. The value 'unknown' means the domain was not observed this run. It is not a severity level, and it is the required value when the domain is absent from domainsObserved. Without it the vocabulary forced a synthesis agent to assert a level for a domain it never saw, and the least alarming option was 'none': the 2026-09-10 record set floodRisk to 'none' and described the watershed as being at normal seasonal late-summer lows, from zero watershed observations."
         },
         "overallRisk": {
           "type": "string",
-          "knownValues": ["unknown", "none", "low", "moderate", "high", "extreme"],
+          "knownValues": [
+            "unknown",
+            "none",
+            "low",
+            "moderate",
+            "high",
+            "extreme"
+          ],
           "description": "Highest-severity view across the domains actually assessed. The value 'unknown' means the domain was not observed this run. It is not a severity level, and it is the required value when the domain is absent from domainsObserved. Without it the vocabulary forced a synthesis agent to assert a level for a domain it never saw, and the least alarming option was 'none': the 2026-09-10 record set floodRisk to 'none' and described the watershed as being at normal seasonal late-summer lows, from zero watershed observations."
         },
         "sourceRecords": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "The at:// URIs of the node observations this synthesis actually read. Present so a consumer can resolve the exact evidence behind an advisory rather than reconstructing it from a time window. The Viewer did the latter, using its own 24h constant against a subscriber that fetched 15h, and so displayed records the advisory had never seen under the heading 'Underlying Observations'. ABSENT means the publishing agent predates this field and the set is unknown; an EMPTY array would mean the run genuinely read nothing, so the two are not interchangeable and absent is never published as empty."
         },
         "domainsObserved": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Which domain types contributed to this synthesis. e.g. ['watershed', 'weather', 'aqi']. Allows consumers to understand confidence level."
         },
         "nodeCount": {
@@ -371,16 +465,16 @@
         },
         "trustedPublishers": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "DIDs of nodes whose observations were used. Allows consumers to audit provenance."
         },
-
         "reasoning": {
           "type": "string",
           "maxLength": 10000,
           "description": "Full cross-domain reasoning behind this synthesis, including trajectory and seasonal context. This is what makes the record auditable on its own rather than only via the truncated Bluesky post — long-form analysis belongs here, not in flagReason."
         },
-
         "synthesisDid": {
           "type": "string",
           "description": "DID of the synthesis agent that produced this record."

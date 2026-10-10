@@ -109,7 +109,11 @@ node made that true in practice, not only on paper.
 AirNow's replacement service (2026-10-08) returns the closest *regulatory*
 monitor reporting each pollutant ("Closest Reading By Pollutant"; it does
 not say how closeness is measured, but a monitor across a ridge being
-chosen suggests terrain is not part of it). Asked from
+chosen suggests terrain is not part of it). When that monitor misses an
+hour the next closest answers: on 2026-10-09 PM2.5 moved between Vallejo,
+Vacaville and Berkeley Aquatic Park six times in 24 hours. Published AQI
+records carry `pm25Site` and `ozoneSite` from 2026-10-10 so a consumer can
+tell a change of place from a change of air. Asked from
 Napa it returns Vallejo (PM2.5) and Fairfield (ozone); asked from
 St Helena, Sebastopol — west of the Mayacamas, a different airshed. There
 is no regulatory PM2.5 or ozone monitor in Napa Valley. Smoke pooling in
@@ -217,10 +221,10 @@ by the move, in Pacific time.
 
 | Stack | Schedule | Status |
 |-------|----------|--------|
-| Watershed | 0,12h | ✅ Running, writing observations (cut from 0,6,12,18h 2026-07-20 — cost) |
-| Weather | 1,13h | ✅ Running, writing observations (cut from 1,7,13,19h 2026-07-20 — cost) |
-| AQI | 2,8,14,20h | ✅ Running, writing observations — kept at 4x/day, fastest-moving signal |
-| Fire | 3,15h | ✅ Added 2026-07-06, writing observations (cut from 3,9,15,21h 2026-07-20 — cost) |
+| Watershed | 08:10, 20:10 | ✅ Running (2x/day since 2026-07-20 — cost; retimed 2026-10-10 to land before Synthesis) |
+| Weather | 08:20, 20:20 | ✅ Running (2x/day since 2026-07-20; retimed 2026-10-10 — a 1 AM reading was being read at 11 AM) |
+| AQI | 2,8,14,20h | ✅ Running — kept at 4x/day, fastest-moving signal |
+| Fire | 08:30, 20:30 | ✅ Running (2x/day since 2026-07-20; retimed 2026-10-10, ~3h after the VIIRS passes) |
 
 ### Fire domain — NASA FIRMS satellite hotspot detection
 

@@ -149,10 +149,10 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     # Note — the monitor behind a pollutant changed. AirNow's current service
     # returns the closest *reading* for each pollutant (it does not say how
     # closeness is measured), so when the usual monitor misses an hour the
-    # next closest presumably answers instead — inferred from the lookup's
-    # name, not yet observed. A series that moves from Vallejo to Sebastopol
-    # (west of the Mayacamas, a different airshed) has changed place, not
-    # air. A note, never a flag: the switch is a fact about provenance, and readings
+    # next closest answers instead. Observed 2026-10-09: PM2.5 moved between
+    # Vallejo, Vacaville and Berkeley Aquatic Park six times in 24 hours. A
+    # series that moves between monitors has changed place, not air. A note,
+    # never a flag: the switch is a fact about provenance, and readings
     # either side of it should not be compared as if from one instrument.
     # Rows from before 2026-10-08 carry no site_name and are skipped — an
     # unrecorded monitor is not a different one.

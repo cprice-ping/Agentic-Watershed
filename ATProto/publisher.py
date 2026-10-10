@@ -91,6 +91,18 @@ def _lexicon_max_bytes(field: str, default: int) -> int:
         return default
 
 
+def _lexicon_max_bytes_aqi(field: str, default: int) -> int:
+    """A field's maxLength inside the lexicon's aqiData def. See above."""
+    try:
+        doc = json.loads(
+            (Path(__file__).parent / "lexicon" / f"{LEXICON}.json").read_text())
+        return int(doc["defs"]["aqiData"]["properties"][field]["maxLength"])
+    except (OSError, KeyError, ValueError, TypeError) as exc:
+        log.warning("Could not read aqiData.%s maxLength from the lexicon (%s); "
+                    "using %d", field, exc, default)
+        return default
+
+
 def _lexicon_item_max_bytes(field: str, default: int) -> int:
     """An array field's per-item maxLength, from the lexicon. See above."""
     try:
@@ -563,9 +575,14 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cutoff = _stale_cutoff(observed_at, READING_MAX_AGE_HOURS)
+        # site_name arrived with AirNow's replacement service (2026-10-08).
+        # A database from before then has no such column; fall back rather
+        # than publish nothing.
+        cols = {c[1] for c in conn.execute("PRAGMA table_info(observations)")}
+        site = "site_name" if "site_name" in cols else "NULL AS site_name"
         rows = conn.execute(
-            """
-            SELECT parameter, aqi
+            f"""
+            SELECT parameter, aqi, {site}
             FROM observations
             WHERE parameter IN ('PM2.5', 'OZONE') AND aqi IS NOT NULL
               AND collected_at >= ? AND collected_at <= ?
@@ -581,10 +598,19 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
             param = r["parameter"]
             if param not in seen:
                 seen.add(param)
+                # The monitor travels with the value. AirNow hands back the
+                # closest monitor with a reading, and on 2026-10-09 PM2.5
+                # moved between Vallejo, Vacaville and Berkeley six times in
+                # a day; a value without its site cannot be compared with
+                # the next one.
                 if param == "PM2.5":
                     result["pm25Aqi"] = r["aqi"]
+                    if r["site_name"]:
+                        result["pm25Site"] = r["site_name"]
                 elif param == "OZONE":
                     result["ozoneAqi"] = r["aqi"]
+                    if r["site_name"]:
+                        result["ozoneSite"] = r["site_name"]
         return result
     except sqlite3.Error:
         return {}
@@ -1184,6 +1210,9 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         aqi_block["pm25Aqi"] = _atproto_safe(numerics["pm25Aqi"])
     if "ozoneAqi" in numerics:
         aqi_block["ozoneAqi"] = _atproto_safe(numerics["ozoneAqi"])
+    for key in ("pm25Site", "ozoneSite"):
+        if numerics.get(key):
+            aqi_block[key] = numerics[key][:_lexicon_max_bytes_aqi(key, 100)]
 
     return {
         "$type": LEXICON,
