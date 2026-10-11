@@ -929,7 +929,7 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
         # across runs instead of picking arbitrarily among equals.
         peak = conn.execute(
             """
-            SELECT distance_mi, confidence, frp
+            SELECT distance_mi, confidence, frp, latitude, longitude
             FROM hotspots
             WHERE collected_at >= ? AND distance_mi IS NOT NULL
               AND frp IS NOT NULL
@@ -971,6 +971,17 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
             result["maxFrpConfidence"] = peak["confidence"]
             if peak_pct is not None:
                 result["maxFrpPercentile"] = peak_pct
+            # The strongest detection gets a direction too. On 2026-10-11 a
+            # synthesis found the fire summary calling a 41.7 mi cluster "NE"
+            # and the rule detail calling it "NNE", with no published field
+            # to settle it — the nearest hotspot had a direction and the
+            # strongest did not.
+            deg, point = _direction_from(
+                _FIRE_HOME_LAT, _FIRE_HOME_LON,
+                peak["latitude"], peak["longitude"])
+            if point is not None:
+                result["maxFrpBearingDeg"] = deg
+                result["maxFrpDirection"] = point
         if count_row:
             result["hotspotCount"] = count_row["n"]
         return result
@@ -1259,6 +1270,10 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
             fire_block["maxHotspotConfidence"] = numerics["maxFrpConfidence"]
         if "maxFrpPercentile" in numerics:
             fire_block["maxHotspotFrpPercentile"] = numerics["maxFrpPercentile"]
+        if numerics.get("maxFrpDirection"):
+            fire_block["maxHotspotDirection"] = numerics["maxFrpDirection"]
+            fire_block["maxHotspotBearingDeg"] = _atproto_safe(
+                numerics["maxFrpBearingDeg"])
     if "hotspotCount" in numerics:
         fire_block["hotspotCount"] = numerics["hotspotCount"]
     fire_block.update(_fetch_incident_context(
