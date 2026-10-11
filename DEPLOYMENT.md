@@ -180,6 +180,18 @@ subscription doesn't change that, and shouldn't.
 Enable Azure Backup on the VM, or at least scheduled disk snapshots, and
 keep an off-box copy of `pds-data/` and `pds.env` besides.
 
+## Checking on a compose node
+
+```bash
+docker compose exec node python /app/status.py
+```
+
+One read-only screen: how long since each collector last stored something,
+each agent's last success and any failures since it, what the publisher last
+sent, and the PurpleAir phase-1 summary (internal only — never published).
+Anything late or failing is marked and listed at the bottom, and the exit
+status is 1, so the same command can later back an alert.
+
 ## Deploying a code change to a compose node
 
 ```bash

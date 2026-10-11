@@ -60,6 +60,9 @@ COPY ATProto ./ATProto
 
 COPY run-job.sh node.crontab ./
 
+# Read-only operator view: `docker compose exec node python /app/status.py`.
+COPY status.py ./
+
 # Scripts log as they go rather than when a buffer fills — otherwise a job
 # that hangs shows nothing at all in `docker compose logs node`.
 ENV PYTHONUNBUFFERED=1
