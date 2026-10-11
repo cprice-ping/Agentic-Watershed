@@ -20,6 +20,12 @@
     "lat": 38.2975,
     "lon": -122.2869,
     "reporting_area": "Napa",
+    "accepted_monitors": [
+      "Vallejo",
+      "Fairfield",
+      "Vacaville"
+    ],
+    "_accepted_monitors_comment": "AirNow monitors accepted as this node's regional reference. Readings from any other monitor are stored but marked out of area and never used for a value, a trend or a flag \u2014 see AQI/area.py. Chosen 2026-10-11 after PM2.5 came from Davis, ~45 mi east in the Sacramento Valley.",
     "purpleair": {
       "_comment": "Valley-floor sensor selection. centerline runs down the valley floor; sensors within corridor_km of it are candidates, grouped into zones by position along it. Points are town centres, approximate \u2014 check on a map before trusting the selection. discovery_bbox is only the coarse pre-filter for the area search (nwlng, nwlat, selng, selat); the corridor does the real selection. The roster spreads sensors along the valley rather than taking the densest cluster: the line is cut into bin_km bins and at most max_per_bin sensors (nearest the floor) are kept per bin \u2014 two, so each spot has a cross-check.",
       "centerline": [

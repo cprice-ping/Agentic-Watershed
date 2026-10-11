@@ -580,10 +580,18 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
         # than publish nothing.
         cols = {c[1] for c in conn.execute("PRAGMA table_info(observations)")}
         site = "site_name" if "site_name" in cols else "NULL AS site_name"
+        # Accepted monitors only (AQI/area.py): a reading from Davis is not
+        # Napa's, so it is never the value a record publishes. The collector
+        # creates the view; a database from before it falls back to the
+        # table.
+        has_view = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' "
+            "AND name='observations_in_area'").fetchone() is not None
+        source = "observations_in_area" if has_view else "observations"
         rows = conn.execute(
             f"""
             SELECT parameter, aqi, {site}
-            FROM observations
+            FROM {source}
             WHERE parameter IN ('PM2.5', 'OZONE') AND aqi IS NOT NULL
               AND collected_at >= ? AND collected_at <= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
