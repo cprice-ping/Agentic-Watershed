@@ -1346,17 +1346,26 @@ def get_unpublished(domain: str, pub_conn: sqlite3.Connection
 
     unpublished = []
     failures = []
+    # Rows arrive newest first. Only failures newer than the newest
+    # successful run are current. Failed rows are never published, so
+    # without this cut-off every failure the agent ever had stayed
+    # "unpublished" and was reported on every publish: on 2026-10-10 each
+    # domain logged "Last agent run FAILED at 2026-10-07" after three days
+    # of successful runs.
+    succeeded_since = False
     for row in rows:
         source_id = row["source_id"]
-        if already_published(pub_conn, domain, source_id):
-            continue
         # A failed run is recorded as a row so the gap has a cause attached,
         # but it is not an observation and must never be published: it holds
         # no assessment, and publishing it would put "Agent run failed" into
         # the lexicon as if it were a reading. It is surfaced in the log
         # instead — see publish_domain.
         if _is_failed_row(row):
-            failures.append(dict(row) | {"_source_id": source_id})
+            if not succeeded_since:
+                failures.append(dict(row) | {"_source_id": source_id})
+            continue
+        succeeded_since = True
+        if already_published(pub_conn, domain, source_id):
             continue
         unpublished.append(dict(row) | {"_source_id": source_id})
 
