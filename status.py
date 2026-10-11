@@ -163,10 +163,15 @@ def publisher(now, problems):
         problems.append("publisher")
         return
     try:
+        # The node's own domains only. publisher.db also holds "synthesis"
+        # rows from June, when Synthesis ran on the Pi and published through
+        # this publisher; it has published from Azure under its own identity
+        # since, and a 2,582-hour-old line is history, not a stalled job.
         rows = conn.execute(
             "SELECT domain, MAX(published_at) AS last, "
             "SUM(published_at >= ?) AS day "
-            "FROM published GROUP BY domain ORDER BY domain",
+            "FROM published WHERE domain IN ('watershed','weather','aqi','fire') "
+            "GROUP BY domain ORDER BY domain",
             ((now - timedelta(days=1)).isoformat(),)).fetchall()
     except sqlite3.Error as exc:
         print(f"  cannot read: {exc}")
