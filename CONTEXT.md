@@ -113,7 +113,13 @@ chosen suggests terrain is not part of it). When that monitor misses an
 hour the next closest answers: on 2026-10-09 PM2.5 moved between Vallejo,
 Vacaville and Berkeley Aquatic Park six times in 24 hours. Published AQI
 records carry `pm25Site` and `ozoneSite` from 2026-10-10 so a consumer can
-tell a change of place from a change of air. Asked from
+tell a change of place from a change of air. On 2026-10-10 it reached Davis,
+in the Sacramento Valley. Since 2026-10-11 the node accepts only the
+monitors listed in `node_config.json` (`aqi.accepted_monitors`: Vallejo,
+Fairfield, Vacaville); readings from any other monitor are stored, marked
+out of area, noted (`monitor_out_of_area`), and never used for a value, a
+trend or a flag — see `AQI/area.py`. When the accepted monitors are silent,
+the node reports no current PM2.5 rather than a borrowed one. Asked from
 Napa it returns Vallejo (PM2.5) and Fairfield (ozone); asked from
 St Helena, Sebastopol — west of the Mayacamas, a different airshed. There
 is no regulatory PM2.5 or ozone monitor in Napa Valley. Smoke pooling in

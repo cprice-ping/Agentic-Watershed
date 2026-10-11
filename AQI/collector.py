@@ -28,6 +28,12 @@ from pathlib import Path
 
 import httpx
 
+# area.py sits beside this file; resolve it from here, not from whatever
+# directory the importer happened to run in.
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import area  # noqa: E402 — which monitors count as this node's, see area.py
+
 # ---------------------------------------------------------------------------
 # Configuration  (location-specific values come from node_config.json)
 # ---------------------------------------------------------------------------
@@ -125,6 +131,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
     """)
     _add_missing_columns(conn)
+    area.ensure(conn)
     conn.commit()
     log.info("Database initialised at %s", DB_PATH)
 
@@ -273,6 +280,7 @@ def store_observations(conn: sqlite3.Connection, records: list[dict]) -> int:
             "reporting_agency": (r.get("reportingAgency") or "").strip() or None,
             "aqi_kind": "nowcast",
             "local_tz": (r.get("localTimeZone") or "").strip() or None,
+            "in_area": area.in_area(r.get("siteName")),
         })
 
         # Fire-relevant warning
@@ -283,12 +291,14 @@ def store_observations(conn: sqlite3.Connection, records: list[dict]) -> int:
             flag = " 👀"
 
         log.info(
-            "  %s | AQI: %s | %s | %s%s",
+            "  %s | AQI: %s | %s | %s%s%s",
             param,
             aqi,
             cat_name,
             r.get("siteName") or "?",
             flag,
+            "" if area.in_area(r.get("siteName")) != 0
+            else " | out of area: stored, not used",
         )
 
     conn.executemany(
@@ -296,11 +306,12 @@ def store_observations(conn: sqlite3.Connection, records: list[dict]) -> int:
         INSERT INTO observations (
             collected_at, obs_date, obs_hour, reporting_area, state_code,
             latitude, longitude, parameter, aqi, category_number, category_name,
-            site_id, site_name, reporting_agency, aqi_kind, local_tz
+            site_id, site_name, reporting_agency, aqi_kind, local_tz, in_area
         ) VALUES (
             :collected_at, :obs_date, :obs_hour, :reporting_area, :state_code,
             :latitude, :longitude, :parameter, :aqi, :category_number, :category_name,
-            :site_id, :site_name, :reporting_agency, :aqi_kind, :local_tz
+            :site_id, :site_name, :reporting_agency, :aqi_kind, :local_tz,
+            :in_area
         )
         """,
         rows,

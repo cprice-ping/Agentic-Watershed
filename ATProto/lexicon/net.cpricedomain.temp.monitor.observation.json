@@ -390,6 +390,32 @@
         "hotspotCount": {
           "type": "integer",
           "description": "How many hotspots are current at observedAt: the same set nearestHotspot* and maxHotspot* are drawn from — detected inside the collector's currency window and carrying a distance. Until 2026-09-12 this had its own plus or minus 6 hour window and no distance filter, and counted rows by when they were first STORED rather than when detected, so it could read 0 while ten hotspots sat current in the table. A count of 0 now means no current hotspots, which is also what an absent nearestHotspotDistanceMi means."
+        },
+        "maxHotspotDirection": {
+          "type": "string",
+          "knownValues": [
+            "N",
+            "NNE",
+            "NE",
+            "ENE",
+            "E",
+            "ESE",
+            "SE",
+            "SSE",
+            "S",
+            "SSW",
+            "SW",
+            "WSW",
+            "W",
+            "WNW",
+            "NW",
+            "NNW"
+          ],
+          "description": "Compass direction of the hotspot reported in maxHotspotFrpMw, computed from coordinates. Present only when that hotspot has usable coordinates. See nearestHotspotDirection; the strongest detection needs a direction for the same reason the nearest does."
+        },
+        "maxHotspotBearingDeg": {
+          "type": "string",
+          "description": "Initial great-circle bearing to the hotspot reported in maxHotspotFrpMw, degrees true. Stringified — DAG-CBOR has no float type."
         }
       }
     },

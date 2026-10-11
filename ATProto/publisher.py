@@ -580,10 +580,18 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
         # than publish nothing.
         cols = {c[1] for c in conn.execute("PRAGMA table_info(observations)")}
         site = "site_name" if "site_name" in cols else "NULL AS site_name"
+        # Accepted monitors only (AQI/area.py): a reading from Davis is not
+        # Napa's, so it is never the value a record publishes. The collector
+        # creates the view; a database from before it falls back to the
+        # table.
+        has_view = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' "
+            "AND name='observations_in_area'").fetchone() is not None
+        source = "observations_in_area" if has_view else "observations"
         rows = conn.execute(
             f"""
             SELECT parameter, aqi, {site}
-            FROM observations
+            FROM {source}
             WHERE parameter IN ('PM2.5', 'OZONE') AND aqi IS NOT NULL
               AND collected_at >= ? AND collected_at <= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
@@ -929,7 +937,7 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
         # across runs instead of picking arbitrarily among equals.
         peak = conn.execute(
             """
-            SELECT distance_mi, confidence, frp
+            SELECT distance_mi, confidence, frp, latitude, longitude
             FROM hotspots
             WHERE collected_at >= ? AND distance_mi IS NOT NULL
               AND frp IS NOT NULL
@@ -971,6 +979,17 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
             result["maxFrpConfidence"] = peak["confidence"]
             if peak_pct is not None:
                 result["maxFrpPercentile"] = peak_pct
+            # The strongest detection gets a direction too. On 2026-10-11 a
+            # synthesis found the fire summary calling a 41.7 mi cluster "NE"
+            # and the rule detail calling it "NNE", with no published field
+            # to settle it — the nearest hotspot had a direction and the
+            # strongest did not.
+            deg, point = _direction_from(
+                _FIRE_HOME_LAT, _FIRE_HOME_LON,
+                peak["latitude"], peak["longitude"])
+            if point is not None:
+                result["maxFrpBearingDeg"] = deg
+                result["maxFrpDirection"] = point
         if count_row:
             result["hotspotCount"] = count_row["n"]
         return result
@@ -1259,6 +1278,10 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
             fire_block["maxHotspotConfidence"] = numerics["maxFrpConfidence"]
         if "maxFrpPercentile" in numerics:
             fire_block["maxHotspotFrpPercentile"] = numerics["maxFrpPercentile"]
+        if numerics.get("maxFrpDirection"):
+            fire_block["maxHotspotDirection"] = numerics["maxFrpDirection"]
+            fire_block["maxHotspotBearingDeg"] = _atproto_safe(
+                numerics["maxFrpBearingDeg"])
     if "hotspotCount" in numerics:
         fire_block["hotspotCount"] = numerics["hotspotCount"]
     fire_block.update(_fetch_incident_context(

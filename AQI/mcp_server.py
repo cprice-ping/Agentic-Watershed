@@ -36,6 +36,7 @@ from agent_runtime import compact_json  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flag_rules  # noqa: E402
 import thresholds  # noqa: E402
+import area  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -122,6 +123,10 @@ def _rule_verdict(conn: sqlite3.Connection) -> tuple[int | None, str | None]:
 def _db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # Readings are read through area.VIEW — accepted monitors only. ensure()
+    # here as well as in the collector, so a tool call between a rebuild and
+    # the next collector run still finds the view.
+    area.ensure(conn)
     return conn
 
 
@@ -164,7 +169,7 @@ def get_current_aqi() -> str:
             SELECT parameter, aqi, category_number, category_name,
                    obs_date, obs_hour AS obs_hour_local, reporting_area,
                    site_name, collected_at
-            FROM observations
+            FROM observations_in_area
             GROUP BY parameter
             HAVING collected_at = MAX(collected_at)
             ORDER BY parameter
@@ -182,10 +187,15 @@ def get_current_aqi() -> str:
     now = datetime.now(timezone.utc)
     readings = _rows_to_dicts(rows)
     ages = []
+    limit = thresholds.COLLECTOR_STALE_AFTER_HOURS
     for r in readings:
         t = _parse_utc(r.get("collected_at"))
         if t is not None:
             r["poll_age_hours"] = round((now - t).total_seconds() / 3600.0, 1)
+            # Per reading, not only overall: these are accepted monitors only
+            # (area.py), so PM2.5 can be hours old while ozone is fresh —
+            # Vallejo silent and the only PM2.5 coming from Davis.
+            r["stale"] = r["poll_age_hours"] > limit
             ages.append(r["poll_age_hours"])
 
     result = {"readings": readings}
@@ -197,16 +207,19 @@ def get_current_aqi() -> str:
         # 24 in prose.
         result["newest_poll_age"] = (f"{newest:g} hours" if newest < 48
                                      else f"{newest / 24:.1f} days")
-        result["stale"] = newest > thresholds.COLLECTOR_STALE_AFTER_HOURS
+        stale_params = [r["parameter"] for r in readings if r.get("stale")]
+        result["stale"] = bool(stale_params)
         result["age_note"] = (
             "poll_age_hours, newest_poll_age_hours and newest_poll_age are computed in code at "
             "query time from collected_at. Quote them; do not work out an age "
-            "from the timestamps yourself. "
-            + (f"stale=true: the newest poll is more than "
-               f"{thresholds.COLLECTOR_STALE_AFTER_HOURS:g}h old, so these "
-               "readings do not describe current conditions and the absence of "
-               "a smoke signal tells you nothing."
-               if result["stale"] else
+            "from the timestamps yourself. Readings are from the accepted "
+            "regional monitors only; a reading from any other monitor is "
+            "excluded, so an accepted monitor's last reading can be old while "
+            "the collector itself is running. "
+            + (f"stale=true for {', '.join(stale_params)}: more than "
+               f"{limit:g}h old, so it does not describe current conditions "
+               "and the absence of a smoke signal in it tells you nothing."
+               if stale_params else
                "AirNow's observed hour normally trails the poll by an hour or two.")
         )
     return compact_json(result)
@@ -242,7 +255,7 @@ def get_aqi_since(hours_ago: float = 24.0) -> str:
             """
             SELECT collected_at, parameter, aqi, category_name, obs_date,
                    obs_hour AS obs_hour_local, site_name
-            FROM observations
+            FROM observations_in_area
             WHERE collected_at >= ?
             ORDER BY parameter, collected_at ASC
             """,
@@ -275,7 +288,7 @@ def get_aqi_trend(days: int = 7) -> str:
                 MAX(aqi) as max_aqi,
                 MAX(category_number) as worst_category,
                 COUNT(*) as n_readings
-            FROM observations
+            FROM observations_in_area
             WHERE collected_at >= ? AND aqi IS NOT NULL
             GROUP BY DATE(collected_at), parameter
             ORDER BY date ASC, parameter
@@ -315,7 +328,7 @@ def get_smoke_indicators() -> str:
             """
             SELECT aqi, category_number, category_name, collected_at,
                    obs_hour AS obs_hour_local
-            FROM observations
+            FROM observations_in_area
             WHERE parameter = 'PM2.5'
             ORDER BY collected_at DESC LIMIT 1
             """
@@ -325,7 +338,7 @@ def get_smoke_indicators() -> str:
         three_hours_ago = conn.execute(
             """
             SELECT aqi, collected_at
-            FROM observations
+            FROM observations_in_area
             WHERE parameter = 'PM2.5' AND collected_at <= ?
             ORDER BY collected_at DESC LIMIT 1
             """,
@@ -336,7 +349,7 @@ def get_smoke_indicators() -> str:
         peak_24h = conn.execute(
             """
             SELECT MAX(aqi) as peak_aqi, MAX(category_number) as worst_cat
-            FROM observations
+            FROM observations_in_area
             WHERE parameter = 'PM2.5' AND collected_at >= ?
             """,
             (cutoff_24h,),
@@ -346,7 +359,7 @@ def get_smoke_indicators() -> str:
         peak_7d = conn.execute(
             """
             SELECT MAX(aqi) as peak_aqi, DATE(collected_at) as peak_date
-            FROM observations
+            FROM observations_in_area
             WHERE parameter = 'PM2.5' AND collected_at >= ?
             """,
             (cutoff_7d,),
@@ -356,7 +369,7 @@ def get_smoke_indicators() -> str:
         unhealthy = conn.execute(
             """
             SELECT COUNT(*) as n, MAX(aqi) as worst_aqi
-            FROM observations
+            FROM observations_in_area
             WHERE parameter = 'PM2.5' AND aqi >= ? AND collected_at >= ?
             """,
             (thresholds.PM25_UNHEALTHY_AQI, cutoff_7d),
@@ -366,7 +379,7 @@ def get_smoke_indicators() -> str:
         ozone = conn.execute(
             """
             SELECT aqi, category_name
-            FROM observations
+            FROM observations_in_area
             WHERE parameter = 'OZONE'
             ORDER BY collected_at DESC LIMIT 1
             """
