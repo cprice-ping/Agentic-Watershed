@@ -110,5 +110,5 @@ jobs:
             echo "| image | \`$ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}\` |"
             echo "| result | ${{ job.status }} |"
             echo ""
-            echo "Takes effect on the next scheduled run (\`0 6,18 * * *\` UTC)."
+            echo "Takes effect on the next scheduled run (\`30 6,18 * * *\` UTC)."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -174,7 +174,7 @@ subscription doesn't change that, and shouldn't.
    curl -s https://napa-node-01.watershed-agent.dev/xrpc/_health
    ```
 
-6. **Confirm Synthesis sees it** on its next run (`0 6,18 * * *` UTC).
+6. **Confirm Synthesis sees it** on its next run (`30 6,18 * * *` UTC).
    Nothing in `Synthesis/publishers.json` changes — same DID, same hostname.
 
 Enable Azure Backup on the VM, or at least scheduled disk snapshots, and
@@ -682,7 +682,7 @@ Tagging by SHA also fixes the ambiguity `:latest` created: the job spec now
 names the commit it's running, the same way the publisher's `Code version:`
 line does on the Pi.
 
-Changes take effect on the job's next scheduled run (`0 6,18 * * *` UTC),
+Changes take effect on the job's next scheduled run (`30 6,18 * * *` UTC),
 not at deploy time.
 
 ### Troubleshooting
