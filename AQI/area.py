@@ -56,6 +56,13 @@ def ensure(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE observations ADD COLUMN site_name TEXT")
     if "in_area" not in cols:
         conn.execute("ALTER TABLE observations ADD COLUMN in_area INTEGER")
+    # Ozone was stored as "O3" by the retired AirNow endpoint and as "OZONE"
+    # by the current one (KEPT_PARAMETERS). The two names made two series, and
+    # the O3 one ended on 2026-09-21: get_current_aqi took its newest row as
+    # a separate pollutant and reported ozone stale for weeks after it was
+    # current again. One name, so one series.
+    conn.execute("UPDATE observations SET parameter = 'OZONE' "
+                 "WHERE parameter = 'O3'")
     if ACCEPTED:
         marks = ",".join("?" * len(ACCEPTED))
         conn.execute(

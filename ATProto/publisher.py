@@ -358,11 +358,19 @@ def _fetch_active_alerts(observed_at: str) -> list[str]:
     table the whole time. Synthesis reads activeAlerts to confirm fire
     predictions against FIRE_CONFIRM_ALERTS; that branch could never fire.
 
-    Alerts are filtered by their own onset/expires rather than by collection
-    time, so a Red Flag Warning polled six hours ago and still in effect is
-    reported and one that has since expired is not. An alert whose window
-    won't parse is included: the collector saw it inside the staleness
-    window, and dropping it silently is the failure this fixes.
+    An alert counts when the collector had seen it by observedAt and it had
+    not expired, so a Red Flag Warning polled six hours ago and still in
+    effect is reported and one that has since expired is not. An alert whose
+    expiry won't parse is included: the collector saw it inside the
+    staleness window, and dropping it silently is the failure this fixes.
+
+    Not gated on onset. NWS onset is when the hazard is expected to begin,
+    not when the product took effect, and for a watch that is hours after
+    issuance by design. On 2026-10-15 a Fire Weather Watch for CAZ504,
+    issued 00:18 PDT, was dropped from the morning record because its
+    onset was later that day, while the node's own fire_weather_alert rule
+    and its summary both named it. Synthesis reported the contradiction
+    and could not resolve it.
     """
     db_path = DB_PATHS["weather"]
     if not db_path.exists():
@@ -372,7 +380,7 @@ def _fetch_active_alerts(observed_at: str) -> list[str]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT event, onset, expires
+            SELECT event, expires, collected_at
             FROM alerts
             WHERE collected_at >= ? AND event IS NOT NULL AND event != ''
             ORDER BY collected_at DESC
@@ -389,8 +397,9 @@ def _fetch_active_alerts(observed_at: str) -> list[str]:
         expires = _parse_iso(r["expires"])
         if expires is not None and expires < anchor:
             continue
-        onset = _parse_iso(r["onset"])
-        if onset is not None and onset > anchor:
+        # Seen after observedAt: not something this observation knew about.
+        seen = _parse_iso(r["collected_at"])
+        if seen is not None and seen > anchor:
             continue
         event = r["event"].strip()
         if event and event not in events:
