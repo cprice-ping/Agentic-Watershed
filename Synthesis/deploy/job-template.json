@@ -32,7 +32,7 @@
     },
     "cronExpression": {
       "type": "string",
-      "defaultValue": "0 6,18 * * *"
+      "defaultValue": "30 6,18 * * *"
     }
   },
   "resources": [

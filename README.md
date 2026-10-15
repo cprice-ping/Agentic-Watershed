@@ -246,7 +246,7 @@ Without Docker (legacy — the same schedule from host cron, with per-stack venv
 ```
 
 The Synthesis agent does **not** run via either of the above — it's an Azure
-Container Apps Job (`0 6,18 * * *` UTC). It redeploys automatically from GitHub
+Container Apps Job (`30 6,18 * * *` UTC). It redeploys automatically from GitHub
 Actions when a merge to `main` touches `Synthesis/`; `Synthesis/deploy/deploy.sh
 --image-only` does the same by hand. See `DEPLOYMENT.md` for the one-time Azure
 setup and `CONTEXT.md` for the rest.

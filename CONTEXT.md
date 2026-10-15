@@ -227,10 +227,14 @@ by the move, in Pacific time.
 
 | Stack | Schedule | Status |
 |-------|----------|--------|
-| Watershed | 08:10, 20:10 | ✅ Running (2x/day since 2026-07-20 — cost; retimed 2026-10-10 to land before Synthesis) |
-| Weather | 08:20, 20:20 | ✅ Running (2x/day since 2026-07-20; retimed 2026-10-10 — a 1 AM reading was being read at 11 AM) |
-| AQI | 2,8,14,20h | ✅ Running — kept at 4x/day, fastest-moving signal |
-| Fire | 08:30, 20:30 | ✅ Running (2x/day since 2026-07-20; retimed 2026-10-10, ~3h after the VIIRS passes) |
+| Watershed | 09:10, 21:10 | ✅ Running (2x/day since 2026-07-20 — cost; retimed 2026-10-10 to land before Synthesis) |
+| Weather | 09:20, 21:20 | ✅ Running (2x/day since 2026-07-20; retimed 2026-10-10 — a 1 AM reading was being read at 11 AM) |
+| AQI | 3,9,15,21h | ✅ Running — kept at 4x/day, fastest-moving signal |
+| Fire | 09:30, 21:30 | ✅ Running (2x/day since 2026-07-20; retimed 2026-10-10, ~3h after the VIIRS passes) |
+
+All four moved an hour later on 2026-10-15, with the publisher to :55 past
+3,9,15,21 and Synthesis to 06:30/18:30 UTC: AQI at 20:00 reached the 23:00
+synthesis exactly three hours old, the line DATA AGE marks STALE.
 
 ### Fire domain — NASA FIRMS satellite hotspot detection
 
@@ -564,7 +568,7 @@ around AQI's cadence, not a symmetric one-slot-per-domain design, so it still
 picks up every agent's output within at most ~3h15m (worked out by hand
 against the new schedule, not just assumed).
 
-Synthesis runs as an Azure Container Apps Job (`0 6,18 * * *` UTC), not a Pi cron
+Synthesis runs as an Azure Container Apps Job (`30 6,18 * * *` UTC), not a Pi cron
 entry — see "Synthesis agent" above.
 
 ---
