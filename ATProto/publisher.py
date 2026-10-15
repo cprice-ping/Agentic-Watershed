@@ -841,7 +841,8 @@ def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None
 # this image started copying repo-root modules, and adding bearing alongside
 # would have turned two copies of one function into four.
 from geo import (haversine_mi as _haversine_mi,  # noqa: E402
-                 direction_from as _direction_from)
+                 direction_from as _direction_from,
+                 known_source_at as _known_source_at)
 
 _FIRE_HOME_LAT = _NODE_CFG["fire"]["home_lat"]
 _FIRE_HOME_LON = _NODE_CFG["fire"]["home_lon"]
@@ -953,7 +954,6 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
         # when two comparable ones were already in this table.
         frp_pct = _frp_percentile(conn, row["frp"]) if row else None
         peak_pct = _frp_percentile(conn, peak["frp"]) if peak else None
-        conn.close()
         result = dict(row) if row else {}
         if frp_pct is not None:
             result["frpPercentile"] = frp_pct
@@ -992,6 +992,30 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
                 result["maxFrpDirection"] = point
         if count_row:
             result["hotspotCount"] = count_row["n"]
+        # Listed fixed heat sources (Fire/thresholds.KNOWN_SOURCES). The
+        # nearest and the strongest are published as they are, with the
+        # source named when they sit inside one at its normal level — a
+        # landfill flare at 17 miles is still the nearest detection, and the
+        # record should say what it is rather than drop it.
+        known = _FIRE_THRESHOLDS.KNOWN_SOURCES
+        if known:
+            for key, r in (("nearestKnownSource", row), ("maxKnownSource", peak)):
+                if r is None:
+                    continue
+                src, escalated = _known_source_at(
+                    r["latitude"], r["longitude"], r["frp"], known)
+                if src is not None and not escalated:
+                    result[key] = src["name"]
+            n_known = 0
+            for r in conn.execute(
+                    "SELECT latitude, longitude, frp FROM hotspots "
+                    "WHERE collected_at >= ? AND distance_mi IS NOT NULL",
+                    (cutoff,)):
+                src, escalated = _known_source_at(
+                    r["latitude"], r["longitude"], r["frp"], known)
+                n_known += src is not None and not escalated
+            result["knownSourceHotspotCount"] = n_known
+        conn.close()
         return result
     except sqlite3.Error:
         return {}
@@ -1284,6 +1308,12 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
                 numerics["maxFrpBearingDeg"])
     if "hotspotCount" in numerics:
         fire_block["hotspotCount"] = numerics["hotspotCount"]
+    if numerics.get("nearestKnownSource"):
+        fire_block["nearestHotspotKnownSource"] = numerics["nearestKnownSource"]
+    if numerics.get("maxKnownSource") and "maxHotspotFrpMw" in fire_block:
+        fire_block["maxHotspotKnownSource"] = numerics["maxKnownSource"]
+    if "knownSourceHotspotCount" in numerics:
+        fire_block["knownSourceHotspotCount"] = numerics["knownSourceHotspotCount"]
     fire_block.update(_fetch_incident_context(
         observed_at, numerics.get("latitude"), numerics.get("longitude"),
         _hotspot_detected_at(numerics)))

@@ -28,6 +28,7 @@ than about which rows were in scope.
 """
 
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -47,8 +48,9 @@ from thresholds import (  # noqa: E402
     NEAREST_HOTSPOT_MAX_AGE_HOURS, NEAR_DISTANCE_MI, FAR_DISTANCE_MI,
     HIGH_CONFIDENCE_LETTER, HIGH_CONFIDENCE_NUMERIC,
     FRP_NOTABLE_PERCENTILE, FRP_RISE_MIN_FACTOR, notable_frp_at,
-    NEW_LOCATION_RADIUS_MI, NEW_LOCATION_LOOKBACK_DAYS,
+    NEW_LOCATION_RADIUS_MI, NEW_LOCATION_LOOKBACK_DAYS, KNOWN_SOURCES,
 )
+from geo import known_source_at  # noqa: E402
 
 # The same great-circle distance the collector used to fill distance_mi, so
 # "one kilometre apart" means the same thing here as in that column.
@@ -84,6 +86,28 @@ def _where(row) -> str:
     _, point = direction_from(HOME_LAT, HOME_LON,
                               row["latitude"], row["longitude"])
     return f"{row['distance_mi']:.1f}mi" + (f" {point}" if point else "")
+
+def _high_confidence(row) -> bool:
+    """The two encodings of "high": VIIRS letters, MODIS 0-100.
+
+    The same test the SQL used before this moved into Python: a letter
+    compared case-insensitively, or a value starting with digits whose
+    leading integer meets the numeric threshold.
+    """
+    c = str(row["confidence"] or "")
+    if c.lower() == HIGH_CONFIDENCE_LETTER:
+        return True
+    m = re.match(r"\d+", c)
+    return bool(m) and int(m.group()) >= HIGH_CONFIDENCE_NUMERIC
+
+
+def _above(row, src) -> str:
+    """Rule detail for a detection at a known source above its normal level."""
+    if src is None:
+        return ""
+    return (f", at {src['name']} but {row['frp']:.2f} MW, above its normal "
+            f"{src['normal_max_frp_mw']:g} MW")
+
 
 class Verdict:
     """Outcome of evaluating the rules, on two channels.
@@ -292,37 +316,54 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     cutoff = (datetime.now(timezone.utc)
               - timedelta(hours=NEAREST_HOTSPOT_MAX_AGE_HOURS)).isoformat()
 
+    # Detections inside a listed fixed heat source (thresholds.KNOWN_SOURCES)
+    # at or below its normal FRP are set aside from rules 1 and 2 and
+    # recorded as a note naming the source. Above that level they count like
+    # any other detection, and the detail says which source and by how much.
+    near = conn.execute(
+        """
+        SELECT distance_mi, confidence, frp, latitude, longitude FROM hotspots
+        WHERE collected_at >= ? AND distance_mi IS NOT NULL AND distance_mi <= ?
+        ORDER BY distance_mi ASC
+        """,
+        (cutoff, FAR_DISTANCE_MI),
+    ).fetchall()
+    at_source: dict[str, list] = {}
+    counted = []
+    for r in near:
+        src, escalated = known_source_at(r["latitude"], r["longitude"],
+                                         r["frp"], KNOWN_SOURCES)
+        if src is not None and not escalated:
+            at_source.setdefault(src["name"], []).append(r)
+        else:
+            counted.append((r, src))
+
     # Rule 1 — any hotspot within 20 miles, regardless of confidence.
     # The confidence level is deliberately not consulted here; that
     # qualifier belongs to the 50-mile rule only.
-    row = conn.execute(
-        """
-        SELECT distance_mi, confidence, latitude, longitude FROM hotspots
-        WHERE collected_at >= ? AND distance_mi IS NOT NULL AND distance_mi <= ?
-        ORDER BY distance_mi ASC LIMIT 1
-        """,
-        (cutoff, NEAR_DISTANCE_MI),
-    ).fetchone()
-    if row:
+    hit = next(((r, src) for r, src in counted
+                if r["distance_mi"] <= NEAR_DISTANCE_MI), None)
+    if hit:
+        r, src = hit
         v.fire("hotspot_within_20mi",
-               f"{_where(row)}, confidence={row['confidence']}")
+               f"{_where(r)}, confidence={r['confidence']}{_above(r, src)}")
 
     # Rule 2 — any high-confidence hotspot within 50 miles. The two encodings
     # of "high" are defined in thresholds.py alongside the distances.
-    row = conn.execute(
-        """
-        SELECT distance_mi, confidence, latitude, longitude FROM hotspots
-        WHERE collected_at >= ? AND distance_mi IS NOT NULL AND distance_mi <= ?
-          AND (LOWER(confidence) = ?
-               OR (CAST(confidence AS INTEGER) >= ?
-                   AND confidence GLOB '[0-9]*'))
-        ORDER BY distance_mi ASC LIMIT 1
-        """,
-        (cutoff, FAR_DISTANCE_MI, HIGH_CONFIDENCE_LETTER, HIGH_CONFIDENCE_NUMERIC),
-    ).fetchone()
-    if row:
+    hit = next(((r, src) for r, src in counted if _high_confidence(r)), None)
+    if hit:
+        r, src = hit
         v.fire("high_confidence_within_50mi",
-               f"{_where(row)}, confidence={row['confidence']}")
+               f"{_where(r)}, confidence={r['confidence']}{_above(r, src)}")
+
+    # Note — what was set aside, so a quiet verdict near a listed source
+    # still says the satellite saw something there.
+    for name, rows in sorted(at_source.items()):
+        peak = max((r["frp"] for r in rows if r["frp"] is not None), default=None)
+        v.note("known_source",
+               f"{name}: {len(rows)} detection(s) at {_where(rows[0])}"
+               + (f", max {peak:.2f} MW" if peak is not None else "")
+               + " — within its normal level, not counted")
 
     # Rule 3 — FRP rising materially at the same location, to a level that is
     # itself unusual for this collector.

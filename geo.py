@@ -76,3 +76,33 @@ def direction_from(home_lat: float, home_lon: float,
     except (TypeError, ValueError):
         return None, None
     return round(b, 1), compass_point(b)
+
+
+METRES_PER_MILE = 1609.344
+
+
+def known_source_at(lat, lon, frp, sources) -> tuple:
+    """(source, escalated) for a detection inside a listed fixed heat source.
+
+    (None, False) when the detection is not inside any source. When it is,
+    escalated says whether its FRP is above the source's normal_max_frp_mw:
+    a landfill flare is a known quantity, a landfill fire is not, and the
+    only thing a satellite can tell them apart by is how much heat there is.
+
+    Shared by Fire's rules, its MCP tools and the publisher, so a detection
+    is at a known source in all three or in none — the same reason
+    haversine_mi lives here.
+    """
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return None, False
+    for s in sources or ():
+        if haversine_mi(lat, lon, s["lat"], s["lon"]) * METRES_PER_MILE \
+                <= s["radius_m"]:
+            try:
+                escalated = frp is not None and float(frp) > s["normal_max_frp_mw"]
+            except (TypeError, ValueError):
+                escalated = False
+            return s, escalated
+    return None, False
