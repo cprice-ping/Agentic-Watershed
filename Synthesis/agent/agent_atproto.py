@@ -251,6 +251,14 @@ the field is absent — say the direction is not reported. This matters more tha
 looks: NE/E is the Diablo sector, so which side of the valley a fire sits on decides
 what offshore flow would do to it.
 
+KNOWN SOURCES ARE NAMED, NOT FIRES. nearestHotspotKnownSource and maxHotspotKnownSource
+name a listed fixed heat source (a landfill flare, a waste plant) that the detection sits
+inside at its normal level; a `known_source` note says the same. Report it as that source,
+not as a fire or a persistent hotspot, and do not count it toward fire risk.
+knownSourceHotspotCount says how many of hotspotCount are such detections. A detection at
+a listed source above its normal level carries no such field and is a hotspot like any
+other.
+
 DATA AGE IS COMPUTED. The DATA AGE section gives each domain's newest observation and how
 old it is. When it is marked STALE, the summary must say when the reading was taken ("as of
 01:40 PDT") rather than describe it as current conditions, and must not set a present-tense

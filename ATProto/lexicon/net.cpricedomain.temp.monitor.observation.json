@@ -416,6 +416,20 @@
         "maxHotspotBearingDeg": {
           "type": "string",
           "description": "Initial great-circle bearing to the hotspot reported in maxHotspotFrpMw, degrees true. Stringified — DAG-CBOR has no float type."
+        },
+        "nearestHotspotKnownSource": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Name of the listed fixed heat source (a landfill flare, a waste plant) the nearest hotspot sits inside, when its FRP is within that source's normal level. Present only then. Such a detection is not counted by the node's hotspot rules; it is still the nearest detection and is published as one. Absent when the nearest hotspot is not at a listed source, or is above its normal level — in which case it counts like any other."
+        },
+        "maxHotspotKnownSource": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "As nearestHotspotKnownSource, for the hotspot reported in maxHotspotFrpMw."
+        },
+        "knownSourceHotspotCount": {
+          "type": "integer",
+          "description": "How many of the hotspotCount detections sit inside a listed fixed heat source at its normal level. hotspotCount minus this is the number of detections the node's hotspot rules consider. Present only on nodes that list known sources."
         }
       }
     },
