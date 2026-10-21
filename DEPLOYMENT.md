@@ -212,6 +212,68 @@ A change to `node.crontab` is a code change like any other: it's baked into
 the image, so it takes effect on the same rebuild. `docker compose logs node`
 replaces the per-stack log files the Pi's cron lines wrote.
 
+## Updating the PDS and tunnel images
+
+The PDS (`ghcr.io/bluesky-social/pds:latest`) and the tunnel
+(`cloudflare/cloudflared:latest`) are upstream images, not built from this
+repo, so `git pull` and a node rebuild never touch them. They change only when
+pulled. Watch [bluesky-social/pds](https://github.com/bluesky-social/pds) for
+releases; a security fix there does nothing here until someone runs the steps
+below.
+
+First used 2026-10-21, for the eMudhra CA key compromise. Eight intermediate
+CA keys were recovered from their public certificates, and pds PR #383 moved
+`@atproto/pds` to 0.5.43 with a startup preload (`emudhra-preload.mjs`) that
+refuses certificates from them. It needed no change to `pds.env` or
+`docker-compose.yml`: pulling and recreating the container was the whole fix.
+Read the upstream PR before assuming that of the next one.
+
+```bash
+cd ~/Agentic-Watershed
+
+# 1. Back up the identity first. pds-data/ and pds.env ARE the node's
+#    identity; an upgrade that migrates the database cannot be undone
+#    without this.
+sudo tar czf ~/pds-backup-$(date +%Y%m%d).tgz pds-data ATProto/pds/pds.env
+
+# 2. Pull and recreate the PDS only. The node and tunnel keep running.
+docker compose pull pds
+docker compose up -d pds
+
+# 3. Confirm the new version is the one running.
+curl -s https://napa-node-01.watershed-agent.dev/xrpc/_health
+docker compose logs --tail 30 pds
+```
+
+`_health` reports the running version. If it is unchanged, GHCR had not
+published the new image when you pulled: wait and repeat step 2. For a fix
+that adds a file, check for that file too (for the eMudhra fix,
+`docker compose exec pds ls -l /app/emudhra-preload.mjs`).
+
+The PDS is down for the few seconds it takes to restart. Avoid :55 past
+3, 9, 15 and 21, when the publisher writes to it; a publish that fails is
+retried on the next run, but the next run is six hours away and after
+Synthesis.
+
+Copy the backup off the VM once the new version is confirmed. Never start a
+PDS from it anywhere while this one is running — one PDS per identity (see
+the top of `docker-compose.yml`).
+
+The tunnel updates the same way, and is lower risk because it holds no
+state:
+
+```bash
+docker compose pull cloudflared && docker compose up -d cloudflared
+```
+
+The node image's own certificate trust comes from its Python base image and
+`certifi`, and changes only on a rebuild that pulls a fresh base:
+
+```bash
+GIT_COMMIT=$(git rev-parse --short HEAD) docker compose build --pull node
+docker compose up -d node
+```
+
 ## Adding a new node
 
 1. Create its PDS account and DID — see `ATProto/pds/README.md` — with its
