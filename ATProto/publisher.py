@@ -58,6 +58,13 @@ PUBLISHER_DB = Path(__file__).parent / "data" / "publisher.db"
 
 LEXICON = "net.cpricedomain.temp.monitor.observation"
 
+# On every record, every domain. PurpleAir's licence answer (2026-10-22,
+# CONTEXT.md) asks for it on any record that discusses smoke or wildfire
+# risk; deciding that record by record would mean judging the agent's prose,
+# and nearly every record here touches fire or smoke anyway. The same text is
+# in Synthesis/publisher.py, which ships in its own image.
+NOTICE = ("For awareness only. Not a substitute for official emergency guidance: follow local authorities and alerts.")
+
 _NODE_CFG = json.loads((BASE / "node_config.json").read_text())
 NODE_ID   = _NODE_CFG["node_id"]
 
@@ -1204,6 +1211,7 @@ def build_watershed_record(row: dict, observed_at: str) -> dict:
         "observedAt": observed_at,
         "nodeId": NODE_ID,
         "observationType": f"{LEXICON}#watershed",
+        "notice": NOTICE,
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": _flag_reason(row),
@@ -1244,6 +1252,7 @@ def build_weather_record(row: dict, observed_at: str) -> dict:
         "observedAt": observed_at,
         "nodeId": NODE_ID,
         "observationType": f"{LEXICON}#weather",
+        "notice": NOTICE,
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": _flag_reason(row),
@@ -1271,6 +1280,7 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         "observedAt": observed_at,
         "nodeId": NODE_ID,
         "observationType": f"{LEXICON}#aqi",
+        "notice": NOTICE,
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": _flag_reason(row),
@@ -1332,6 +1342,7 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
         "observedAt": observed_at,
         "nodeId": NODE_ID,
         "observationType": f"{LEXICON}#fire",
+        "notice": NOTICE,
         "summary": row.get("summary", ""),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": _flag_reason(row),
