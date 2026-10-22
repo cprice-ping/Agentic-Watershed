@@ -67,7 +67,7 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
 
     pm = conn.execute(
         """
-        SELECT collected_at, aqi FROM observations
+        SELECT collected_at, aqi FROM observations_in_area
         WHERE collected_at >= ? AND parameter = ? AND aqi IS NOT NULL
         ORDER BY collected_at ASC
         """,
@@ -114,7 +114,7 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     # Rule 4 — any parameter reaching the Unhealthy category, not just PM2.5.
     row = conn.execute(
         """
-        SELECT collected_at, parameter, category_number, aqi FROM observations
+        SELECT collected_at, parameter, category_number, aqi FROM observations_in_area
         WHERE collected_at >= ? AND category_number IS NOT NULL
           AND category_number >= ?
         ORDER BY category_number DESC LIMIT 1
@@ -149,14 +149,31 @@ def evaluate(conn: sqlite3.Connection) -> Verdict:
     # Note — the monitor behind a pollutant changed. AirNow's current service
     # returns the closest *reading* for each pollutant (it does not say how
     # closeness is measured), so when the usual monitor misses an hour the
-    # next closest presumably answers instead — inferred from the lookup's
-    # name, not yet observed. A series that moves from Vallejo to Sebastopol
-    # (west of the Mayacamas, a different airshed) has changed place, not
-    # air. A note, never a flag: the switch is a fact about provenance, and readings
+    # next closest answers instead. Observed 2026-10-09: PM2.5 moved between
+    # Vallejo, Vacaville and Berkeley Aquatic Park six times in 24 hours. A
+    # series that moves between monitors has changed place, not air. A note,
+    # never a flag: the switch is a fact about provenance, and readings
     # either side of it should not be compared as if from one instrument.
     # Rows from before 2026-10-08 carry no site_name and are skipped — an
     # unrecorded monitor is not a different one.
     _note_monitor_changes(conn, v, cutoff)
+
+    # Note — readings from monitors outside the accepted list (area.py). They
+    # are stored and excluded from every rule above; saying so keeps a gap in
+    # the accepted series from looking like a quiet hour.
+    try:
+        rows = conn.execute(
+            "SELECT parameter, site_name, COUNT(*) AS n FROM observations "
+            "WHERE collected_at >= ? AND in_area = 0 "
+            "GROUP BY parameter, site_name ORDER BY parameter, n DESC",
+            (cutoff,)).fetchall()
+    except sqlite3.Error:
+        rows = []
+    if rows:
+        v.note("monitor_out_of_area",
+               "; ".join(f"{r['parameter']} from {r['site_name']} x{r['n']}"
+                         for r in rows)
+               + f" in {SERIES_WINDOW_HOURS:g}h — stored, not used")
 
     return v
 
@@ -165,7 +182,7 @@ def _note_monitor_changes(conn: sqlite3.Connection, v: Verdict,
                           cutoff: str) -> None:
     rows = conn.execute(
         """
-        SELECT parameter, site_name, collected_at FROM observations
+        SELECT parameter, site_name, collected_at FROM observations_in_area
         WHERE collected_at >= ? AND site_name IS NOT NULL AND site_name != ''
         ORDER BY parameter, collected_at ASC
         """,

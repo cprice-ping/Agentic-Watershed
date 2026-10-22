@@ -20,6 +20,12 @@
     "lat": 38.2975,
     "lon": -122.2869,
     "reporting_area": "Napa",
+    "accepted_monitors": [
+      "Vallejo",
+      "Fairfield",
+      "Vacaville"
+    ],
+    "_accepted_monitors_comment": "AirNow monitors accepted as this node's regional reference. Readings from any other monitor are stored but marked out of area and never used for a value, a trend or a flag \u2014 see AQI/area.py. Chosen 2026-10-11 after PM2.5 came from Davis, ~45 mi east in the Sacramento Valley.",
     "purpleair": {
       "_comment": "Valley-floor sensor selection. centerline runs down the valley floor; sensors within corridor_km of it are candidates, grouped into zones by position along it. Points are town centres, approximate \u2014 check on a map before trusting the selection. discovery_bbox is only the coarse pre-filter for the area search (nwlng, nwlat, selng, selat); the corridor does the real selection. The roster spreads sensors along the valley rather than taking the densest cluster: the line is cut into bin_km bins and at most max_per_bin sensors (nearest the floor) are kept per bin \u2014 two, so each spot has a cross-check.",
       "centerline": [
@@ -96,6 +102,17 @@
     ],
     "day_range": 2,
     "home_lat": 38.2975,
-    "home_lon": -122.2869
+    "home_lon": -122.2869,
+    "known_sources_comment": "Fixed industrial heat sources, confirmed by satellite view on 2026-10-15. A detection within radius_m of one, at or below normal_max_frp_mw, is recorded as that source rather than counted by hotspot_within_20mi or high_confidence_within_50mi. Above that level it counts as normal. Observed history at confirmation: Potrero Hills 24 detections Jul 9 - Oct 14, max 0.72 MW; Novato 16 detections Jul 26 - Sep 20, max 0.98 MW. Farmland burning (Woodland, Oct 10 on) is deliberately not listed: it moves and is not fixed.",
+    "known_sources": [
+      {"name": "Potrero Hills landfill (Suisun City)",
+       "kind": "landfill",
+       "lat": 38.216, "lon": -121.984,
+       "radius_m": 1000, "normal_max_frp_mw": 3.0},
+      {"name": "Waste processing plant (north Novato)",
+       "kind": "waste processing",
+       "lat": 38.159, "lon": -122.565,
+       "radius_m": 1000, "normal_max_frp_mw": 3.0}
+    ]
   }
 }

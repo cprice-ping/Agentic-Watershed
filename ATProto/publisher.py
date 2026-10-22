@@ -91,6 +91,18 @@ def _lexicon_max_bytes(field: str, default: int) -> int:
         return default
 
 
+def _lexicon_max_bytes_aqi(field: str, default: int) -> int:
+    """A field's maxLength inside the lexicon's aqiData def. See above."""
+    try:
+        doc = json.loads(
+            (Path(__file__).parent / "lexicon" / f"{LEXICON}.json").read_text())
+        return int(doc["defs"]["aqiData"]["properties"][field]["maxLength"])
+    except (OSError, KeyError, ValueError, TypeError) as exc:
+        log.warning("Could not read aqiData.%s maxLength from the lexicon (%s); "
+                    "using %d", field, exc, default)
+        return default
+
+
 def _lexicon_item_max_bytes(field: str, default: int) -> int:
     """An array field's per-item maxLength, from the lexicon. See above."""
     try:
@@ -346,11 +358,19 @@ def _fetch_active_alerts(observed_at: str) -> list[str]:
     table the whole time. Synthesis reads activeAlerts to confirm fire
     predictions against FIRE_CONFIRM_ALERTS; that branch could never fire.
 
-    Alerts are filtered by their own onset/expires rather than by collection
-    time, so a Red Flag Warning polled six hours ago and still in effect is
-    reported and one that has since expired is not. An alert whose window
-    won't parse is included: the collector saw it inside the staleness
-    window, and dropping it silently is the failure this fixes.
+    An alert counts when the collector had seen it by observedAt and it had
+    not expired, so a Red Flag Warning polled six hours ago and still in
+    effect is reported and one that has since expired is not. An alert whose
+    expiry won't parse is included: the collector saw it inside the
+    staleness window, and dropping it silently is the failure this fixes.
+
+    Not gated on onset. NWS onset is when the hazard is expected to begin,
+    not when the product took effect, and for a watch that is hours after
+    issuance by design. On 2026-10-15 a Fire Weather Watch for CAZ504,
+    issued 00:18 PDT, was dropped from the morning record because its
+    onset was later that day, while the node's own fire_weather_alert rule
+    and its summary both named it. Synthesis reported the contradiction
+    and could not resolve it.
     """
     db_path = DB_PATHS["weather"]
     if not db_path.exists():
@@ -360,7 +380,7 @@ def _fetch_active_alerts(observed_at: str) -> list[str]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT event, onset, expires
+            SELECT event, expires, collected_at
             FROM alerts
             WHERE collected_at >= ? AND event IS NOT NULL AND event != ''
             ORDER BY collected_at DESC
@@ -377,8 +397,9 @@ def _fetch_active_alerts(observed_at: str) -> list[str]:
         expires = _parse_iso(r["expires"])
         if expires is not None and expires < anchor:
             continue
-        onset = _parse_iso(r["onset"])
-        if onset is not None and onset > anchor:
+        # Seen after observedAt: not something this observation knew about.
+        seen = _parse_iso(r["collected_at"])
+        if seen is not None and seen > anchor:
             continue
         event = r["event"].strip()
         if event and event not in events:
@@ -563,10 +584,23 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cutoff = _stale_cutoff(observed_at, READING_MAX_AGE_HOURS)
+        # site_name arrived with AirNow's replacement service (2026-10-08).
+        # A database from before then has no such column; fall back rather
+        # than publish nothing.
+        cols = {c[1] for c in conn.execute("PRAGMA table_info(observations)")}
+        site = "site_name" if "site_name" in cols else "NULL AS site_name"
+        # Accepted monitors only (AQI/area.py): a reading from Davis is not
+        # Napa's, so it is never the value a record publishes. The collector
+        # creates the view; a database from before it falls back to the
+        # table.
+        has_view = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' "
+            "AND name='observations_in_area'").fetchone() is not None
+        source = "observations_in_area" if has_view else "observations"
         rows = conn.execute(
-            """
-            SELECT parameter, aqi
-            FROM observations
+            f"""
+            SELECT parameter, aqi, {site}
+            FROM {source}
             WHERE parameter IN ('PM2.5', 'OZONE') AND aqi IS NOT NULL
               AND collected_at >= ? AND collected_at <= ?
             ORDER BY ABS(strftime('%s', collected_at) - strftime('%s', ?))
@@ -581,10 +615,19 @@ def _fetch_aqi_numerics(observed_at: str) -> dict:
             param = r["parameter"]
             if param not in seen:
                 seen.add(param)
+                # The monitor travels with the value. AirNow hands back the
+                # closest monitor with a reading, and on 2026-10-09 PM2.5
+                # moved between Vallejo, Vacaville and Berkeley six times in
+                # a day; a value without its site cannot be compared with
+                # the next one.
                 if param == "PM2.5":
                     result["pm25Aqi"] = r["aqi"]
+                    if r["site_name"]:
+                        result["pm25Site"] = r["site_name"]
                 elif param == "OZONE":
                     result["ozoneAqi"] = r["aqi"]
+                    if r["site_name"]:
+                        result["ozoneSite"] = r["site_name"]
         return result
     except sqlite3.Error:
         return {}
@@ -807,7 +850,8 @@ def _fetch_incident_context(observed_at: str, hotspot_lat=None, hotspot_lon=None
 # this image started copying repo-root modules, and adding bearing alongside
 # would have turned two copies of one function into four.
 from geo import (haversine_mi as _haversine_mi,  # noqa: E402
-                 direction_from as _direction_from)
+                 direction_from as _direction_from,
+                 known_source_at as _known_source_at)
 
 _FIRE_HOME_LAT = _NODE_CFG["fire"]["home_lat"]
 _FIRE_HOME_LON = _NODE_CFG["fire"]["home_lon"]
@@ -903,7 +947,7 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
         # across runs instead of picking arbitrarily among equals.
         peak = conn.execute(
             """
-            SELECT distance_mi, confidence, frp
+            SELECT distance_mi, confidence, frp, latitude, longitude
             FROM hotspots
             WHERE collected_at >= ? AND distance_mi IS NOT NULL
               AND frp IS NOT NULL
@@ -919,7 +963,6 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
         # when two comparable ones were already in this table.
         frp_pct = _frp_percentile(conn, row["frp"]) if row else None
         peak_pct = _frp_percentile(conn, peak["frp"]) if peak else None
-        conn.close()
         result = dict(row) if row else {}
         if frp_pct is not None:
             result["frpPercentile"] = frp_pct
@@ -945,8 +988,43 @@ def _fetch_fire_numerics(observed_at: str) -> dict:
             result["maxFrpConfidence"] = peak["confidence"]
             if peak_pct is not None:
                 result["maxFrpPercentile"] = peak_pct
+            # The strongest detection gets a direction too. On 2026-10-11 a
+            # synthesis found the fire summary calling a 41.7 mi cluster "NE"
+            # and the rule detail calling it "NNE", with no published field
+            # to settle it — the nearest hotspot had a direction and the
+            # strongest did not.
+            deg, point = _direction_from(
+                _FIRE_HOME_LAT, _FIRE_HOME_LON,
+                peak["latitude"], peak["longitude"])
+            if point is not None:
+                result["maxFrpBearingDeg"] = deg
+                result["maxFrpDirection"] = point
         if count_row:
             result["hotspotCount"] = count_row["n"]
+        # Listed fixed heat sources (Fire/thresholds.KNOWN_SOURCES). The
+        # nearest and the strongest are published as they are, with the
+        # source named when they sit inside one at its normal level — a
+        # landfill flare at 17 miles is still the nearest detection, and the
+        # record should say what it is rather than drop it.
+        known = _FIRE_THRESHOLDS.KNOWN_SOURCES
+        if known:
+            for key, r in (("nearestKnownSource", row), ("maxKnownSource", peak)):
+                if r is None:
+                    continue
+                src, escalated = _known_source_at(
+                    r["latitude"], r["longitude"], r["frp"], known)
+                if src is not None and not escalated:
+                    result[key] = src["name"]
+            n_known = 0
+            for r in conn.execute(
+                    "SELECT latitude, longitude, frp FROM hotspots "
+                    "WHERE collected_at >= ? AND distance_mi IS NOT NULL",
+                    (cutoff,)):
+                src, escalated = _known_source_at(
+                    r["latitude"], r["longitude"], r["frp"], known)
+                n_known += src is not None and not escalated
+            result["knownSourceHotspotCount"] = n_known
+        conn.close()
         return result
     except sqlite3.Error:
         return {}
@@ -1184,6 +1262,9 @@ def build_aqi_record(row: dict, observed_at: str) -> dict:
         aqi_block["pm25Aqi"] = _atproto_safe(numerics["pm25Aqi"])
     if "ozoneAqi" in numerics:
         aqi_block["ozoneAqi"] = _atproto_safe(numerics["ozoneAqi"])
+    for key in ("pm25Site", "ozoneSite"):
+        if numerics.get(key):
+            aqi_block[key] = numerics[key][:_lexicon_max_bytes_aqi(key, 100)]
 
     return {
         "$type": LEXICON,
@@ -1230,8 +1311,18 @@ def build_fire_record(row: dict, observed_at: str) -> dict:
             fire_block["maxHotspotConfidence"] = numerics["maxFrpConfidence"]
         if "maxFrpPercentile" in numerics:
             fire_block["maxHotspotFrpPercentile"] = numerics["maxFrpPercentile"]
+        if numerics.get("maxFrpDirection"):
+            fire_block["maxHotspotDirection"] = numerics["maxFrpDirection"]
+            fire_block["maxHotspotBearingDeg"] = _atproto_safe(
+                numerics["maxFrpBearingDeg"])
     if "hotspotCount" in numerics:
         fire_block["hotspotCount"] = numerics["hotspotCount"]
+    if numerics.get("nearestKnownSource"):
+        fire_block["nearestHotspotKnownSource"] = numerics["nearestKnownSource"]
+    if numerics.get("maxKnownSource") and "maxHotspotFrpMw" in fire_block:
+        fire_block["maxHotspotKnownSource"] = numerics["maxKnownSource"]
+    if "knownSourceHotspotCount" in numerics:
+        fire_block["knownSourceHotspotCount"] = numerics["knownSourceHotspotCount"]
     fire_block.update(_fetch_incident_context(
         observed_at, numerics.get("latitude"), numerics.get("longitude"),
         _hotspot_detected_at(numerics)))
@@ -1317,17 +1408,26 @@ def get_unpublished(domain: str, pub_conn: sqlite3.Connection
 
     unpublished = []
     failures = []
+    # Rows arrive newest first. Only failures newer than the newest
+    # successful run are current. Failed rows are never published, so
+    # without this cut-off every failure the agent ever had stayed
+    # "unpublished" and was reported on every publish: on 2026-10-10 each
+    # domain logged "Last agent run FAILED at 2026-10-07" after three days
+    # of successful runs.
+    succeeded_since = False
     for row in rows:
         source_id = row["source_id"]
-        if already_published(pub_conn, domain, source_id):
-            continue
         # A failed run is recorded as a row so the gap has a cause attached,
         # but it is not an observation and must never be published: it holds
         # no assessment, and publishing it would put "Agent run failed" into
         # the lexicon as if it were a reading. It is surfaced in the log
         # instead — see publish_domain.
         if _is_failed_row(row):
-            failures.append(dict(row) | {"_source_id": source_id})
+            if not succeeded_since:
+                failures.append(dict(row) | {"_source_id": source_id})
+            continue
+        succeeded_since = True
+        if already_published(pub_conn, domain, source_id):
             continue
         unpublished.append(dict(row) | {"_source_id": source_id})
 

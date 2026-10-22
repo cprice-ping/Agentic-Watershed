@@ -82,6 +82,23 @@ from `fire.db` into the published lexicon record's `fire` block (see
 `ATProto/publisher.py`'s `build_fire_record()`), alongside the agent's
 `summary`/`flagged`/`reasoning` — same pattern as the other three domains.
 
+## Known fixed heat sources
+
+Some heat VIIRS sees every few days is not fire: a landfill gas flare, a
+waste plant. `node_config.json`'s `fire.known_sources` lists those near this
+node, each with a radius and the FRP it normally stays under
+(`normal_max_frp_mw`). A detection inside one, at or below that level, is
+not counted by `hotspot_within_20mi` or `high_confidence_within_50mi`; it is
+recorded as a `known_source` note, labelled in the MCP tools, and named in
+the published record (`nearestHotspotKnownSource`, `maxHotspotKnownSource`,
+`knownSourceHotspotCount`). Above that level it counts like any other
+hotspot, and the rule detail says it is above the source's normal output.
+
+List a source only after confirming it on imagery. The first two (Potrero
+Hills landfill, a waste plant north of Novato) were confirmed on 2026-10-15
+after firing the 20-mile rule on most runs since July. Moving heat, such as
+the farmland burning near Woodland, does not belong here.
+
 ## Known limitations
 
 - FIRMS NRT data itself typically updates a few times per day, not

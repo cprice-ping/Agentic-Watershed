@@ -246,4 +246,31 @@ def flag_criteria_text() -> str:
         f"produce a\n  hotspot at all, and a confirmed active incident "
         f"inside the unconditional\n  radius is stronger evidence than an "
         f"unattributed thermal anomaly.",
-    ])
+    ] + ([
+        "- A hotspot carrying known_source with level \"within normal\" is a "
+        "listed fixed heat\n  source (" + "; ".join(s["name"] for s in KNOWN_SOURCES)
+        + ") and does\n  not count for the two hotspot rules above. Name it "
+        "rather than omit it. One\n  marked \"above normal\" counts like "
+        "any other hotspot.",
+    ] if KNOWN_SOURCES else []))
+
+
+# Fixed industrial heat sources near the node — a landfill gas flare, a waste
+# plant — that VIIRS detects again and again. Not fires. Each entry carries a
+# radius and the FRP above which a detection there is no longer the source's
+# normal output and counts like any other hotspot.
+#
+# Added 2026-10-15. The two listed sat inside the 20-mile radius, 17.3mi ESE
+# and 17.9mi WSW, and fired hotspot_within_20mi on most runs from July on;
+# Synthesis read the September and October runs of them as one persistent
+# hotspot. Confirmed on satellite imagery by the operator before listing.
+#
+# A listed source is renamed, not hidden: the rules record it as a note, the
+# tools label it, and the published record names it.
+KNOWN_SOURCES = [
+    {"name": s["name"], "kind": s.get("kind"),
+     "lat": float(s["lat"]), "lon": float(s["lon"]),
+     "radius_m": float(s["radius_m"]),
+     "normal_max_frp_mw": float(s["normal_max_frp_mw"])}
+    for s in _NODE_CFG["fire"].get("known_sources", [])
+]

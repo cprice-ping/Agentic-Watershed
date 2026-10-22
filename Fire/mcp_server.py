@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flag_rules  # noqa: E402
 import thresholds  # noqa: E402
 from collector import haversine_mi, direction_from  # noqa: E402
+from geo import known_source_at  # noqa: E402
 
 _HOME_LAT = thresholds._NODE_CFG["fire"]["home_lat"]
 _HOME_LON = thresholds._NODE_CFG["fire"]["home_lon"]
@@ -65,6 +66,28 @@ def _annotate_direction(items: list[dict]) -> None:
         if point is not None:
             item["bearing_deg"] = deg
             item["direction"] = point
+
+def _annotate_known_sources(items: list[dict]) -> None:
+    """Name the listed fixed heat source a detection sits inside, if any.
+
+    The same test flag_rules applies (geo.known_source_at), so a detection
+    the rules set aside is the one the agent sees labelled. Nothing is
+    removed: the label says what the heat is, and known_source_level says
+    whether it is within the source's normal output or above it — above it,
+    the detection counts like any other.
+    """
+    for item in items:
+        src, escalated = known_source_at(item.get("latitude"),
+                                         item.get("longitude"),
+                                         item.get("frp"),
+                                         thresholds.KNOWN_SOURCES)
+        if src is not None:
+            item["known_source"] = src["name"]
+            item["known_source_level"] = (
+                f"above normal (>{src['normal_max_frp_mw']:g} MW) — counts as a hotspot"
+                if escalated else
+                f"within normal (<={src['normal_max_frp_mw']:g} MW) — not a fire")
+
 
 # ---------------------------------------------------------------------------
 # Config — points at the same DB the collector writes to
@@ -193,7 +216,9 @@ def get_recent_hotspots(n: int = 20) -> str:
         ).fetchall()
     if not rows:
         return "No hotspots in database yet. Run the collector first."
-    return json.dumps(_rows_to_dicts(rows))
+    hotspots = _rows_to_dicts(rows)
+    _annotate_known_sources(hotspots)
+    return json.dumps(hotspots)
 
 
 @mcp.tool()
@@ -220,7 +245,9 @@ def get_hotspots_since(hours_ago: float = 48.0) -> str:
         ).fetchall()
     if not rows:
         return f"No hotspots found in the last {hours_ago} hours."
-    return compact_json(_rows_to_dicts(rows))
+    hotspots = _rows_to_dicts(rows)
+    _annotate_known_sources(hotspots)
+    return compact_json(hotspots)
 
 
 def _frp_history(conn) -> list[float]:
@@ -519,6 +546,7 @@ def get_nearest_hotspots(n: int = 10) -> str:
         hotspots = _rows_to_dicts(rows)
         _annotate_frp(hotspots, frp_values)
         _annotate_direction(hotspots)
+        _annotate_known_sources(hotspots)
         _match_incidents(hotspots, incidents)
         result["nearest_hotspots"] = hotspots
     return compact_json(result)

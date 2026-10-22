@@ -41,8 +41,11 @@ IMAGE_TAG="${IMAGE_TAG:-latest}"
 ENVIRONMENT="${ENVIRONMENT:-cae-agentic-watershed}"
 JOB_NAME="${JOB_NAME:-synthesis-agent}"
 
-# Cron schedule (UTC). Twice daily at 06:00 and 18:00.
-CRON_EXPRESSION="${CRON_EXPRESSION:-0 6,18 * * *}"
+# Cron schedule (UTC). Twice daily at 06:30 and 18:30: 23:30/11:30 PDT,
+# 22:30/10:30 PST. Thirty-five minutes after the node's last publish before
+# each run (node.crontab). Was 06:00/18:00 until 2026-10-15, when the node's
+# agents moved an hour later — see node.crontab for why.
+CRON_EXPRESSION="${CRON_EXPRESSION:-30 6,18 * * *}"
 
 # Maximum seconds a single pipeline run may take before being killed.
 REPLICA_TIMEOUT="${REPLICA_TIMEOUT:-600}"

@@ -33,10 +33,27 @@
 10 4 * * * /app/run-job.sh /app/AQI/purpleair_collector.py --discover
 
 # === Domain agents (River/Weather/Fire 2x/day, AQI 4x/day — see CONTEXT.md) ===
-0 0,12 * * * /app/run-job.sh /app/River/agent.py
-0 1,13 * * * /app/run-job.sh /app/Weather/agent.py
-0 2,8,14,20 * * * /app/run-job.sh /app/AQI/agent.py
-0 3,15 * * * /app/run-job.sh /app/Fire/agent.py
+# Timed to finish just before the 09:55 and 21:55 publishes, which are the
+# last before Synthesis runs (06:30 and 18:30 UTC: 23:30/11:30 PDT,
+# 22:30/10:30 PST). Records reach Synthesis 1.5-2.5 hours old.
+#
+# Moved an hour later on 2026-10-15. AQI ran at 20:00 for a 23:00 synthesis:
+# exactly three hours, the line Synthesis's DATA AGE marks STALE, so the
+# night advisory kept calling AQI stale on a schedule working as designed.
+# Synthesis moved half an hour later at the same time (Synthesis/deploy).
+#
+# Until 2026-10-10 Weather ran at 01:00/13:00 and Fire at 03:00/15:00, so the
+# 11:00 synthesis read a 1 AM weather reading as current conditions and
+# called the overnight cooldown "fire risk easing". 09:30 also suits Fire:
+# VIIRS passes around 01:30 and 13:30 local, and NRT data lands about three
+# hours later. Staggered by ten minutes so the agents don't start together.
+0 3,9,15,21 * * * /app/run-job.sh /app/AQI/agent.py
+10 9,21 * * * /app/run-job.sh /app/River/agent.py
+20 9,21 * * * /app/run-job.sh /app/Weather/agent.py
+30 9,21 * * * /app/run-job.sh /app/Fire/agent.py
 
 # === ATProto publisher ===
-15 3,9,15,21 * * * /app/run-job.sh /app/ATProto/publisher.py
+# :55, 25 minutes after the Fire agent starts. supercronic runs separate
+# jobs concurrently, so an agent still running at publish time misses this
+# publish and is picked up six hours later — after Synthesis has run.
+55 3,9,15,21 * * * /app/run-job.sh /app/ATProto/publisher.py
