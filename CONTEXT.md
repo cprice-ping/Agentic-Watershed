@@ -167,24 +167,43 @@ model above, the node should read it rather than build its own sensors.
    Their Data License summary page reads more permissively ("provide to an
    end-user (e.g., a viewer of a map…)"), but §10.14 makes the agreement
    prevail over other policy documents. The same page invites a "Data
-   Licensing Inquiry" to contact@purpleair.com; one is being sent.
+   Licensing Inquiry" to contact@purpleair.com; one was sent.
+
+   **PurpleAir's written answer, 2026-10-22** (from Andrew at PurpleAir, to
+   the operator; kept in the operator's mail). It settles each point above
+   for this project:
+   - Publishing an EPA-corrected median PM2.5 for each of the three
+     stretches, as open records, is permitted. Individual sensor readings
+     and raw data stay out of those records. No separate agreement needed.
+   - Short public air-quality and fire-risk posts are permitted.
+   - Attribution per PurpleAir's Data Attribution guide.
+   - §4.5 is aimed at copyleft (GPL, AGPL) — licences that would require
+     work derived from the data to be released on the same terms. Python
+     (PSF) and SQLite (public domain) are fine; check the licence of any
+     other library added. At this date the node's dependencies are
+     anthropic, mcp and atproto (MIT) and httpx (BSD). Nothing that touches
+     PurpleAir-derived data may be GPL or AGPL — which rules out an AGPL PDS
+     (e.g. Tranquil) for a node publishing the medians, unless PurpleAir
+     says otherwise.
+   - §7.3: no per-reader waiver. Instead, fire-risk posts and any record
+     that discusses smoke or wildfire risk carry a short notice that it is
+     for awareness and not a substitute for official emergency guidance.
 4. **Cost.** Metered in points; measured 2026-10-08 at ~160 points per poll
    of 31 sensors and ~1,230 per daily discovery — about 5,000 a day hourly,
    roughly six months of the free million.
 
-### PurpleAir collector — phase 1 running; phase 2 blocked on licensing
+### PurpleAir collector — phase 1 running; phase 2 cleared to build
 
 Phase 1 (`AQI/purpleair_collector.py`, live since 2026-10-08) collects,
 corrects and stores for internal development, which the terms permit.
 Nothing from it reaches the agent, the published records or Synthesis.
 
-Phase 2 — the agent reading it — is blocked until PurpleAir answers the
-licensing inquiry in writing, because the agent's output is published. The
-centerline has been checked (spacing and bearings match the valley); the
-high-concentration correction coefficients are still to be taken from
-Barkjohn et al. 2022. If the answer is no, the data stays internal: useful
-for evaluating the regional monitors against the valley floor, never in a
-public record.
+Phase 2 — the agent reading it, and the per-stretch medians published — was
+blocked on PurpleAir's licence and is cleared by their 2026-10-22 answer
+above, on its conditions: medians only, attribution, the awareness notice,
+no copyleft. The centerline has been checked (spacing and bearings match
+the valley); the high-concentration correction coefficients are still to be
+taken from Barkjohn et al. 2022.
 
 What phase 1 does, and phase 2 would build on:
 
