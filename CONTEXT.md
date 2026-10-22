@@ -142,15 +142,89 @@ model above, the node should read it rather than build its own sensors.
    favourite: several sensors per stretch of valley, the A/B channel
    agreement check PurpleAir exposes, a median, and a record of which
    sensors contributed and when that set changed.
-3. **Their data license.** Not yet checked: whether PurpleAir's terms allow
-   republishing raw readings, or values derived from them, in public
-   ATProto records. If they don't, the node uses the data in its reasoning
-   and publishes its conclusions, not the readings.
-4. **Cost.** API access is metered in points; current rates not yet checked.
+3. **Their data license — read 2026-10-08, and it blocks publication.**
+   The earlier assumption here, that the node could at least publish its
+   conclusions from PurpleAir data, does not hold. From the Terms of Service
+   (updated 2022-07-18; this is a careful reading, not legal advice):
+   - §4.3(a), (b), (d) permit using the data, building derivatives (corrected
+     values, medians), and storing both on your own servers, for internal
+     operations and testing and development. Phase 1 is that.
+   - §4.3(c) allows distributing the product only to "End Users", whose use
+     must be "internal, non-commercial, non-public", with "no right to …
+     share or distribute any results". Public ATProto records and a public
+     Bluesky advisory are neither. An agent summary written from the data is
+     a Data Derivative (§4.3(b)) — and §4.4 names AI output whose production
+     data is PurpleAir Data explicitly — so "conclusions only" is still
+     distribution.
+   - §7.3: use "in a health or emergency context", wildfire included,
+     requires every End User to agree to a liability waiver, with a
+     conspicuous no-warranty notice. A public advisory cannot collect one.
+   - §4.7: no raw data to third parties. §4.8: attribution per their guide
+     for any display; correction factors do not exempt it.
+   - §4.5 bars incorporating or deriving from "Open Source Materials"
+     (MIT, BSD, GPL and others named) when creating derivatives. Unclear how
+     that applies to a pipeline built on open-source libraries.
+   Their Data License summary page reads more permissively ("provide to an
+   end-user (e.g., a viewer of a map…)"), but §10.14 makes the agreement
+   prevail over other policy documents. The same page invites a "Data
+   Licensing Inquiry" to contact@purpleair.com; one was sent.
 
-### PurpleAir collector — planned, not built
+   **PurpleAir's written answer, 2026-10-22** (from Andrew at PurpleAir, to
+   the operator; kept in the operator's mail). It settles each point above
+   for this project:
+   - Publishing an EPA-corrected median PM2.5 for each of the three
+     stretches, as open records, is permitted. Individual sensor readings
+     and raw data stay out of those records. No separate agreement needed.
+   - Short public air-quality and fire-risk posts are permitted.
+   - Attribution per PurpleAir's Data Attribution guide.
+   - §4.5 is aimed at copyleft (GPL, AGPL) — licences that would require
+     work derived from the data to be released on the same terms. Python
+     (PSF) and SQLite (public domain) are fine; check the licence of any
+     other library added. At this date the node's dependencies are
+     anthropic, mcp and atproto (MIT) and httpx (BSD). Nothing that touches
+     PurpleAir-derived data may be GPL or AGPL — which rules out an AGPL PDS
+     (e.g. Tranquil) for a node publishing the medians, unless PurpleAir
+     says otherwise.
+   - §7.3: no per-reader waiver. Instead, fire-risk posts and any record
+     that discusses smoke or wildfire risk carry a short notice that it is
+     for awareness and not a substitute for official emergency guidance.
 
-In order: check API pricing and the data license, get a key, then build.
+   **The Attribution Guide** (updated 2022-07-18, pasted by the operator
+   2026-10-22) sets what that attribution is:
+   - The medians are Data Derivatives: text "Powered by PurpleAir" (or
+     "Contributed by PurpleAir"). Raw or corrected single-sensor values would
+     be "Data from PurpleAir", but none are published.
+   - ATProto records count as an API/database product: text attribution,
+     with a link to the PurpleAir website required.
+   - Fire alerts and health insights need their disclaimer whenever claims
+     are made from the data, product name filled in: "Underlying air quality
+     data utilized by Agentic Watershed is sourced from PurpleAir, a network
+     of consumer sensors. Sensors are owned and managed by consumers,
+     therefore PurpleAir does not guarantee data accuracy. All insights and
+     claims are solely made by Agentic Watershed."
+   - Open question for PurpleAir: that disclaimer is about 280 characters,
+     and a Bluesky post is limited to 300 graphemes. Planned: posts carry
+     "Powered by PurpleAir · purpleair.com" plus the short awareness notice,
+     and link to the record carrying the full disclaimer. Confirm with
+     PurpleAir ("Attribution Feedback") before posts use the data.
+4. **Cost.** Metered in points; measured 2026-10-08 at ~160 points per poll
+   of 31 sensors and ~1,230 per daily discovery — about 5,000 a day hourly,
+   roughly six months of the free million.
+
+### PurpleAir collector — phase 1 running; phase 2 cleared to build
+
+Phase 1 (`AQI/purpleair_collector.py`, live since 2026-10-08) collects,
+corrects and stores for internal development, which the terms permit.
+Nothing from it reaches the agent, the published records or Synthesis.
+
+Phase 2 — the agent reading it, and the per-stretch medians published — was
+blocked on PurpleAir's licence and is cleared by their 2026-10-22 answer
+above, on its conditions: medians only, attribution, the awareness notice,
+no copyleft. The centerline has been checked (spacing and bearings match
+the valley); the high-concentration correction coefficients are still to be
+taken from Barkjohn et al. 2022.
+
+What phase 1 does, and phase 2 would build on:
 
 - Sensors selected inside a valley boundary, grouped by stretch (south,
   mid, up-valley).
@@ -160,9 +234,9 @@ In order: check API pricing and the data license, get a key, then build.
   corrected values both stored.
 - Its own table and its own label — low-cost sensor, EPA-corrected — never
   merged into the AirNow series.
-- `sensor_stale` and a roster-change note, mirroring `collector_stale` and
-  `monitor_changed`; any flag rules start shadow-only.
-- What the agent gains: in-valley readings beside the regional regulatory
+- Planned for phase 2: `sensor_stale` and a roster-change note, mirroring
+  `collector_stale` and `monitor_changed`; any flag rules start shadow-only.
+- What the agent would gain: in-valley readings beside the regional regulatory
   monitor, told which is which — the comparison that would catch smoke
   settling in the valley before it reaches Vallejo.
 
