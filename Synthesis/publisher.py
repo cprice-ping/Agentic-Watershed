@@ -66,6 +66,12 @@ SYNTH_ID  = "napa-synth-01"
 VIEWER_BASE = os.environ.get("VIEWER_BASE_URL", "https://viewer.watershed-agent.dev")
 VIEWER_LINK_LABEL = "🔗 Full reasoning & underlying observations"
 
+# Same text as ATProto/publisher.py's NOTICE — see there for why every record
+# carries it. The post gets the short form: Bluesky's 300 graphemes are
+# shared with the summary, and the full form is one tap away in the record.
+NOTICE = ("For awareness only. Not a substitute for official emergency guidance: follow local authorities and alerts.")
+POST_NOTICE = "Awareness only, not official emergency guidance."
+
 
 def viewer_url(record_uri: str) -> str:
     return f"{VIEWER_BASE}/?uri={quote(record_uri, safe='')}"
@@ -268,6 +274,7 @@ def build_synthesis_record(row: dict, observed_at: str, synth_did: str) -> dict:
         "observedAt": observed_at,
         "nodeId": SYNTH_ID,
         "observationType": f"{LEXICON}#synthesis",
+        "notice": NOTICE,
         "summary": _fit(summary, SUMMARY_MAX_BYTES),
         "flagged": bool(row.get("flagged", False)),
         "flagReason": _fit(flag_reason, FLAG_REASON_MAX_BYTES),
@@ -378,12 +385,13 @@ def build_post(row: dict) -> tuple[str, list[str]]:
     tag_str = " " + " ".join(f"#{t}" for t in tags)
     # Reserve room for "\n\n" + the viewer link line added by create_post(),
     # so the full post (summary + link + tags) still fits Bluesky's 300-grapheme limit.
-    overhead = len(header) + 2 + len(tag_str) + 2 + len(VIEWER_LINK_LABEL)
+    overhead = (len(header) + 2 + 2 + len(POST_NOTICE)
+                + len(tag_str) + 2 + len(VIEWER_LINK_LABEL))
     max_summary = 300 - overhead
     if len(summary) > max_summary:
         summary = summary[:max_summary - 1] + "…"
 
-    return f"{header}\n\n{summary}", tags
+    return f"{header}\n\n{summary}\n\n{POST_NOTICE}", tags
 
 
 # ---------------------------------------------------------------------------

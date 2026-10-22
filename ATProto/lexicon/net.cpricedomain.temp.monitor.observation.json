@@ -29,9 +29,15 @@
               "net.cpricedomain.temp.monitor.observation#watershed",
               "net.cpricedomain.temp.monitor.observation#weather",
               "net.cpricedomain.temp.monitor.observation#aqi",
+              "net.cpricedomain.temp.monitor.observation#fire",
               "net.cpricedomain.temp.monitor.observation#synthesis"
             ],
             "description": "The domain of this observation. Synthesis agents filter the firehose by this value. Nodes publish only the types they have data for."
+          },
+          "notice": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "Fixed statement that the record is for awareness and is not a substitute for official emergency guidance. Carried by every record from 2026-10-22, because PurpleAir's licence answer requires it on any record discussing smoke or wildfire risk and nearly every record here does. A reader should treat its absence on an older record as an omission, not as a claim to be official guidance."
           },
           "summary": {
             "type": "string",
