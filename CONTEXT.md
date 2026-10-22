@@ -188,6 +188,25 @@ model above, the node should read it rather than build its own sensors.
    - §7.3: no per-reader waiver. Instead, fire-risk posts and any record
      that discusses smoke or wildfire risk carry a short notice that it is
      for awareness and not a substitute for official emergency guidance.
+
+   **The Attribution Guide** (updated 2022-07-18, pasted by the operator
+   2026-10-22) sets what that attribution is:
+   - The medians are Data Derivatives: text "Powered by PurpleAir" (or
+     "Contributed by PurpleAir"). Raw or corrected single-sensor values would
+     be "Data from PurpleAir", but none are published.
+   - ATProto records count as an API/database product: text attribution,
+     with a link to the PurpleAir website required.
+   - Fire alerts and health insights need their disclaimer whenever claims
+     are made from the data, product name filled in: "Underlying air quality
+     data utilized by Agentic Watershed is sourced from PurpleAir, a network
+     of consumer sensors. Sensors are owned and managed by consumers,
+     therefore PurpleAir does not guarantee data accuracy. All insights and
+     claims are solely made by Agentic Watershed."
+   - Open question for PurpleAir: that disclaimer is about 280 characters,
+     and a Bluesky post is limited to 300 graphemes. Planned: posts carry
+     "Powered by PurpleAir · purpleair.com" plus the short awareness notice,
+     and link to the record carrying the full disclaimer. Confirm with
+     PurpleAir ("Attribution Feedback") before posts use the data.
 4. **Cost.** Metered in points; measured 2026-10-08 at ~160 points per poll
    of 31 sensors and ~1,230 per daily discovery — about 5,000 a day hourly,
    roughly six months of the free million.
